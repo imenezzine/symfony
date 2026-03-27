@@ -2949,6 +2949,10 @@ class FrameworkExtension extends Extension
                 $container->registerAliasForArgument('httplug.'.$name, HttpAsyncClient::class, $name);
             }
         }
+
+        if ($config['recorder']['enabled']) {
+            $loader->load('http_client_recorder.php');
+        }
     }
 
     private function registerCachingHttpClient(array $options, array $defaultOptions, string $name, ContainerBuilder $container): void

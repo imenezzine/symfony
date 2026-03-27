@@ -13,6 +13,7 @@ namespace Symfony\Bundle\FrameworkBundle;
 
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\AddDebugLogProcessorPass;
+use Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\AddHttpRecorderPass;
 use Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\AssetsContextPass;
 use Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\ContainerBuilderDebugDumpPass;
 use Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\DeprecateJsonStreamerValueTransformerTagPass;
@@ -205,6 +206,7 @@ class FrameworkBundle extends Bundle
         $this->addCompilerPassIfExists($container, AddScheduleMessengerPass::class);
         $this->addCompilerPassIfExists($container, MessengerPass::class);
         $this->addCompilerPassIfExists($container, HttpClientPass::class);
+        $this->addCompilerPassIfExists($container, AddHttpRecorderPass::class);
         $this->addCompilerPassIfExists($container, AddAutoMappingConfigurationPass::class);
         $container->addCompilerPass(new RegisterReverseContainerPass(true));
         $container->addCompilerPass(new RegisterReverseContainerPass(false), PassConfig::TYPE_AFTER_REMOVING);
