@@ -2028,7 +2028,7 @@ class Configuration implements ConfigurationInterface
                             ->info('The maximum number of connections to a single host.')
                         ->end()
                         ->arrayNode('recorder')
-                            ->info('Enable or disable HttpClientRecorder.')
+                            ->info('Enable or disable RecorderHttpClient.')
                             ->canBeEnabled()
                         ->end()
                         ->arrayNode('default_options')

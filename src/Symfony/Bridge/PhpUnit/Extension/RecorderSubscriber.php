@@ -1,6 +1,6 @@
 <?php
 
-namespace Symfony\HttpClientRecorderBundle\PHPUnit;
+namespace Symfony\Bridge\PhpUnit\Extension;
 
 use PHPUnit\Event\Test\PreparationStarted;
 use PHPUnit\Event\Test\PreparationStartedSubscriber;
@@ -8,13 +8,13 @@ use Symfony\Bridge\PhpUnit\Attribute\UseRecord;
 use Symfony\Component\HttpClient\RecorderHttpClient;
 use Symfony\Component\HttpClient\RecorderMode;
 use Symfony\Component\HttpFoundation\Exception\LogicException;
+use PHPUnit\Event\Code\TestMethod;
 
 final class RecorderSubscriber implements PreparationStartedSubscriber
 {
     public function __construct(
         private string $defaultDirectory,
     ) {
-        $this->defaultDirectory = \rtrim($this->defaultDirectory, '/') . 'RecorderSubscriber.php/';
     }
 
     public function notify(PreparationStarted $event): void
@@ -36,7 +36,9 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
 
         $currentTestDir = \dirname($test->file());
 
-
+        /**
+         * @see https://regex101.com/r/m2kwWt/1
+         */
         $success = preg_match('/(?<className>[^\\\\]*)$/', $test->className(), $matches);
         if ($success !== 1) {
             throw new LogicException("Failed to extract class name from test class: {$test->className()}");
@@ -69,21 +71,8 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
         $mode = null;
         $record = null;
 
-        if ($attributes = (new \ReflectionClass($className))->getAttributes(UseRecord::class)) {
-            // TODO: using mode record could lead to unwanted side effects : it would override each other.
-
-            /** @var UseRecord $inst */
-            $inst = $attributes[0]->newInstance();
-            $record = $inst->record ?? "./{$className}.har"; // TODO: or "@{$className}.har" ? (defaultDirectory)
-            $mode = $inst->mode;
-            $attributeFound = true;
-        }
 
         if ($attributes = (new \ReflectionMethod($className, $methodName))->getAttributes(UseRecord::class)) {
-            if ($attributeFound) {
-                throw new \LogicException('Cannot use #[UseRecord] attribute on both class and method.');
-            }
-
             /** @var UseRecord $inst */
             $inst = $attributes[0]->newInstance();
             $record = $inst->record;

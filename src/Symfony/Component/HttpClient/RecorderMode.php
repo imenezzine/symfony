@@ -15,7 +15,7 @@ enum RecorderMode: string
     public const REPLAY = 'replay';
 
     /**
-     * Tries to find an existing record, create one if none then replays it.
+     * Tries to find an existing record to replay, if missing executes the request normally then records it.
      */
     public const REPLAY_AND_RECORD_IF_MISSING = 'replay_and_record_if_missing';
 

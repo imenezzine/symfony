@@ -20,7 +20,7 @@ class AddHttpRecorderPass implements CompilerPassInterface
                 ->register("{$serviceId}.recorder", RecorderHttpClient::class)
                 ->setDecoratedService($serviceId)
                 ->setArguments([
-                    new Reference("{$serviceId}.recorder.inner"),
+                    new Reference($serviceId.'.recorder.inner'),
                     new Reference('http_client.recorder.store'),
                 ])
                 ->addTag('http_client.client');

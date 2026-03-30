@@ -2,10 +2,10 @@
 
 namespace Symfony\Component\HttpClient\Har;
 
-use Symfony\Component\Clock\DatePoint;
 use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\Recorder\Matcher\MatcherInterface;
 use Symfony\Component\HttpClient\Response\MockResponse;
+use Symfony\Component\HttpKernel\Kernel;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
@@ -46,7 +46,7 @@ final class HarFile
         return new self([
             'log' => [
                 'version' => '1.2',
-                'creator' => ['name' => 'HttpRecorder'],
+                'creator' => ['name' => self::class, 'version' => Kernel::VERSION],
                 'entries' => [],
             ],
         ]);
@@ -75,7 +75,7 @@ final class HarFile
     {
         /** @psalm-var HarEntry $entry */
         $entry = [
-            'startedDateTime' => (new DatePoint('now'))->format('Y-m-d\TH:i:s.v\Z'),
+            'startedDateTime' => (new \DateTime('now'))->format('Y-m-d\TH:i:s.v\Z'),
             'request' => [
                 'method' => $method,
                 'url' => $url,

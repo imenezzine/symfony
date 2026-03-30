@@ -2,6 +2,8 @@
 
 namespace Symfony\Bridge\PhpUnit\Attribute;
 
+use Symfony\Component\HttpClient\RecorderMode;
+
 /**
  * @example UseRecord('my_record.har', RecorderMode::Record)
  * @example UseRecord('./my_record.har', RecorderMode::Record)

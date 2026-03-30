@@ -1,12 +1,12 @@
 <?php
 
-namespace Symfony\Bridge;
+namespace Symfony\Bridge\PhpUnit;
 
 use PHPUnit\Runner\Extension\Extension;
 use PHPUnit\Runner\Extension\Facade;
 use PHPUnit\Runner\Extension\ParameterCollection;
 use PHPUnit\TextUI\Configuration\Configuration;
-use Symfony\HttpClientRecorderBundle\PHPUnit\RecorderSubscriber;
+use Symfony\Bridge\PhpUnit\Extension\RecorderSubscriber;
 
 final class RecorderExtension implements Extension
 {
