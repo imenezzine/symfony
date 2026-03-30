@@ -7,6 +7,7 @@ use PHPUnit\Runner\Extension\Facade;
 use PHPUnit\Runner\Extension\ParameterCollection;
 use PHPUnit\TextUI\Configuration\Configuration;
 use Symfony\Bridge\PhpUnit\Extension\RecorderSubscriber;
+use Symfony\Bridge\PhpUnit\Metadata\AttributeReader;
 
 final class RecorderExtension implements Extension
 {
@@ -20,6 +21,8 @@ final class RecorderExtension implements Extension
 
         $defaultDirectory ??= \dirname($configuration->configurationFile()).'/tests/fixtures/records/';
 
-        $facade->registerSubscriber(new RecorderSubscriber($defaultDirectory));
+        $reader = new AttributeReader();
+
+        $facade->registerSubscriber(new RecorderSubscriber($reader, $defaultDirectory));
     }
 }
