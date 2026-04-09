@@ -2,7 +2,7 @@
 
 namespace Symfony\Component\HttpClient;
 
-enum RecorderMode: string
+enum RecorderMode
 {
     /**
      * Records all HTTP requests into the HAR file.

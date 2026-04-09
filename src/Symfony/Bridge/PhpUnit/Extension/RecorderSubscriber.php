@@ -21,7 +21,7 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
 
     public function notify(PreparationStarted $event): void
     {
-        RecorderHttpClient::setRecord('default.har');
+        RecorderHttpClient::setHarFilePath('default.har');
         RecorderHttpClient::setMode(RecorderMode::PASSTHROUGH);
 
         $test = $event->test();
@@ -58,7 +58,7 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
             $record = "{$currentTestDir}/{$record}";
         }
 
-        RecorderHttpClient::setRecord($record); // TODO: When creating test for this method: make sure it is always absolute
+        RecorderHttpClient::setHarFilePath($record); // TODO: When creating test for this method: make sure it is always absolute
         RecorderHttpClient::setMode($mode);
     }
 }

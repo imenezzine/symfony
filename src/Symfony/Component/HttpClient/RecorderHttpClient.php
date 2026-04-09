@@ -37,7 +37,7 @@ final class RecorderHttpClient implements HttpClientInterface
         self::$mode = $mode;
     }
 
-    public static function setRecord(string $record): void
+    public static function setHarFilePath(string $record): void
     {
         self::$record = $record;
     }

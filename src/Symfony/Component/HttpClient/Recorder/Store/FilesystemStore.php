@@ -14,7 +14,7 @@ final class FilesystemStore implements StoreInterface
 
     public function __construct(?Filesystem $filesystem)
     {
-        if (null === $filesystem && class_exists(Filesystem::class)) {
+        if (null === $filesystem && !class_exists(Filesystem::class)) {
             throw new \LogicException(\sprintf('The "%s" handler needs a Filesystem. Try running "composer require symfony/filesystem".', __CLASS__));
 
         }
