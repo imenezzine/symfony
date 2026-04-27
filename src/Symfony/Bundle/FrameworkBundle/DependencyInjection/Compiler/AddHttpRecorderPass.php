@@ -17,7 +17,7 @@ class AddHttpRecorderPass implements CompilerPassInterface
 
         foreach ($container->findTaggedServiceIds('http_client.client') as $serviceId => $attributes) {
             $container
-                ->register("{$serviceId}.recorder", RecorderHttpClient::class)
+                ->register($serviceId.'.recorder', RecorderHttpClient::class)
                 ->setDecoratedService($serviceId)
                 ->setArguments([
                     new Reference($serviceId.'.recorder.inner'),
