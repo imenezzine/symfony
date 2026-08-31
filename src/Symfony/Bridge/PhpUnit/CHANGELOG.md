@@ -4,6 +4,7 @@ CHANGELOG
 8.1
 ---
 
+ * Add `#[UseRecord]` attribute and `RecorderExtension` to record/replay HTTP calls made through `Symfony\Component\HttpClient\RecorderHttpClient` in tests
  * Add support for `phpunit.dist.xml` suffix
 
 7.4

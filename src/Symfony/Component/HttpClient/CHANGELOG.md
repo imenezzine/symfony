@@ -4,6 +4,7 @@ CHANGELOG
 8.1
 ---
 
+ * Add `RecorderHttpClient` to record HTTP exchanges into a HAR file and replay them, matching the format read by `HarFileResponseFactory`
  * Add support for the `max_connect_duration` option
  * Add option `extra.use_persistent_connections` to `CurlHttpClient` to control the use of persistent connections introduced in PHP 8.5
  * Add `GuzzleHttpHandler` that allows using Symfony HttpClient as a Guzzle handler

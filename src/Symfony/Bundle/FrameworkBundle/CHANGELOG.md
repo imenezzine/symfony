@@ -4,6 +4,7 @@ CHANGELOG
 8.2
 ---
 
+ * Add `framework.http_client.recorder` option to decorate HTTP clients with `RecorderHttpClient`
  * Add `uri_signer.expiration` option that allows configuring the default URI signer expiration
  * Add `--dispatchers` option to `debug:event-dispatcher` command
  * Deprecate the `framework.ide` config option, use the `SYMFONY_IDE` env var instead
