@@ -20,13 +20,11 @@ enum RecorderMode
 
     /**
      * Replays HTTP requests from the HAR file.
+     *
+     * Combine with RecorderHttpClient::setRecordIfMissing(true) to fall back
+     * to recording when no matching entry is found.
      */
     public const REPLAY = 'replay';
-
-    /**
-     * Tries to find an existing record to replay, if missing executes the request normally then records it.
-     */
-    public const REPLAY_AND_RECORD_IF_MISSING = 'replay_and_record_if_missing';
 
     /**
      * Completely ignores the recording system and executes requests normally.

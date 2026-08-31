@@ -16,7 +16,7 @@ use PHPUnit\Event\Test\PreparationStarted;
 use PHPUnit\Event\Test\PreparationStartedSubscriber;
 use Symfony\Bridge\PhpUnit\Attribute\UseRecord;
 use Symfony\Bridge\PhpUnit\Metadata\AttributeReader;
-use Symfony\Component\HttpClient\RecorderHttpClient;
+use Symfony\Component\HttpClient\Recorder\RecorderRegistry;
 use Symfony\Component\HttpClient\RecorderMode;
 
 final class RecorderSubscriber implements PreparationStartedSubscriber
@@ -29,7 +29,7 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
 
     public function notify(PreparationStarted $event): void
     {
-        RecorderHttpClient::configureAll(RecorderMode::PASSTHROUGH, 'default.har');
+        RecorderRegistry::configureAll(RecorderMode::PASSTHROUGH, 'default.har');
 
         $test = $event->test();
 
@@ -58,7 +58,7 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
         $record = $attribute->record ?: $currentTestDir.'/'.$matches['className'].'/'.$test->methodName().'.har';
 
         // fail closed by default: a miss on replay must never reach the network,
-        // recording requires an explicit opt-in via UseRecord's $mode argument
+        // recording requires an explicit opt-in via UseRecord's $recordIfMissing argument
         $mode = $attribute->mode ?: RecorderMode::REPLAY;
 
         if (\str_starts_with($record, '@')) {
@@ -68,6 +68,6 @@ final class RecorderSubscriber implements PreparationStartedSubscriber
             $record = "{$currentTestDir}/{$record}";
         }
 
-        RecorderHttpClient::configureAll($mode, $record);
+        RecorderRegistry::configureAll($mode, $record, $attribute->recordIfMissing);
     }
 }

@@ -12,14 +12,15 @@
 namespace Symfony\Component\HttpClient;
 
 use Symfony\Component\HttpClient\Exception\TransportException;
-use Symfony\Component\HttpClient\Har\HarFile;
 use Symfony\Component\HttpClient\Recorder\Matcher\DefaultMatcher;
 use Symfony\Component\HttpClient\Recorder\Matcher\MatcherInterface;
+use Symfony\Component\HttpClient\Recorder\RecorderRegistry;
 use Symfony\Component\HttpClient\Recorder\Redactor\DefaultRedactor;
 use Symfony\Component\HttpClient\Recorder\Redactor\RedactorInterface;
 use Symfony\Component\HttpClient\Recorder\Store\StoreInterface;
 use Symfony\Component\HttpClient\Response\AsyncContext;
 use Symfony\Component\HttpClient\Response\AsyncResponse;
+use Symfony\Component\HttpClient\Test\HarFileResponseFactory;
 use Symfony\Contracts\HttpClient\ChunkInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -28,13 +29,12 @@ final class RecorderHttpClient implements HttpClientInterface
 {
     use AsyncDecoratorTrait;
 
-    private static \WeakMap $instances;
-
     /**
      * @psalm-var RecorderMode::*|string
      */
     private string $mode = RecorderMode::PASSTHROUGH;
     private string $harFilePath = 'default.har';
+    private bool $recordIfMissing = false;
 
     public function __construct(
         private readonly HttpClientInterface $inner,
@@ -44,8 +44,7 @@ final class RecorderHttpClient implements HttpClientInterface
     ) {
         $this->client = $inner;
 
-        self::$instances ??= new \WeakMap();
-        self::$instances[$this] = true;
+        RecorderRegistry::register($this);
     }
 
     /**
@@ -61,12 +60,14 @@ final class RecorderHttpClient implements HttpClientInterface
         $this->harFilePath = $harFilePath;
     }
 
-    public static function configureAll(string $mode, string $harFilePath): void
+    /**
+     * When true, a REPLAY miss falls back to a real request and records it,
+     * instead of throwing. Opt-in: a miss must never silently reach the
+     * network unless explicitly allowed.
+     */
+    public function setRecordIfMissing(bool $recordIfMissing): void
     {
-        foreach (self::$instances ?? new \WeakMap() as $instance => $_) {
-            $instance->setMode($mode);
-            $instance->setHarFilePath($harFilePath);
-        }
+        $this->recordIfMissing = $recordIfMissing;
     }
 
     public function request(string $method, string $url, array $options = []): ResponseInterface
@@ -76,19 +77,19 @@ final class RecorderHttpClient implements HttpClientInterface
         }
 
         if (RecorderMode::REPLAY === $this->mode) {
-            return $this->replay($method, $url, $options);
+            try {
+                return $this->replay($method, $url, $options);
+            } catch (TransportException $e) {
+                if (!$this->recordIfMissing) {
+                    throw $e;
+                }
+
+                return $this->record($method, $url, $options);
+            }
         }
 
         if (RecorderMode::RECORD === $this->mode) {
             return $this->record($method, $url, $options);
-        }
-
-        if (RecorderMode::REPLAY_AND_RECORD_IF_MISSING === $this->mode) {
-            try {
-                return $this->replay($method, $url, $options);
-            } catch (TransportException) {
-                return $this->record($method, $url, $options);
-            }
         }
 
         throw new \RuntimeException('Unknown recorder mode.');
@@ -109,8 +110,7 @@ final class RecorderHttpClient implements HttpClientInterface
             $options['body'] = $this->redactor->redactBody($options['body']);
         }
 
-        $harFilePath = $this->harFilePath;
-        $factory = static fn (string $method, string $url, array $options) => HarFile::fromFile($harFilePath)->findResponse($method, $url, $options);
+        $factory = new HarFileResponseFactory($this->harFilePath, $this->matcher);
 
         return new AsyncResponse(new MockHttpClient($factory), $method, $redactedUrl, $options);
     }

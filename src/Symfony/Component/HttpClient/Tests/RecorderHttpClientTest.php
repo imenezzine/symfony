@@ -14,6 +14,7 @@ namespace Symfony\Component\HttpClient\Tests;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Recorder\RecorderRegistry;
 use Symfony\Component\HttpClient\Recorder\Store\FilesystemStore;
 use Symfony\Component\HttpClient\RecorderHttpClient;
 use Symfony\Component\HttpClient\RecorderMode;
@@ -90,18 +91,47 @@ class RecorderHttpClientTest extends TestCase
         $this->assertSame('{"ok":true}', $replayed->getContent());
     }
 
-    public function testReplayAndRecordIfMissingFallsBackToRecordingWhenFileIsAbsent()
+    public function testReplayFallsBackToRecordingWhenFileIsAbsentAndRecordIfMissingIsEnabled()
     {
         $inner = new MockHttpClient(new MockResponse('recorded', ['http_code' => 200]));
 
         $recorder = new RecorderHttpClient($inner, new FilesystemStore(null));
-        $recorder->setMode(RecorderMode::REPLAY_AND_RECORD_IF_MISSING);
+        $recorder->setMode(RecorderMode::REPLAY);
         $recorder->setHarFilePath($this->harFile);
+        $recorder->setRecordIfMissing(true);
 
         $response = $recorder->request('GET', 'https://example.com/first-run');
 
         $this->assertSame('recorded', $response->getContent());
         $this->assertFileExists($this->harFile);
+    }
+
+    public function testReplayDoesNotRecordOnMissWhenRecordIfMissingIsDisabled()
+    {
+        $inner = new class implements HttpClientInterface {
+            public function request(string $method, string $url, array $options = []): ResponseInterface
+            {
+                throw new \LogicException('The network must never be reached when recordIfMissing is false.');
+            }
+
+            public function stream(ResponseInterface|iterable $responses, ?float $timeout = null): ResponseStreamInterface
+            {
+                throw new \LogicException('not implemented');
+            }
+
+            public function withOptions(array $options): static
+            {
+                return $this;
+            }
+        };
+
+        $recorder = new RecorderHttpClient($inner, new FilesystemStore(null));
+        $recorder->setMode(RecorderMode::REPLAY);
+        $recorder->setHarFilePath($this->harFile);
+
+        $this->expectException(TransportException::class);
+
+        $recorder->request('GET', 'https://example.com/first-run');
     }
 
     public function testRedactsSensitiveHeadersAndQueryAndBodyOnRecordButStaysReplayable()
@@ -159,7 +189,7 @@ class RecorderHttpClientTest extends TestCase
         $recorderA = new RecorderHttpClient(new MockHttpClient(), new FilesystemStore(null));
         $recorderB = new RecorderHttpClient(new MockHttpClient(), new FilesystemStore(null));
 
-        RecorderHttpClient::configureAll(RecorderMode::REPLAY, $this->harFile);
+        RecorderRegistry::configureAll(RecorderMode::REPLAY, $this->harFile);
 
         $this->assertSame(RecorderMode::REPLAY, $this->readMode($recorderA));
         $this->assertSame(RecorderMode::REPLAY, $this->readMode($recorderB));
@@ -174,6 +204,29 @@ class RecorderHttpClientTest extends TestCase
 
         $chunks = '';
         foreach ($recorder->stream($response) as $chunk) {
+            $chunks .= $chunk->getContent();
+        }
+
+        $this->assertSame('streamed', $chunks);
+    }
+
+    public function testStreamWorksInReplayMode()
+    {
+        $inner = new MockHttpClient(new MockResponse('streamed', ['http_code' => 200]));
+
+        $recorder = new RecorderHttpClient($inner, new FilesystemStore(null));
+        $recorder->setMode(RecorderMode::RECORD);
+        $recorder->setHarFilePath($this->harFile);
+        $recorder->request('GET', 'https://example.com/stream')->getContent();
+
+        $replay = new RecorderHttpClient(new MockHttpClient(), new FilesystemStore(null));
+        $replay->setMode(RecorderMode::REPLAY);
+        $replay->setHarFilePath($this->harFile);
+
+        $response = $replay->request('GET', 'https://example.com/stream');
+
+        $chunks = '';
+        foreach ($replay->stream($response) as $chunk) {
             $chunks .= $chunk->getContent();
         }
 

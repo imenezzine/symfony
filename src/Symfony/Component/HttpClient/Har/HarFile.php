@@ -12,6 +12,7 @@
 namespace Symfony\Component\HttpClient\Har;
 
 use Symfony\Component\HttpClient\Exception\TransportException;
+use Symfony\Component\HttpClient\Recorder\Matcher\DefaultMatcher;
 use Symfony\Component\HttpClient\Recorder\Matcher\MatcherInterface;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -91,28 +92,21 @@ final class HarFile
     /**
      * @throws TransportException when no entry matches
      */
-    public function findResponse(string $method, string $url, array $options = []): ResponseInterface
+    public function findResponse(string $method, string $url, array $options = [], ?MatcherInterface $matcher = null): ResponseInterface
     {
+        $matcher ??= new DefaultMatcher();
+
         foreach ($this->har['log']['entries'] as $entry) {
-            $entryMethod = $entry['request']['method'];
-            $entryUrl = $entry['request']['url'];
-
-            if ($method !== $entryMethod || $url !== $entryUrl) {
-                continue;
-            }
-
-            $requestBody = $options['body'] ?? null;
-
-            if (null !== $requestBody && $requestBody !== self::decodeContent($entry['request']['postData'] ?? [])) {
+            if (!$matcher->matches($entry, $method, $url, $options)) {
                 continue;
             }
 
             $info = [
                 'http_code' => $entry['response']['status'],
-                'http_method' => $entryMethod,
+                'http_method' => $entry['request']['method'],
                 'response_headers' => [],
                 'start_time' => strtotime($entry['startedDateTime']),
-                'url' => $entryUrl,
+                'url' => $entry['request']['url'],
             ];
 
             foreach ($entry['response']['headers'] as $header) {
@@ -207,7 +201,7 @@ final class HarFile
     /**
      * @param array{text?: string, encoding?: string} $content
      */
-    private static function decodeContent(array $content): string
+    public static function decodeContent(array $content): string
     {
         $text = $content['text'] ?? '';
         $encoding = $content['encoding'] ?? null;

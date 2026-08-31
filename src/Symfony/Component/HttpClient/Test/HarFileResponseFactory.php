@@ -12,6 +12,7 @@
 namespace Symfony\Component\HttpClient\Test;
 
 use Symfony\Component\HttpClient\Har\HarFile;
+use Symfony\Component\HttpClient\Recorder\Matcher\MatcherInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
@@ -21,8 +22,10 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 class HarFileResponseFactory
 {
-    public function __construct(private string $archiveFile)
-    {
+    public function __construct(
+        private string $archiveFile,
+        private ?MatcherInterface $matcher = null,
+    ) {
     }
 
     public function setArchiveFile(string $archiveFile): void
@@ -32,6 +35,6 @@ class HarFileResponseFactory
 
     public function __invoke(string $method, string $url, array $options): ResponseInterface
     {
-        return HarFile::fromFile($this->archiveFile)->findResponse($method, $url, $options);
+        return HarFile::fromFile($this->archiveFile)->findResponse($method, $url, $options, $this->matcher);
     }
 }

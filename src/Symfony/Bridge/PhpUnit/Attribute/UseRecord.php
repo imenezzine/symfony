@@ -19,6 +19,7 @@ use Symfony\Component\HttpClient\RecorderMode;
  * @example UseRecord('../my_record.har', RecorderMode::RECORD)
  * @example UseRecord('/my_record.har', RecorderMode::RECORD)
  * @example UseRecord('@my_record.har', RecorderMode::RECORD)
+ * @example UseRecord('my_record.har', RecorderMode::REPLAY, recordIfMissing: true)
  */
 #[\Attribute(\Attribute::TARGET_METHOD | \Attribute::TARGET_CLASS)]
 final readonly class UseRecord
@@ -29,6 +30,7 @@ final readonly class UseRecord
     public function __construct(
         public ?string $record = null,
         public ?string $mode = null,
+        public bool $recordIfMissing = false,
     ) {
     }
 }

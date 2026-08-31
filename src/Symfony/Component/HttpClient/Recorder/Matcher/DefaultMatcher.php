@@ -39,7 +39,7 @@ final class DefaultMatcher implements MatcherInterface
             return true;
         }
 
-        $entryBody = $harEntry['request']['postData']['text'] ?? null;
+        $entryBody = HarFile::decodeContent($harEntry['request']['postData'] ?? []);
 
         return $entryBody === $options['body'];
     }
