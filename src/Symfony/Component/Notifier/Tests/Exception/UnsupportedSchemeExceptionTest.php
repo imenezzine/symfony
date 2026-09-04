@@ -39,6 +39,7 @@ final class UnsupportedSchemeExceptionTest extends TestCase
             Bridge\Engagespot\EngagespotTransportFactory::class => false,
             Bridge\Esendex\EsendexTransportFactory::class => false,
             Bridge\Expo\ExpoTransportFactory::class => false,
+            Bridge\FacebookPage\FacebookPageTransportFactory::class => false,
             Bridge\FakeChat\FakeChatTransportFactory::class => false,
             Bridge\FakeSms\FakeSmsTransportFactory::class => false,
             Bridge\Firebase\FirebaseTransportFactory::class => false,
@@ -50,6 +51,7 @@ final class UnsupportedSchemeExceptionTest extends TestCase
             Bridge\Infobip\InfobipTransportFactory::class => false,
             Bridge\Iqsms\IqsmsTransportFactory::class => false,
             Bridge\Isendpro\IsendproTransportFactory::class => false,
+            Bridge\Instagram\InstagramTransportFactory::class => false,
             Bridge\KazInfoTeh\KazInfoTehTransportFactory::class => false,
             Bridge\LightSms\LightSmsTransportFactory::class => false,
             Bridge\LineBot\LineBotTransportFactory::class => false,
@@ -89,6 +91,7 @@ final class UnsupportedSchemeExceptionTest extends TestCase
             Bridge\Sms77\Sms77TransportFactory::class => false,
             Bridge\SmsBiuras\SmsBiurasTransportFactory::class => false,
             Bridge\SmsFactor\SmsFactorTransportFactory::class => false,
+            Bridge\SmsProxima\SmsProximaTransportFactory::class => false,
             Bridge\Smsapi\SmsapiTransportFactory::class => false,
             Bridge\Smsbox\SmsboxTransportFactory::class => false,
             Bridge\Smsc\SmscTransportFactory::class => false,
@@ -100,11 +103,13 @@ final class UnsupportedSchemeExceptionTest extends TestCase
             Bridge\Telegram\TelegramTransportFactory::class => false,
             Bridge\Telnyx\TelnyxTransportFactory::class => false,
             Bridge\Termii\TermiiTransportFactory::class => false,
+            Bridge\Threads\ThreadsTransportFactory::class => false,
             Bridge\TurboSms\TurboSmsTransportFactory::class => false,
             Bridge\Twilio\TwilioTransportFactory::class => false,
             Bridge\Twitter\TwitterTransportFactory::class => false,
             Bridge\Unifonic\UnifonicTransportFactory::class => false,
             Bridge\Vonage\VonageTransportFactory::class => false,
+            Bridge\WhatsApp\WhatsAppTransportFactory::class => false,
             Bridge\Yunpian\YunpianTransportFactory::class => false,
             Bridge\Zendesk\ZendeskTransportFactory::class => false,
             Bridge\Zulip\ZulipTransportFactory::class => false,
@@ -137,6 +142,7 @@ final class UnsupportedSchemeExceptionTest extends TestCase
         yield ['engagespot', 'symfony/engagespot-notifier'];
         yield ['esendex', 'symfony/esendex-notifier'];
         yield ['expo', 'symfony/expo-notifier'];
+        yield ['facebook-page', 'symfony/facebook-page-notifier'];
         yield ['fakechat', 'symfony/fake-chat-notifier'];
         yield ['fakesms', 'symfony/fake-sms-notifier'];
         yield ['firebase', 'symfony/firebase-notifier'];
@@ -145,6 +151,7 @@ final class UnsupportedSchemeExceptionTest extends TestCase
         yield ['gatewayapi', 'symfony/gateway-api-notifier'];
         yield ['googlechat', 'symfony/google-chat-notifier'];
         yield ['infobip', 'symfony/infobip-notifier'];
+        yield ['instagram', 'symfony/instagram-notifier'];
         yield ['iqsms', 'symfony/iqsms-notifier'];
         yield ['isendpro', 'symfony/isendpro-notifier'];
         yield ['kaz-info-teh', 'symfony/kaz-info-teh-notifier'];
@@ -186,16 +193,19 @@ final class UnsupportedSchemeExceptionTest extends TestCase
         yield ['smsbiuras', 'symfony/sms-biuras-notifier'];
         yield ['smsc', 'symfony/smsc-notifier'];
         yield ['sms-factor', 'symfony/sms-factor-notifier'];
+        yield ['sms-proxima', 'symfony/sms-proxima-notifier'];
         yield ['smsmode', 'symfony/smsmode-notifier'];
         yield ['spothit', 'symfony/spot-hit-notifier'];
         yield ['telegram', 'symfony/telegram-notifier'];
         yield ['telnyx', 'symfony/telnyx-notifier'];
         yield ['termii', 'symfony/termii-notifier'];
+        yield ['threads', 'symfony/threads-notifier'];
         yield ['turbosms', 'symfony/turbo-sms-notifier'];
         yield ['twilio', 'symfony/twilio-notifier'];
         yield ['twitter', 'symfony/twitter-notifier'];
         yield ['unifonic', 'symfony/unifonic-notifier'];
         yield ['vonage', 'symfony/vonage-notifier'];
+        yield ['whatsapp', 'symfony/whats-app-notifier'];
         yield ['yunpian', 'symfony/yunpian-notifier'];
         yield ['zendesk', 'symfony/zendesk-notifier'];
         yield ['zulip', 'symfony/zulip-notifier'];

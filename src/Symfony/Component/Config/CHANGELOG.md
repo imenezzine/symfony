@@ -1,6 +1,14 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Add `JsonSchemaDumper` to dump JSON Schema from configuration node definitions
+ * Add `BaseNode::isNullable()` to check if a node accepts null as input
+ * Add `BaseNode::hasNormalizationClosures()` to check if closures are used to normalize the value
+ * Add `NodeBuilder::appendFromCallback()` to reuse child node definitions
+
 8.0
 ---
 

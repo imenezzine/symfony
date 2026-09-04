@@ -15,6 +15,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Tui\Ansi\AnsiUtils;
 use Symfony\Component\Tui\Event\ChangeEvent;
+use Symfony\Component\Tui\Event\PasteCompletedEvent;
+use Symfony\Component\Tui\Event\PasteStartedEvent;
 use Symfony\Component\Tui\Render\RenderContext;
 use Symfony\Component\Tui\Render\Renderer;
 use Symfony\Component\Tui\Style\Style;
@@ -103,6 +105,36 @@ class EditorTest extends TestCase
         $editor->handleInput('X');
 
         $this->assertSame('X', $changedText);
+    }
+
+    public function testPasteLifecycleEventsAreDispatchedWhilePasteIsReceived()
+    {
+        $terminal = new VirtualTerminal(80, 24);
+        $tui = new Tui(terminal: $terminal);
+        $editor = new EditorWidget();
+        $events = [];
+
+        $tui->add($editor);
+        $tui->setFocus($editor);
+        $tui->addListener(static function (PasteStartedEvent $event) use (&$events) {
+            $events[] = 'started';
+        });
+        $tui->addListener(static function (PasteCompletedEvent $event) use (&$events) {
+            $events[] = 'completed';
+        });
+        $tui->start();
+
+        $terminal->simulateInput("\x1b[200~Hello");
+
+        $this->assertSame(['started'], $events);
+        $this->assertSame('', $editor->getText());
+
+        $terminal->simulateInput(" World\x1b[201~");
+
+        $this->assertSame(['started', 'completed'], $events);
+        $this->assertSame('Hello World', $editor->getText());
+
+        $tui->stop();
     }
 
     public function testFocusable()
@@ -1428,7 +1460,7 @@ class EditorTest extends TestCase
         $root = new ContainerWidget();
         $root->add($editor);
         $editor->invalidate();
-        $result = $renderer->render($root, 50, 15);
+        $result = $renderer->renderFrame($root, 50, 15)->toArray();
         $allContent = implode("\n", $result);
         $this->assertStringNotContainsString('Line 0:', $allContent, 'Scroll offset should advance when cursor moves past visible area with wrapping lines');
 
@@ -1475,5 +1507,28 @@ class EditorTest extends TestCase
         }
 
         return implode("\n", $lines);
+    }
+
+    public function testEmptyInputChunkWhileWaitingForAJumpTarget()
+    {
+        $editor = new EditorWidget();
+        $editor->setText('hello world');
+        $editor->handleInput("\x1d"); // ctrl+] starts character jump mode
+
+        $warnings = [];
+        set_error_handler(static function (int $level, string $message) use (&$warnings): bool {
+            $warnings[] = $message;
+
+            return true;
+        });
+
+        try {
+            $editor->handleInput('');
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame([], $warnings);
+        $this->assertSame('hello world', $editor->getText());
     }
 }

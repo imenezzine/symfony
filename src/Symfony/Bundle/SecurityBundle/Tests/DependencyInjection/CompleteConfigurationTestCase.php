@@ -173,6 +173,10 @@ abstract class CompleteConfigurationTestCase extends TestCase
                     'parameter' => '_switch_user',
                     'role' => 'ROLE_ALLOWED_TO_SWITCH',
                     'target_route' => null,
+                    'path' => null,
+                    'enable_csrf' => null,
+                    'csrf_token_id' => 'switch_user',
+                    'csrf_parameter' => '_csrf_token',
                 ],
                 [
                     'csrf_parameter' => '_csrf_token',
@@ -327,8 +331,7 @@ abstract class CompleteConfigurationTestCase extends TestCase
                 $this->assertSame(PathRequestMatcher::class, $def->getClass());
                 $this->assertSame('/blog/.*', $def->getArgument(0));
             } elseif (3 === $i) {
-                $this->assertEquals('IS_AUTHENTICATED_ANONYMOUSLY', $attributes[0]);
-                $expression = $container->getDefinition((string) $attributes[1])->getArgument(0);
+                $expression = $container->getDefinition((string) $attributes[0])->getArgument(0);
                 $this->assertEquals("token.getUserIdentifier() matches '/^admin/'", $expression);
             } elseif (4 === $i) {
                 $this->assertEquals(['ROLE_ADMIN'], $attributes);

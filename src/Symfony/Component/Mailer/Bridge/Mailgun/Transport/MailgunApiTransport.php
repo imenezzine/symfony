@@ -17,8 +17,11 @@ use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractApiTransport;
+use Symfony\Component\Mailer\Transport\RemoteTemplateTransportInterface;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 use Symfony\Contracts\HttpClient\Exception\DecodingExceptionInterface;
@@ -29,7 +32,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 /**
  * @author Kevin Verschaeve
  */
-class MailgunApiTransport extends AbstractApiTransport
+class MailgunApiTransport extends AbstractApiTransport implements RemoteTemplateTransportInterface
 {
     private const HOST = 'api.%region_dot%mailgun.net';
 
@@ -95,14 +98,17 @@ class MailgunApiTransport extends AbstractApiTransport
             $html = stream_get_contents($html);
         }
         [$attachments, $inlines, $html] = $this->prepareAttachments($email, $html);
+        $template = $email instanceof RemoteTemplateEmail ? $email->getRemoteTemplate() : null;
 
         $payload = [
             'from' => $envelope->getSender()->toString(),
             'to' => implode(',', $this->stringifyAddresses($this->getRecipients($email, $envelope))),
-            'subject' => $email->getSubject(),
-            'attachment' => $attachments,
-            'inline' => $inlines,
         ];
+        if (null === $template || null !== $email->getSubject()) {
+            $payload['subject'] = $email->getSubject();
+        }
+        $payload['attachment'] = $attachments;
+        $payload['inline'] = $inlines;
         if ($emails = $email->getCc()) {
             $payload['cc'] = implode(',', $this->stringifyAddresses($emails));
         }
@@ -116,8 +122,18 @@ class MailgunApiTransport extends AbstractApiTransport
             $payload['html'] = $html;
         }
 
+        // resolve the generic header first, so a native o:/h:/t:/v: header always wins regardless of iteration order
+        if ($tracking = TrackingHeader::fromHeaders($headers)) {
+            if (null !== $tracking->getOpens()) {
+                $payload['o:tracking-opens'] = $tracking->getOpens() ? 'yes' : 'no';
+            }
+            if (null !== $tracking->getClicks()) {
+                $payload['o:tracking-clicks'] = $tracking->getClicks() ? 'yes' : 'no';
+            }
+        }
+
         foreach ($headers->all() as $name => $header) {
-            if (\in_array($name, ['from', 'to', 'cc', 'bcc', 'subject', 'content-type'], true)) {
+            if (\in_array($name, ['from', 'to', 'cc', 'bcc', 'subject', 'content-type', 'x-track'], true)) {
                 continue;
             }
 
@@ -136,6 +152,9 @@ class MailgunApiTransport extends AbstractApiTransport
             // Check if it is a valid prefix or header name according to Mailgun API
             $prefix = substr($name, 0, 2);
             if (\in_array($prefix, ['h:', 't:', 'o:', 'v:']) || \in_array($name, ['recipient-variables', 'template', 'amp-html'], true)) {
+                if ('template' === $name) {
+                    trigger_deprecation('symfony/mailgun-mailer', '8.2', 'Using the "template" email header to select a Mailgun template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class);
+                }
                 $headerName = $header->getName();
             } else {
                 $headerName = 'h:'.$header->getName();
@@ -144,12 +163,19 @@ class MailgunApiTransport extends AbstractApiTransport
             $payload[$headerName] = $header->getBodyAsString();
         }
 
+        if (null !== $template) {
+            $payload['template'] = $template->getReference();
+            if ($template->getVariables()) {
+                $payload['t:variables'] = json_encode($template->getVariables(), \JSON_THROW_ON_ERROR);
+            }
+        }
+
         return $payload;
     }
 
     private function prepareAttachments(Email $email, ?string $html): array
     {
-        $attachments = $inlines = [];
+        $attachments = $inlines = $replacements = [];
         foreach ($email->getAttachments() as $attachment) {
             $headers = $attachment->getPreparedHeaders();
             if ('inline' === $headers->getHeaderBody('Content-Disposition')) {
@@ -157,7 +183,7 @@ class MailgunApiTransport extends AbstractApiTransport
                 if ($html) {
                     $filename = $headers->getHeaderParameter('Content-Disposition', 'filename');
                     $new = basename($filename);
-                    $html = str_replace('cid:'.$filename, 'cid:'.$new, $html);
+                    $replacements['cid:'.$filename] = 'cid:'.$new;
                     $p = new \ReflectionProperty($attachment, 'filename');
                     $p->setValue($attachment, $new);
                 }
@@ -167,7 +193,8 @@ class MailgunApiTransport extends AbstractApiTransport
             }
         }
 
-        return [$attachments, $inlines, $html];
+        // strtr() replaces the longest match first and never rewrites what it already replaced
+        return [$attachments, $inlines, $replacements ? strtr($html, $replacements) : $html];
     }
 
     private function getEndpoint(): ?string

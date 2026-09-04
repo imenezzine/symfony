@@ -4,10 +4,27 @@ CHANGELOG
 8.2
 ---
 
+ * Add the `debug:roles` command to inspect the role hierarchy
  * Add `allowed_time_drift` option to the OIDC token handler configuration
  * Allow disabling the redirection on successful logout by passing `null` to the `target` option
  * Deprecate the `remember_me` option of the `form_login`, `json_login`, `login_link`, and `access_token` authenticators, as it has no effect
  * Add the `ldap_users_only` option to the LDAP authenticators, to bind only `LdapUser` instances against the LDAP server
+ * Show the deauthentication reason and the responsible user providers in the security profiler panel
+ * Serve the CSRF token id of a firewall through the `csrf_token_manager` it configures, so that `csrf_token()` no longer mints a token the firewall rejects
+ * Add `path`, `enable_csrf`, `csrf_token_id`, `csrf_parameter` and `csrf_token_manager` options to the `switch_user` firewall configuration to restrict user switching to a dedicated (POST-only) route protected by a CSRF token
+ * Deprecate configuring an access control rule with many `roles`, use `allow_if` or role hierarchy instead
+ * Deprecate configuring both an access control rule `allow_if` and `roles`, update `allow_if` instead
+ * Add support for decorating custom authentication failure and success handlers
+ * Add role hierarchy graph to the profiler security panel
+ * Add `oidc_login` firewall authenticator for the OpenID Connect Authorization Code Flow, along with an `oidc` user provider for the users it builds from the OIDC claims
+ * Add the `id_token_signature` configuration (`required`, `algorithms`, `enforce_key_usage_verification`) to the `oidc_login` authenticator, which now verifies the ID token signature by default
+ * Add the `token_endpoint_auth_method` option to the `oidc_login` authenticator: `client_secret_post`, `client_secret_basic`, or `none` to declare a public client, for which `client_secret` must not be set
+ * Add the `pkce` (`enabled`, `method`), `max_age` and `authorization_params` options to the `oidc_login` authenticator
+ * Add a `start_path` option to the `oidc_login` authenticator and declare a route there that starts the flow by redirecting to the provider, for login pages linking to it
+ * Add `user_data_source` and `user_identifier_claim` options to the `oidc_login` authenticator
+ * Add `enable_end_session` and `post_logout_redirect_path` options to the `oidc_login` authenticator for RP-Initiated Logout
+ * Allow passing a null user to `Security::isGrantedForUser()` and `Security::getAccessDecisionForUser()` to check guest permissions
+ * Show why an authenticator did not support the request in the security profiler panel
 
 8.1
 ---

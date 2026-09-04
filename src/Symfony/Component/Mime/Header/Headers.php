@@ -13,6 +13,7 @@ namespace Symfony\Component\Mime\Header;
 
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Exception\LogicException;
+use Symfony\Component\Mime\Group;
 
 /**
  * A collection of headers.
@@ -34,7 +35,7 @@ final class Headers
         'cc' => MailboxListHeader::class,
         'bcc' => MailboxListHeader::class,
         'message-id' => IdentificationHeader::class,
-        'in-reply-to' => [UnstructuredHeader::class, IdentificationHeader::class], // `In-Reply-To` and `References` are less strict than RFC 2822 (3.6.4) to allow users entering the original email's ...
+        'in-reply-to' => [UnstructuredHeader::class, IdentificationHeader::class], // `In-Reply-To` and `References` are less strict than RFC 5322 (3.6.4) to allow users entering the original email's ...
         'references' => [UnstructuredHeader::class, IdentificationHeader::class], // ... `Message-ID`, even if that is no valid `msg-id`
         'return-path' => PathHeader::class,
     ];
@@ -75,13 +76,13 @@ final class Headers
     }
 
     /**
-     * @param array<Address|string> $addresses
+     * @param array<Address|Group|string> $addresses
      *
      * @return $this
      */
     public function addMailboxListHeader(string $name, array $addresses): static
     {
-        return $this->add(new MailboxListHeader($name, Address::createArray($addresses)));
+        return $this->add(new MailboxListHeader($name, MailboxListHeader::createAddressList($addresses)));
     }
 
     /**
@@ -169,7 +170,7 @@ final class Headers
         $header->setMaxLineLength($this->lineLength);
         $name = strtolower($header->getName());
 
-        if (\in_array($name, self::UNIQUE_HEADERS, true) && isset($this->headers[$name]) && \count($this->headers[$name]) > 0) {
+        if (\in_array($name, self::UNIQUE_HEADERS, true) && isset($this->headers[$name]) && $this->headers[$name]) {
             throw new LogicException(\sprintf('Impossible to set header "%s" as it\'s already defined and must be unique.', $header->getName()));
         }
 

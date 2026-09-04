@@ -4,7 +4,18 @@ CHANGELOG
 8.2
 ---
 
+ * Add `#[AsFormType]` and `#[FormField]` attributes to derive a form type from the properties of a data class
+ * Add the `allow_array_submission` option to let `PRE_SUBMIT` listeners turn a submitted array into data the form accepts
+ * Add support for grouping and nested steps in `FormFlowType`
+ * Deprecate the `regions` option of `TimezoneType`, it has had no effect since 5.0
+ * Add `PolymorphicCollectionType` for collections whose entries do not all share the same type
  * Add `inputmode="numeric"` to `IntegerType` when the `grouping` option is enabled
+ * Add the `choice_help` option to `ChoiceType`
+ * Add `$help` parameter to `ChoiceListFactoryInterface::createView()`
+ * Add the `form_id` view variable, holding the id to render on the `<form>` element of a root form when a child uses `form_attr`
+ * Allow the `group_by` option of `ChoiceType` to return `TranslatableInterface` instances
+ * Add the `FormEvents::POST_VALIDATE` event, dispatched on each form of the tree after the validation of the root form
+ * Deprecate the `FormTypePasswordHasherExtension` class and the `registerPassword()` and `hashPasswords()` methods of `PasswordHasherListener`, passwords are now hashed during the `form.post_validate` event
 
 8.1
 ---

@@ -35,7 +35,7 @@ class RouteCompiler implements RouteCompilerInterface
     public const VARIABLE_MAXIMUM_LENGTH = 32;
 
     /**
-     * @throws \InvalidArgumentException if a path variable is named _fragment
+     * @throws \InvalidArgumentException if a path variable is named _fragment or _firewall, or a host variable is named _firewall
      * @throws \LogicException           if a variable is referenced more than once
      * @throws \DomainException          if a variable name starts with a digit or if it is too long to be successfully used as
      *                                   a PCRE subpattern
@@ -52,6 +52,13 @@ class RouteCompiler implements RouteCompilerInterface
 
             $hostVariables = $result['variables'];
             $variables = $hostVariables;
+
+            foreach ($hostVariables as $hostParam) {
+                // "_firewall" selects the firewall handling the route; as a host parameter it would let the Host header choose it
+                if ('_firewall' === $hostParam) {
+                    throw new \InvalidArgumentException(\sprintf('Route host "%s" cannot contain "%s" as a host parameter.', $host, $hostParam));
+                }
+            }
 
             $hostTokens = $result['tokens'];
             $hostRegex = $result['regex'];
@@ -74,8 +81,9 @@ class RouteCompiler implements RouteCompilerInterface
         $pathVariables = $result['variables'];
 
         foreach ($pathVariables as $pathParam) {
-            if ('_fragment' === $pathParam) {
-                throw new \InvalidArgumentException(\sprintf('Route pattern "%s" cannot contain "_fragment" as a path parameter.', $route->getPath()));
+            // "_firewall" selects the firewall handling the route; as a path parameter it would let the URL choose it
+            if ('_fragment' === $pathParam || '_firewall' === $pathParam) {
+                throw new \InvalidArgumentException(\sprintf('Route pattern "%s" cannot contain "%s" as a path parameter.', $route->getPath(), $pathParam));
             }
         }
 
@@ -252,7 +260,7 @@ class RouteCompiler implements RouteCompilerInterface
 
         $prefix = $tokens[0][1];
 
-        if (isset($tokens[1][1]) && '/' !== $tokens[1][1] && false === $route->hasDefault($tokens[1][3])) {
+        if (isset($tokens[1][1]) && '/' !== $tokens[1][1] && !$route->hasDefault($tokens[1][3])) {
             $prefix .= $tokens[1][1];
         }
 

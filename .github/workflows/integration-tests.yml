@@ -27,6 +27,13 @@ jobs:
       fail-fast: false
 
     services:
+      mysql:
+        image: mysql:8.4
+        ports:
+          - 13306:3306
+        env:
+          MYSQL_ROOT_PASSWORD: 'password'
+          MYSQL_DATABASE: 'messenger'
       postgres:
         image: postgres:16-alpine
         ports:
@@ -208,7 +215,7 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           coverage: "none"
-          extensions: "json,couchbase-3.2.2,memcached,mongodb-1.12.0,redis,rdkafka,xsl,ldap,relay"
+          extensions: "json,couchbase-3.2.2,memcached,mongodb,redis,rdkafka,xsl,ldap,relay"
           ini-values: date.timezone=UTC,memory_limit=-1,default_socket_timeout=10,session.gc_probability=0,apc.enable_cli=1,zend.assertions=1,intl.default_locale=en,intl.error_level=0
           php-version: "${{ matrix.php }}"
           tools: pecl
@@ -232,7 +239,10 @@ jobs:
           echo COMPOSER_ROOT_VERSION=$COMPOSER_ROOT_VERSION >> $GITHUB_ENV
 
           echo "::group::composer update"
+          composer require --dev --no-update "mongodb/mongodb:^2.1@stable"
           composer update --no-progress --ansi
+          echo "AMP_SQL_MYSQL_DSN=amp-mysql://root:password@127.0.0.1:13306/messenger" >> $GITHUB_ENV
+          echo "AMP_SQL_POSTGRES_DSN=amp-postgres://postgres:password@127.0.0.1:5432/postgres" >> $GITHUB_ENV
           echo "::endgroup::"
 
           echo "::group::install phpunit"
@@ -270,9 +280,12 @@ jobs:
           MESSENGER_AMQP_DSN: amqp://localhost/%2f/messages
           MESSENGER_SQS_DSN: "sqs://localhost:4566/messages?sslmode=disable&poll_timeout=0.01"
           MESSENGER_SQS_FIFO_QUEUE_DSN: "sqs://localhost:4566/messages.fifo?sslmode=disable&poll_timeout=0.01"
+          MONGODB_URI: 'mongodb://localhost:27017'
+          AWS_ENDPOINT_URL: "http://localhost:4566"
           KAFKA_BROKER: 127.0.0.1:9092
           POSTGRES_HOST: localhost
           PGBOUNCER_HOST: localhost:6432
           MYSQL_DSN: mysql:host=localhost
+          MYSQL_HOST: 127.0.0.1
           MYSQL_USERNAME: root
           MYSQL_PASSWORD: root

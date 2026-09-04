@@ -11,6 +11,7 @@
 
 namespace Symfony\Component\Messenger\Bridge\AmazonSqs\Transport;
 
+use AsyncAws\Core\Sts\StsClient;
 use AsyncAws\Sqs\Enum\MessageSystemAttributeName;
 use AsyncAws\Sqs\Enum\QueueAttributeName;
 use AsyncAws\Sqs\Result\ReceiveMessageResult;
@@ -51,6 +52,7 @@ class Connection
         'queue_attributes' => null,
         'queue_tags' => null,
         'account' => null,
+        'ssl' => null,
         'sslmode' => null,
         'debug' => null,
     ];
@@ -65,6 +67,7 @@ class Connection
         array $configuration,
         ?SqsClient $client = null,
         private ?string $queueUrl = null,
+        private ?StsClient $stsClient = null,
     ) {
         $this->configuration = array_replace_recursive(self::DEFAULT_OPTIONS, $configuration);
         $this->client = $client ?? new SqsClient([]);
@@ -109,7 +112,7 @@ class Connection
      * * visibility_timeout: amount of seconds the message won't be visible
      * * delete_on_rejection: Whether to delete message on rejection or allow SQS to handle retries. (Default: true).
      * * retry_delay: amount of seconds the message won't be visible before retry. (Default: 0).
-     * * sslmode: Can be "disable" to use http for a custom endpoint
+     * * ssl: Whether to use https for a custom endpoint (Default: true)
      * * auto_setup: Whether the queue should be created automatically during send / get (Default: true)
      * * debug: Log all HTTP requests and responses as LoggerInterface::DEBUG (Default: false)
      */
@@ -126,13 +129,13 @@ class Connection
 
         // check for extra keys in options
         $optionsExtraKeys = array_diff(array_keys($options), array_keys(self::DEFAULT_OPTIONS));
-        if (0 < \count($optionsExtraKeys)) {
+        if ($optionsExtraKeys) {
             throw new InvalidArgumentException(\sprintf('Unknown option found: [%s]. Allowed options are [%s].', implode(', ', $optionsExtraKeys), implode(', ', array_keys(self::DEFAULT_OPTIONS))));
         }
 
         // check for extra keys in options
         $queryExtraKeys = array_diff(array_keys($query), array_keys(self::DEFAULT_OPTIONS));
-        if (0 < \count($queryExtraKeys)) {
+        if ($queryExtraKeys) {
             throw new InvalidArgumentException(\sprintf('Unknown option found in DSN: [%s]. Allowed options are [%s].', implode(', ', $queryExtraKeys), implode(', ', array_keys(self::DEFAULT_OPTIONS))));
         }
 
@@ -163,10 +166,13 @@ class Connection
         }
         unset($query['region']);
 
+        $isAwsHost = false;
         if ('default' !== ($params['host'] ?? 'default')) {
-            $clientConfiguration['endpoint'] = \sprintf('%s://%s%s', ($options['sslmode'] ?? null) === 'disable' ? 'http' : 'https', $params['host'], ($params['port'] ?? null) ? ':'.$params['port'] : '');
-            if (preg_match(';^sqs\.([^\.]++)\.amazonaws\.com$;', $params['host'], $matches)) {
+            $clientConfiguration['endpoint'] = \sprintf('%s://%s%s', self::isSslEnabled($options, $params['scheme'] ?? 'sqs') ? 'https' : 'http', $params['host'], ($params['port'] ?? null) ? ':'.$params['port'] : '');
+            // Every AWS partition that serves SQS under amazonaws: aws, aws-cn and aws-eusc
+            if (preg_match(';^sqs\.([^\.]++)\.amazonaws\.(?:com(?:\.cn)?|eu)$;', $params['host'], $matches)) {
                 $clientConfiguration['region'] = $matches[1];
+                $isAwsHost = true;
             }
         } elseif (self::DEFAULT_OPTIONS['endpoint'] !== $options['endpoint'] ?? self::DEFAULT_OPTIONS['endpoint']) {
             $clientConfiguration['endpoint'] = $options['endpoint'];
@@ -178,12 +184,12 @@ class Connection
         }
         $configuration['account'] = 2 === \count($parsedPath) ? $parsedPath[0] : $options['account'] ?? self::DEFAULT_OPTIONS['account'];
 
-        // When the DNS looks like a QueueUrl, we can directly inject it in the connection
+        // When the DSN looks like a QueueUrl, we can directly inject it in the connection
         // https://sqs.REGION.amazonaws.com/ACCOUNT/QUEUE
         $queueUrl = null;
         if (
-            'https' === $params['scheme']
-            && ($params['host'] ?? 'default') === "sqs.{$clientConfiguration['region']}.amazonaws.com"
+            $isAwsHost
+            && 'https' === $params['scheme']
             && ($params['path'] ?? '/') === "/{$configuration['account']}/{$configuration['queue_name']}"
         ) {
             $queueUrl = 'https://'.$params['host'].$params['path'];
@@ -232,6 +238,7 @@ class Connection
                 'VisibilityTimeout' => $this->configuration['visibility_timeout'],
                 'MaxNumberOfMessages' => min($fetchSize, 10), // SQS limitation
                 'MessageAttributeNames' => ['All'],
+                'MessageSystemAttributeNames' => [MessageSystemAttributeName::ALL],
                 'WaitTimeSeconds' => $this->configuration['wait_time'],
             ]);
         }
@@ -268,6 +275,7 @@ class Connection
                 'id' => $message->getReceiptHandle(),
                 'body' => $message->getBody(),
                 'headers' => $headers,
+                'system_attributes' => $message->getAttributes(),
             ];
         }
 
@@ -287,8 +295,13 @@ class Connection
             return;
         }
 
+        // the queue can still be created when the DSN names the account we are already calling with
         if (null !== $this->configuration['account']) {
-            throw new InvalidArgumentException(\sprintf('The Amazon SQS queue "%s" does not exist (or you don\'t have permissions on it), and can\'t be created when an account is provided.', $this->configuration['queue_name']));
+            $callerAccount = ($this->stsClient ??= new StsClient([]))->getCallerIdentity()->getAccount();
+
+            if ($callerAccount !== $this->configuration['account']) {
+                throw new InvalidArgumentException(\sprintf('The Amazon SQS queue "%s" does not exist (or you don\'t have permissions on it), and can\'t be created when another account is provided.', $this->configuration['queue_name']));
+            }
         }
 
         $parameters = [
@@ -409,8 +422,11 @@ class Connection
 
         if (self::isFifoQueue($this->configuration['queue_name'])) {
             $parameters['MessageGroupId'] = $messageGroupId ?? __METHOD__;
-            $parameters['MessageDeduplicationId'] = $messageDeduplicationId ?? sha1(json_encode(['body' => $body, 'headers' => $headers]));
+            // a unique id by default: deduplicating on the content is up to the queue (ContentBasedDeduplication) or to an explicit id
+            $parameters['MessageDeduplicationId'] = $messageDeduplicationId ?? bin2hex(random_bytes(16));
             unset($parameters['DelaySeconds']);
+        } elseif (null !== $messageGroupId) {
+            $parameters['MessageGroupId'] = $messageGroupId;
         }
 
         $this->client->sendMessage($parameters);
@@ -440,6 +456,16 @@ class Connection
                 'VisibilityTimeout' => 0,
             ]);
         }
+    }
+
+    private static function isSslEnabled(array $options, string $scheme): bool
+    {
+        if (null === $ssl = $options['ssl'] ?? null) {
+            // "sslmode=disable" is the legacy spelling of "ssl=false"
+            return 'disable' !== ($options['sslmode'] ?? null);
+        }
+
+        return filter_var($ssl, \FILTER_VALIDATE_BOOL, \FILTER_NULL_ON_FAILURE) ?? throw new InvalidArgumentException(\sprintf('Invalid value for the "ssl" option of the "%s" DSN, expected a boolean.', $scheme));
     }
 
     private function getQueueUrl(): string

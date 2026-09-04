@@ -4,12 +4,44 @@ CHANGELOG
 8.2
 ---
 
- * Add `uri_signer.expiration` option that allows configuring the default URI signer expiration
+ * Auto-configure the `form.data_class` resource tag for classes with the `#[AsFormType]` attribute
+ * Add the `cache.adapter.mongodb` and `cache.adapter.mongodb_tag_aware` cache adapters, and the `framework.cache.default_mongodb_provider` option
+ * Add Messenger routing and failure transport information to the `debug:messenger` command
+ * Add the `framework.webhook.no_private_network` and `framework.webhook.http_client` options
+ * Add the `claim_check` option to Messenger transports
+ * Add the `framework.asset_mapper.importmap_entries` option to limit the rendered import map to the entries reachable from the rendered entrypoints
+ * Add the `http_cache.cache_status` option to emit the RFC 9211 `Cache-Status` header
+ * Add the `framework.mailer.tracking` option to set default open/click tracking for every outgoing message
+ * Add the `doctrine.orm.entity` tag to auto-excluded `#[Entity]` and `#[MappedSuperclass]` classes to allow discovering them
+ * Add `framework.rate_limiter.builder` option
+ * Add JSON Schema validation to the `lint:yaml` command, resolved from the `--check-schema` option, an in-file schema header, the component schema for well-known config files (`config/routes`, `config/services`, `config/serializer`, `config/validator`), or `config/schema.json` for `config/packages` by default
+ * Add the `cache.adapter.pdo_tag_aware` cache pool adapter
+ * Register the `web_link.json_linkset_serializer`, `web_link.json_linkset_parser`, `web_link.link_template_header_serializer` and `web_link.link_template_header_parser` services
+ * Add `framework.asset_mapper.importmap_integrity_algorithms` option to add integrity metadata to importmaps
+ * Add `framework.asset_mapper.minimum_release_age` option to delay JavaScript package updates until a version reaches a minimum age
+ * Add `framework.mailer.smime_encrypter.certificates`, `on_missing_certificate` and `encrypt_for_sender` options
+ * Add `framework.mailer.pgp_signer` and `framework.mailer.pgp_encrypter` options to sign and encrypt messages with PGP/MIME
+ * Allow `framework.rate_limiter.*.limiters` as a map to fix the `key` of individual sub-limiters of a compound rate limiter
+ * Add `framework.cache.default_provider` to configure `cache.app` with a DSN
+ * Add `framework.messenger.reject_redelivered_messages` to allow disabling the `RejectRedeliveredMessageMiddleware`
+ * Add the `framework.http_client.recorder` options to record HTTP exchanges into HAR files and replay them with `RecorderHttpClient` * Add `uri_signer.expiration` option that allows configuring the default URI signer expiration
  * Add `--dispatchers` option to `debug:event-dispatcher` command
  * Deprecate the `framework.ide` config option, use the `SYMFONY_IDE` env var instead
  * Allow prefixing entries with `!` in `framework.workflows.<name>.events_to_dispatch` to permanently disable an event; e.g. `events_to_dispatch: ['!workflow.announce']` fires every event except `workflow.announce`. The GuardEvent can never be disabled; `!workflow.guard` is rejected at config compile time. Mixing allow-list and block-list entries in the same list is rejected at config compile time too.
  * Add support for the HttpClient `max_connect_duration` option to the `http_client` configuration
  * Report `.env` variables that the container never uses in `debug:container --env-vars`
+ * Add `service_id` and `advisory` options to lock stores to use advisory locks on an existing `\PDO` or Doctrine DBAL connection service
+ * Add `framework.webhook.signature_format`, `framework.webhook.timestamp_header_name` and `framework.webhook.timestamp_tolerance` options
+ * Make BrowserKit assertions non-verbose by default
+ * Add the `http_client.*.retry_failed.base_uris` option, to retry a failed request against the next URI in the list
+ * Resolve `debug:config` paths whose keys contain dots, e.g. `debug:config framework options.option.main`
+ * Add a `priority` option to `framework.messenger.transports` to order the receivers `messenger:consume --all` consumes
+ * Deprecate the `framework.fragments.hinclude_default_template` config option and the `fragment.renderer.hinclude.global_template` parameter; use ESI or inline rendering, or Symfony UX Turbo, instead
+ * Add the `session:clear` command to remove all sessions from the configured handler
+ * Generate JSON schema for YAML configuration of bundles
+ * Add support for rate limited transports
+ * Register the security functions `is_granted()`, `is_authenticated()`, `is_fully_authenticated()` and `is_remember_me()` in the validator expression language
+ * Add `framework.profiler.excluded_paths` and `framework.profiler.excluded_http_codes` to skip profiling requests matching a path or answered with a given HTTP status code
 
 8.1
 ---

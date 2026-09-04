@@ -1269,6 +1269,26 @@ class FilesystemTest extends FilesystemTestCase
         $this->assertFalse($this->filesystem->exists($targetPath.'directory'.\DIRECTORY_SEPARATOR.'file1'));
     }
 
+    public function testMirrorWithCustomIteratorAndDeleteOption()
+    {
+        $sourcePath = $this->workspace.\DIRECTORY_SEPARATOR.'source-with-a-longer-name'.\DIRECTORY_SEPARATOR;
+        $targetPath = $this->workspace.\DIRECTORY_SEPARATOR.'target'.\DIRECTORY_SEPARATOR;
+
+        mkdir($sourcePath);
+        file_put_contents($sourcePath.'file1', 'FILE1');
+
+        mkdir($targetPath);
+        file_put_contents($targetPath.'obsolete', 'OBSOLETE');
+
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($sourcePath, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::SELF_FIRST);
+
+        $this->filesystem->mirror($sourcePath, $targetPath, $iterator, ['delete' => true]);
+
+        $this->assertStringEqualsFile($sourcePath.'file1', 'FILE1');
+        $this->assertStringEqualsFile($targetPath.'file1', 'FILE1');
+        $this->assertFileDoesNotExist($targetPath.'obsolete');
+    }
+
     public function testMirrorCreatesEmptyDirectory()
     {
         $sourcePath = $this->workspace.\DIRECTORY_SEPARATOR.'source'.\DIRECTORY_SEPARATOR;
@@ -1536,6 +1556,24 @@ class FilesystemTest extends FilesystemTestCase
         $filename = $this->filesystem->tempnam($dirname, 'foo');
 
         $this->assertFileExists($filename);
+    }
+
+    public function testTempnamWithSuffixIsPrivate()
+    {
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('This test cannot run on Windows.');
+        }
+
+        $oldUmask = umask(0o022);
+        try {
+            $filename = $this->filesystem->tempnam($this->workspace, 'foo', '.txt');
+
+            $this->assertFileExists($filename);
+            $this->assertSame(0o600, fileperms($filename) & 0o777);
+            $this->assertSame(0o022, umask());
+        } finally {
+            umask($oldUmask);
+        }
     }
 
     public function testTempnamTrimsTrailingWhitespaceFromTruncatedPrefix()

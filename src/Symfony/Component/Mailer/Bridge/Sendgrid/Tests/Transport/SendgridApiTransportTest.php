@@ -18,6 +18,8 @@ use Symfony\Component\Mailer\Bridge\Sendgrid\Transport\SendgridApiTransport;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Part\DataPart;
@@ -177,6 +179,22 @@ class SendgridApiTransportTest extends TestCase
         $this->assertEquals('bar', $payload['headers']['foo']);
     }
 
+    public function testRemoteTemplate()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('d-12345', ['firstName' => 'Fabien']);
+        $envelope = new Envelope(new Address('alice@system.com'), [new Address('bob@system.com')]);
+
+        $transport = new SendgridApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(SendgridApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('d-12345', $payload['template_id']);
+        $this->assertSame(['firstName' => 'Fabien'], $payload['personalizations'][0]['dynamic_template_data']);
+        $this->assertArrayNotHasKey('content', $payload);
+        $this->assertArrayNotHasKey('subject', $payload['personalizations'][0]);
+    }
+
     public function testReplyTo()
     {
         $from = 'from@example.com';
@@ -327,5 +345,53 @@ class SendgridApiTransportTest extends TestCase
         $this->assertArrayHasKey('send_at', $payload);
         $this->assertSame(1746626400, $payload['send_at']);
         $this->assertTrue($email->getHeaders()->has('Send-At'));
+    }
+
+    public function testTrackingHeader()
+    {
+        $transport = new SendgridApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(SendgridApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $enabled = new Email();
+        $enabled->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+        $enabledPayload = $method->invoke($transport, $enabled, $envelope);
+        $this->assertTrue($enabledPayload['tracking_settings']['open_tracking']['enable']);
+        $this->assertTrue($enabledPayload['tracking_settings']['click_tracking']['enable']);
+        $this->assertTrue($enabledPayload['tracking_settings']['click_tracking']['enable_text']);
+
+        $disabled = new Email();
+        $disabled->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+        $disabledPayload = $method->invoke($transport, $disabled, $envelope);
+        $this->assertFalse($disabledPayload['tracking_settings']['open_tracking']['enable']);
+        $this->assertFalse($disabledPayload['tracking_settings']['click_tracking']['enable']);
+        $this->assertFalse($disabledPayload['tracking_settings']['click_tracking']['enable_text']);
+    }
+
+    public function testTrackingHeaderControlsOpensAndClicksIndependently()
+    {
+        $transport = new SendgridApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(SendgridApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: false));
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertFalse($payload['tracking_settings']['open_tracking']['enable']);
+        $this->assertArrayNotHasKey('click_tracking', $payload['tracking_settings']);
+    }
+
+    public function testTrackingHeaderIsNotForwardedAsCustomHeader()
+    {
+        $transport = new SendgridApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(SendgridApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+
+        $payload = $method->invoke($transport, $email, $envelope);
+        $this->assertArrayNotHasKey('headers', $payload);
     }
 }

@@ -189,7 +189,7 @@
 {% endblock %}
 
 {% block menu %}
-    <span class="label {{ not collector.firewall or not collector.token ? 'disabled' }}">
+    <span class="label {{ not collector.firewall or not collector.firewall.security_enabled ? 'disabled' }}">
         <span class="icon" aria-hidden="true">{{ source('@Security/Collector/icon.svg') }}</span>
         <strong>Security</strong>
     </span>
@@ -199,84 +199,6 @@
     <h2>Security</h2>
     {% if collector.enabled %}
         <div class="sf-tabs">
-            <div class="tab {{ collector.token is empty ? 'disabled' }}">
-                <h3 class="tab-title">Token</h3>
-
-                <div class="tab-content">
-                    {% if collector.token %}
-                        <div class="metrics">
-                            <div class="metric">
-                                <span class="value">{{ collector.user }}</span>
-                                <span class="label">Username</span>
-                            </div>
-
-                            <div class="metric">
-                                <span class="value">{{ source('@WebProfiler/Icon/' ~ (collector.authenticated ? 'yes' : 'no') ~ '.svg') }}</span>
-                                <span class="label">Authenticated</span>
-                            </div>
-
-                            {% if collector.authProfileToken %}
-                                <div class="metric">
-                                    <span class="value">
-                                        <a href="{{ path('_profiler', {token: collector.authProfileToken, panel: 'security'}) }}">
-                                            {{- collector.authProfileToken -}}
-                                        </a>
-                                    </span>
-                                    <span class="label">From</span>
-                                </div>
-                            {% endif %}
-                        </div>
-
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th scope="col" class="key">Property</th>
-                                    <th scope="col">Value</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <th>Roles</th>
-                                    <td>
-                                        {{ collector.roles is empty ? 'none' : profiler_dump(collector.roles, maxDepth: 1) }}
-
-                                        {% if not collector.authenticated and collector.roles is empty %}
-                                            <p class="help">User is not authenticated probably because they have no roles.</p>
-                                        {% endif %}
-                                    </td>
-                                </tr>
-
-                                {% if collector.supportsRoleHierarchy %}
-                                <tr>
-                                    <th>Inherited Roles</th>
-                                    <td>{{ collector.inheritedRoles is empty ? 'none' : profiler_dump(collector.inheritedRoles, maxDepth: 1) }}</td>
-                                </tr>
-                                {% endif %}
-
-                                {% if collector.token %}
-                                <tr>
-                                    <th>Token</th>
-                                    <td>{{ profiler_dump(collector.token) }}</td>
-                                </tr>
-                                {% endif %}
-                            </tbody>
-                        </table>
-                    {% elseif collector.enabled %}
-                        <div class="empty">
-                            <p>
-                                There is no security token.
-                                {% if collector.deauthProfileToken %}
-                                    It was removed in
-                                    <a href="{{ path('_profiler', {token: collector.deauthProfileToken, panel: 'security'}) }}">
-                                        {{- collector.deauthProfileToken -}}
-                                    </a>.
-                                {% endif %}
-                            </p>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-
             <div class="tab {{ (not collector.firewall or collector.firewall.security_enabled is empty) ? 'disabled' }}">
                 <h3 class="tab-title">Firewall</h3>
                 <div class="tab-content">
@@ -337,6 +259,140 @@
                                 </tbody>
                             </table>
                         {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="tab {{ collector.token is empty ? 'disabled' : 'active' }}">
+                <h3 class="tab-title">Token</h3>
+
+                <div class="tab-content">
+                    {% if collector.token %}
+                        <div class="metrics">
+                            <div class="metric">
+                                <span class="value">{{ collector.user }}</span>
+                                <span class="label">Username</span>
+                            </div>
+
+                            <div class="metric">
+                                <span class="value">{{ source('@WebProfiler/Icon/' ~ (collector.authenticated ? 'yes' : 'no') ~ '.svg') }}</span>
+                                <span class="label">Authenticated</span>
+                            </div>
+
+                            {% if collector.authProfileToken %}
+                                <div class="metric">
+                                    <span class="value">
+                                        <a href="{{ path('_profiler', {token: collector.authProfileToken, panel: 'security'}) }}">
+                                            {{- collector.authProfileToken -}}
+                                        </a>
+                                    </span>
+                                    <span class="label">From</span>
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="key">Property</th>
+                                    <th scope="col">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <th>Roles</th>
+                                    <td>
+                                        {{ collector.roles is empty ? 'none' : profiler_dump(collector.roles, maxDepth: 1) }}
+
+                                        {% if not collector.authenticated and collector.roles is empty %}
+                                            <p class="help">User is not authenticated probably because they have no roles.</p>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+
+                                {% if collector.supportsRoleHierarchy and collector.rolesDiagram is not empty %}
+                                <script>
+                                    {{ source('@WebProfiler/Script/Mermaid/mermaid-flowchart-v2.min.js') }}
+                                    const isDarkMode = document.querySelector('body').classList.contains('theme-dark');
+                                    mermaid.initialize({
+                                        flowchart: {
+                                            useMaxWidth: true,
+                                        },
+                                        securityLevel: 'loose',
+                                        theme: 'base',
+                                        themeVariables: {
+                                            darkMode: isDarkMode,
+                                            fontFamily: 'var(--font-family-system)',
+                                            fontSize: 'var(--font-size-body)',
+                                            // the properties below don't support CSS variables
+                                            primaryColor: isDarkMode ? 'lightsteelblue' : 'aliceblue',
+                                            primaryTextColor: isDarkMode ? '#000' : '#000',
+                                            primaryBorderColor: isDarkMode ? 'steelblue' : 'lightsteelblue',
+                                            lineColor: isDarkMode ? '#939393' : '#d4d4d4',
+                                            secondaryColor: isDarkMode ? 'lightyellow' : 'lightyellow',
+                                            tertiaryColor: isDarkMode ? 'lightSalmon' : 'lightSalmon',
+                                        }
+                                    });
+                                    document.addEventListener('DOMContentLoaded', () => {
+                                        const mEl = document.querySelector('.sf-mermaid');
+                                        mermaid.run({
+                                            nodes: [mEl],
+                                        });
+                                    });
+                                </script>
+                                <tr>
+                                    <th>Inherited Roles</th>
+                                    <td>{{ collector.inheritedRoles is empty ? 'none' : profiler_dump(collector.inheritedRoles, maxDepth: 1) }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Available Roles</th>
+                                    <td>
+                                        <pre class="sf-mermaid">
+                                            {{ collector.rolesDiagram|raw }}
+                                        </pre>
+                                    </td>
+                                </tr>
+                                {% endif %}
+
+                                {% if collector.token %}
+                                <tr>
+                                    <th>Token</th>
+                                    <td>{{ profiler_dump(collector.token) }}</td>
+                                </tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+
+                        {% if collector.deauthentication %}
+                            <p class="help">
+                                <strong>{{ collector.deauthentication.user }}</strong> was deauthenticated during this request{% if collector.deauthentication.reason %} because {{ collector.deauthentication.reason }}{% endif %}, before the current token was set.
+                            </p>
+                        {% endif %}
+                    {% elseif collector.enabled %}
+                        <div class="empty">
+                            <p>
+                                {% if collector.deauthentication %}
+                                    <strong>{{ collector.deauthentication.user }}</strong> has been deauthenticated{% if collector.deauthentication.reason %} because {{ collector.deauthentication.reason }}{% endif %}.
+                                {% else %}
+                                    There is no security token.
+                                {% endif %}
+                                {% if collector.deauthProfileToken %}
+                                    It was removed in
+                                    <a href="{{ path('_profiler', {token: collector.deauthProfileToken, panel: 'security'}) }}">
+                                        {{- collector.deauthProfileToken -}}
+                                    </a>.
+                                {% endif %}
+                            </p>
+
+                            {% if collector.deauthentication and collector.deauthentication.providers is not empty %}
+                                <p class="help">
+                                    User provider{{ collector.deauthentication.providers|length > 1 ? 's' }}:
+                                    {% for providerClass in collector.deauthentication.providers %}
+                                        {{ providerClass|abbr_class }}{{ not loop.last ? ', ' }}
+                                    {% endfor %}
+                                </p>
+                            {% endif %}
+                        </div>
                     {% endif %}
                 </div>
             </div>
@@ -424,6 +480,9 @@
                                             {% if authenticator.supports is same as(false) %}
                                                 <div class="empty">
                                                     <p>This authenticator did not support the request.</p>
+                                                    {% if authenticator.unsupportedReasons is defined and authenticator.unsupportedReasons|length %}
+                                                        <p>Reason: {{ authenticator.unsupportedReasons|join(', ') }}</p>
+                                                    {% endif %}
                                                 </div>
                                             {% elseif authenticator.authenticated is null %}
                                                 <div class="empty">

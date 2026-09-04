@@ -104,6 +104,32 @@ class TokenBucketLimiterTest extends TestCase
         $this->assertSame(10, $rateLimit->getLimit());
     }
 
+    public function testResetTimeDiffersFromRetryAfterWhileTokensRemain()
+    {
+        $rate = Rate::perSecond(1);
+        $limiter = $this->createLimiter(10, $rate);
+
+        $rateLimit = $limiter->consume(5);
+        $this->assertTrue($rateLimit->isAccepted());
+        $this->assertEqualsWithDelta(time(), $rateLimit->getRetryAfter()->getTimestamp(), 1);
+        // 5 of 10 tokens used at 1/s, so the bucket is full again in 5s
+        $this->assertEqualsWithDelta(time() + 5, $rateLimit->getResetAt()->getTimestamp(), 1);
+    }
+
+    public function testResetTimeOnRejectionCountsOnlyTheMissingTokens()
+    {
+        $limiter = $this->createLimiter(10, Rate::perSecond(1));
+        $limiter->consume(10);
+
+        sleep(3); // 3 tokens back
+
+        $rateLimit = $limiter->consume(5);
+        $this->assertFalse($rateLimit->isAccepted());
+        $this->assertSame(3, $rateLimit->getRemainingTokens());
+        // 7 of 10 tokens are missing, so the bucket is full again in 7s -- not 10
+        $this->assertEqualsWithDelta(time() + 7, $rateLimit->getResetAt()->getTimestamp(), 1);
+    }
+
     public function testConsumeLastToken()
     {
         $rate = Rate::perSecond(1);
@@ -254,6 +280,27 @@ class TokenBucketLimiterTest extends TestCase
 
         $this->assertEquals(0, $limiter->reserve(9)->getWaitDuration());
         $this->assertEquals(10, $limiter->reserve(1)->getWaitDuration());
+    }
+
+    public function testEffectivelyInfiniteBurstSizeIsCapped()
+    {
+        $limiter = $this->createLimiter(\PHP_INT_MAX, new Rate(new \DateInterval('PT10S'), 10));
+
+        $rateLimit = $limiter->consume(1);
+
+        $this->assertTrue($rateLimit->isAccepted());
+        $this->assertSame(TokenBucket::MAX_BURST_SIZE, $rateLimit->getLimit());
+        $this->assertSame(TokenBucket::MAX_BURST_SIZE - 1, $rateLimit->getRemainingTokens());
+    }
+
+    public function testCappedBurstSizeSurvivesTheStorageRoundTrip()
+    {
+        $limiter = $this->createLimiter(\PHP_INT_MAX, new Rate(new \DateInterval('PT10S'), 10));
+
+        $limiter->consume(1);
+        $rateLimit = $limiter->consume(1);
+
+        $this->assertSame(TokenBucket::MAX_BURST_SIZE - 2, $rateLimit->getRemainingTokens());
     }
 
     private function createLimiter($initialTokens = 10, ?Rate $rate = null)

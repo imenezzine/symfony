@@ -20,7 +20,7 @@ namespace Symfony\Component\HttpFoundation\Session\Storage\Handler;
  * @author Ross Motley <ross.motley@amara.com>
  * @author Oliver Radwell <oliver.radwell@amara.com>
  */
-class MigratingSessionHandler implements \SessionHandlerInterface, \SessionUpdateTimestampHandlerInterface
+class MigratingSessionHandler implements \SessionHandlerInterface, \SessionUpdateTimestampHandlerInterface, ClearableSessionHandlerInterface
 {
     private \SessionHandlerInterface&\SessionUpdateTimestampHandlerInterface $currentHandler;
     private \SessionHandlerInterface&\SessionUpdateTimestampHandlerInterface $writeOnlyHandler;
@@ -36,6 +36,11 @@ class MigratingSessionHandler implements \SessionHandlerInterface, \SessionUpdat
 
         $this->currentHandler = $currentHandler;
         $this->writeOnlyHandler = $writeOnlyHandler;
+    }
+
+    public function create_sid(): string
+    {
+        return session_create_id() ?: throw new \RuntimeException('Unable to create a session ID.');
     }
 
     public function close(): bool
@@ -96,5 +101,18 @@ class MigratingSessionHandler implements \SessionHandlerInterface, \SessionUpdat
         $this->writeOnlyHandler->updateTimestamp($sessionId, $sessionData);
 
         return $result;
+    }
+
+    public function clear(): void
+    {
+        if ($this->currentHandler instanceof ClearableSessionHandlerInterface) {
+            $this->currentHandler->clear();
+        } else {
+            throw new \LogicException(\sprintf('The session handler "%s" does not support clearing all sessions.', get_debug_type($this->currentHandler)));
+        }
+
+        if ($this->writeOnlyHandler instanceof ClearableSessionHandlerInterface) {
+            $this->writeOnlyHandler->clear();
+        }
     }
 }

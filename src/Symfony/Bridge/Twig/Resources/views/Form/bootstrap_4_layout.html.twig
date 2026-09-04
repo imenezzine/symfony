@@ -26,7 +26,7 @@
 
 {% block datetime_widget -%}
     {%- if widget != 'single_text' and not valid -%}
-        {% set attr = attr|merge({class: (attr.class|default('') ~ ' form-control is-invalid')|trim}) -%}
+        {% set attr = attr|merge({class: (attr.class|default('') ~ ' is-invalid')|trim}) -%}
         {% set valid = true %}
     {%- endif -%}
     {{- parent() -}}
@@ -34,7 +34,7 @@
 
 {% block date_widget -%}
     {%- if widget != 'single_text' and not valid -%}
-        {% set attr = attr|merge({class: (attr.class|default('') ~ ' form-control is-invalid')|trim}) -%}
+        {% set attr = attr|merge({class: (attr.class|default('') ~ ' is-invalid')|trim}) -%}
         {% set valid = true %}
     {%- endif -%}
     {{- parent() -}}
@@ -42,7 +42,7 @@
 
 {% block time_widget -%}
     {%- if widget != 'single_text' and not valid -%}
-        {% set attr = attr|merge({class: (attr.class|default('') ~ ' form-control is-invalid')|trim}) -%}
+        {% set attr = attr|merge({class: (attr.class|default('') ~ ' is-invalid')|trim}) -%}
         {% set valid = true %}
     {%- endif -%}
     {{- parent() -}}
@@ -50,7 +50,7 @@
 
 {% block dateinterval_widget -%}
     {%- if widget != 'single_text' and not valid -%}
-        {% set attr = attr|merge({class: (attr.class|default('') ~ ' form-control is-invalid')|trim}) -%}
+        {% set attr = attr|merge({class: (attr.class|default('') ~ ' is-invalid')|trim}) -%}
         {% set valid = true %}
     {%- endif -%}
     {%- if widget == 'single_text' -%}
@@ -211,11 +211,14 @@
 {% block choice_widget_expanded -%}
     <div {{ block('widget_container_attributes') }}>
         {%- for child in form %}
+            {%- set child_attr = child.vars.help ? child.vars.attr|merge({'aria-describedby': child.vars.id ~ '_help'}) : child.vars.attr -%}
             {{- form_widget(child, {
                 parent_label_class: label_attr.class|default(''),
                 translation_domain: choice_translation_domain,
                 valid: valid,
+                attr: child_attr,
             }) -}}
+            {{- form_help(child) -}}
         {% endfor -%}
     </div>
 {%- endblock choice_widget_expanded %}

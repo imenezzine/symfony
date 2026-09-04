@@ -12,6 +12,8 @@
 namespace Symfony\Component\Tui\Terminal;
 
 use Revolt\EventLoop;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\Tui\Input\StdinBuffer;
 
 /**
@@ -45,6 +47,16 @@ final class Terminal implements TerminalInterface
     // Cached terminal dimensions (refreshed on SIGWINCH)
     private ?int $cachedColumns = null;
     private ?int $cachedRows = null;
+
+    public function __construct(
+        private readonly EventDispatcherInterface $eventDispatcher = new EventDispatcher(),
+    ) {
+    }
+
+    public function getEventDispatcher(): EventDispatcherInterface
+    {
+        return $this->eventDispatcher;
+    }
 
     public function start(callable $onInput, callable $onResize, callable $onKittyProtocolActivated): void
     {
@@ -166,7 +178,7 @@ final class Terminal implements TerminalInterface
             $this->refreshDimensions();
         }
 
-        return $this->cachedColumns ?? 80;
+        return $this->cachedColumns ?: 80;
     }
 
     public function getRows(): int
@@ -175,7 +187,7 @@ final class Terminal implements TerminalInterface
             $this->refreshDimensions();
         }
 
-        return $this->cachedRows ?? 24;
+        return $this->cachedRows ?: 24;
     }
 
     public function isKittyProtocolActive(): bool
@@ -252,7 +264,7 @@ final class Terminal implements TerminalInterface
      */
     private function setupStdinBuffer(): void
     {
-        $this->stdinBuffer = new StdinBuffer();
+        $this->stdinBuffer = new StdinBuffer($this->eventDispatcher);
 
         // Kitty protocol response pattern: \x1b[?<flags>u
         $kittyResponsePattern = '/^\x1b\[\?(\d+)u$/';

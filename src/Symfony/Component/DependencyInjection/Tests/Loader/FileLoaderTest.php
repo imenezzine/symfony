@@ -17,7 +17,9 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\Config\FileLocator;
 use Symfony\Component\Config\Loader\LoaderResolver;
 use Symfony\Component\DependencyInjection\Alias;
+use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ChildDefinition;
+use Symfony\Component\DependencyInjection\Compiler\RegisterAutoconfigureAttributesPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
@@ -48,6 +50,9 @@ use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAsAlias\WithAs
 use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAsAlias\WithAsAliasTargetOne;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAsAlias\WithAsAliasTargetTwo;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAsAlias\WithCustomAsAlias;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAutoconfigure\AutoconfiguredService;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeTaggedPriority\FirstHandler;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeTaggedPriority\SecondHandler;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\Utils\NotAService;
 
 class FileLoaderTest extends TestCase
@@ -187,6 +192,8 @@ class FileLoaderTest extends TestCase
         $this->assertFalse($alias->isPublic());
         $this->assertTrue($alias->isPrivate());
 
+        (new RegisterAutoconfigureAttributesPass())->process($container);
+
         $this->assertEquals([FooInterface::class => (new ChildDefinition(''))->addTag('foo')], $container->getAutoconfiguredInstanceof());
     }
 
@@ -206,6 +213,68 @@ class FileLoaderTest extends TestCase
         $this->assertTrue($definition->isAbstract());
         $this->assertTrue($definition->hasTag('container.excluded'));
         $this->assertTrue($definition->isAutoconfigured());
+    }
+
+    public function testRegisterClassesDoesNotDuplicateAutoconfigurationFromAbstractTypes()
+    {
+        $container = new ContainerBuilder();
+        $loader = new TestFileLoader($container, new FileLocator(self::$fixturesPath.'/Fixtures'));
+
+        $loader->registerClasses(
+            (new Definition())->setAutoconfigured(true)->setPublic(true),
+            'Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAutoconfigure\\',
+            'PrototypeAutoconfigure/*'
+        );
+
+        $container->compile();
+
+        $definition = $container->getDefinition(AutoconfiguredService::class);
+        $this->assertCount(1, $definition->getMethodCalls());
+        $this->assertSame('addCall', $definition->getMethodCalls()[0][0]);
+        $this->assertSame([[]], $definition->getTag('prototype_autoconfigure'));
+        $this->assertSame(['from_interface'], $container->get(AutoconfiguredService::class)->calls);
+    }
+
+    public function testRegisterClassesTwiceDoesNotDuplicateAutoconfigurationFromAbstractTypes()
+    {
+        $container = new ContainerBuilder();
+        $loader = new TestFileLoader($container, new FileLocator(self::$fixturesPath.'/Fixtures'));
+
+        foreach ([1, 2] as $load) {
+            $loader->registerClasses(
+                (new Definition())->setAutoconfigured(true)->setPublic(true),
+                'Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeAutoconfigure\\',
+                'PrototypeAutoconfigure/*'
+            );
+        }
+
+        $container->compile();
+
+        $this->assertCount(1, $container->getDefinition(AutoconfiguredService::class)->getMethodCalls());
+        $this->assertSame(['from_interface'], $container->get(AutoconfiguredService::class)->calls);
+    }
+
+    public function testRegisterClassesKeepsTagAttributesFromTheClassOverThoseFromTheInterface()
+    {
+        $container = new ContainerBuilder();
+        $loader = new TestFileLoader($container, new FileLocator(self::$fixturesPath.'/Fixtures'));
+
+        $loader->registerClasses(
+            (new Definition())->setAutoconfigured(true)->setPublic(true),
+            'Symfony\Component\DependencyInjection\Tests\Fixtures\PrototypeTaggedPriority\\',
+            'PrototypeTaggedPriority/*'
+        );
+        $container->register('handlers', \ArrayObject::class)
+            ->setPublic(true)
+            ->addArgument(new TaggedIteratorArgument('app.handler'));
+
+        $container->compile();
+
+        $this->assertSame([['priority' => 10], []], $container->getDefinition(FirstHandler::class)->getTag('app.handler'));
+        $this->assertSame([['priority' => 100], []], $container->getDefinition(SecondHandler::class)->getTag('app.handler'));
+
+        $handlers = array_map(strval(...), $container->getDefinition('handlers')->getArgument(0)->getValues());
+        $this->assertSame([SecondHandler::class, FirstHandler::class], $handlers);
     }
 
     public function testMissingParentClass()

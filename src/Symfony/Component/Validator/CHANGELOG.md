@@ -4,8 +4,16 @@ CHANGELOG
 8.2
 ---
 
+ * Accept the `::class` constant of the annotated class in `GroupSequence` definitions
+ * Add the `cascadeCurrentGroup` option to `GroupSequence` and `GroupSequenceProvider`
+ * Remove the unused `GroupSequence::$cascadedGroup` property
+ * Add the `restrictGroups` option to the `Valid` constraint
+ * Add support for `BcMath\Number` values in the `Range` and comparison constraints
  * Add the `Cron` constraint to validate cron expressions
+ * Add the `message` option to the `Callback` constraint; the callback must then return a boolean, and a violation is raised when it returns `false`
  * Allow passing `int`, `float`, `\Stringable` and `\DateTimeInterface` values to `ConstraintViolationBuilderInterface::setParameter()`
+ * Stop narrowing the `File` constraint's `mimeTypes` option with mime types auto-derived from the matched extension when `extensions` is configured
+ * Add support for reading objects properties with `Unique` constraint `fields` option
 
 8.1
 ---

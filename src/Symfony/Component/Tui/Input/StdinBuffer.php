@@ -11,6 +11,10 @@
 
 namespace Symfony\Component\Tui\Input;
 
+use Symfony\Component\Tui\Event\PasteCompletedEvent;
+use Symfony\Component\Tui\Event\PasteStartedEvent;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
+
 /**
  * Buffers and splits batched stdin input into individual sequences.
  *
@@ -38,7 +42,13 @@ final class StdinBuffer
     private ?\Closure $onPaste = null;
 
     private bool $inPaste = false;
+    private bool $pasteOverflowed = false;
     private string $pasteBuffer = '';
+
+    public function __construct(
+        private readonly ?EventDispatcherInterface $eventDispatcher = null,
+    ) {
+    }
 
     /**
      * Set callback for individual key sequences.
@@ -77,42 +87,79 @@ final class StdinBuffer
         $this->buffer .= $data;
 
         while ('' !== $this->buffer) {
-            // Check for bracketed paste start
-            if (str_starts_with($this->buffer, "\x1b[200~")) {
+            // Check for bracketed paste start. While a paste is running the
+            // marker is content, not a new paste: the end marker is the only
+            // thing that closes it.
+            if (!$this->inPaste && str_starts_with($this->buffer, "\x1b[200~")) {
                 $this->inPaste = true;
                 $this->pasteBuffer = '';
                 $this->buffer = substr($this->buffer, 6);
+                $this->eventDispatcher?->dispatch(new PasteStartedEvent());
                 continue;
             }
 
             // If in paste mode, accumulate until end marker
             if ($this->inPaste) {
                 if (false !== $endPos = strpos($this->buffer, "\x1b[201~")) {
-                    $this->pasteBuffer .= substr($this->buffer, 0, $endPos);
+                    $content = null;
+
+                    if (!$this->pasteOverflowed) {
+                        $this->pasteBuffer .= substr($this->buffer, 0, $endPos);
+                        $content = $this->pasteBuffer;
+                    }
+
                     $this->buffer = substr($this->buffer, $endPos + 6);
                     $this->inPaste = false;
-
-                    if (null !== $this->onPaste) {
-                        ($this->onPaste)($this->pasteBuffer);
-                    }
+                    $this->pasteOverflowed = false;
                     $this->pasteBuffer = '';
+
+                    $this->completePaste($content);
                 } else {
-                    // Still waiting for end marker
-                    $this->pasteBuffer .= $this->buffer;
-                    $this->buffer = '';
-
-                    // Cap reached without an end marker: discard the partial
-                    // paste and emit a visible overflow notice through the
-                    // paste callback so the user can see why their paste did
-                    // not land. Defense against unbounded buffering from a
-                    // missing/spoofed end marker.
-                    if (\strlen($this->pasteBuffer) > self::MAX_PASTE_BYTES) {
-                        $this->pasteBuffer = '';
-                        $this->inPaste = false;
-
-                        if (null !== $this->onPaste) {
-                            ($this->onPaste)(self::PASTE_OVERFLOW_MESSAGE);
+                    // Still waiting for the end marker. A read can split it, so
+                    // hold back a trailing part of it instead of moving it into
+                    // the content, where it can no longer close the paste.
+                    $hold = 0;
+                    for ($n = min(5, \strlen($this->buffer)); $n > 0; --$n) {
+                        if (str_starts_with("\x1b[201~", substr($this->buffer, -$n))) {
+                            $hold = $n;
+                            break;
                         }
+                    }
+
+                    if (0 < $hold) {
+                        $chunk = substr($this->buffer, 0, -$hold);
+                        $this->buffer = substr($this->buffer, -$hold);
+                    } else {
+                        $chunk = $this->buffer;
+                        $this->buffer = '';
+                    }
+
+                    if (!$this->pasteOverflowed) {
+                        $this->pasteBuffer .= $chunk;
+
+                        // Cap reached without an end marker: discard the
+                        // content and stop accumulating, as a defense against
+                        // unbounded buffering from a missing/spoofed end
+                        // marker. The paste stays open, because the terminal
+                        // is still sending it and the rest of it must not be
+                        // delivered as key events. A visible overflow notice
+                        // goes out through the paste callback so the user can
+                        // see why their paste did not land. The check has to
+                        // run on the held path too: a writer that ends every
+                        // chunk with a byte of the end marker would otherwise
+                        // never reach it.
+                        if (\strlen($this->pasteBuffer) > self::MAX_PASTE_BYTES) {
+                            $this->pasteBuffer = '';
+                            $this->pasteOverflowed = true;
+
+                            if (null !== $this->onPaste) {
+                                ($this->onPaste)(self::PASTE_OVERFLOW_MESSAGE);
+                            }
+                        }
+                    }
+
+                    if (0 < $hold) {
+                        break;
                     }
                 }
                 continue;
@@ -151,9 +198,15 @@ final class StdinBuffer
      */
     public function clear(): void
     {
+        $wasInPaste = $this->inPaste;
         $this->buffer = '';
         $this->pasteBuffer = '';
         $this->inPaste = false;
+        $this->pasteOverflowed = false;
+
+        if ($wasInPaste) {
+            $this->completePaste(null);
+        }
     }
 
     /**
@@ -164,11 +217,21 @@ final class StdinBuffer
      */
     public function flush(): void
     {
-        // If we have a single ESC waiting, emit it as a standalone Escape key
-        if ("\x1b" === $this->buffer && null !== $this->onData) {
+        // If we have a single ESC waiting, emit it as a standalone Escape key.
+        // While a paste is open that ESC is the start of a held end marker
+        // instead, and emitting it would leave the paste with no way to close.
+        if (!$this->inPaste && "\x1b" === $this->buffer && null !== $this->onData) {
             ($this->onData)("\x1b");
             $this->buffer = '';
         }
+    }
+
+    private function completePaste(?string $content): void
+    {
+        if (null !== $content && null !== $this->onPaste) {
+            ($this->onPaste)($content);
+        }
+        $this->eventDispatcher?->dispatch(new PasteCompletedEvent());
     }
 
     /**
@@ -285,15 +348,6 @@ final class StdinBuffer
             // CSI terminators: @ through ~
             if ($char >= '@' && $char <= '~') {
                 $sequence = substr($this->buffer, 0, $i + 1);
-                $payload = substr($this->buffer, 2, $i - 1);
-
-                // Special handling for SGR mouse sequences ESC[<B;X;Ym or ESC[<B;X;YM
-                if (str_starts_with($payload, '<')) {
-                    if (!preg_match('/^<\d+;\d+;\d+[Mm]$/', $payload)) {
-                        return null;
-                    }
-                }
-
                 $this->buffer = substr($this->buffer, $i + 1);
 
                 return $sequence;

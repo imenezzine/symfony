@@ -12,7 +12,10 @@
 namespace Symfony\Component\PropertyInfo\Tests\Extractor;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhp;
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\PropertyInfo\Exception\MappingException;
 use Symfony\Component\PropertyInfo\Extractor\ReflectionExtractor;
 use Symfony\Component\PropertyInfo\PropertyReadInfo;
 use Symfony\Component\PropertyInfo\PropertyWriteInfo;
@@ -22,10 +25,18 @@ use Symfony\Component\PropertyInfo\Tests\Fixtures\ConstructorDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\DefaultValue;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Dummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyWithAccessorWithoutProperty;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyWithGetterSetter;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyWithHasser;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyWithNonAsciiStaticAccessor;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyWithStaticConstructorAndAccessor;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyWithStaticMutator;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\FalseAccessorDummy;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\HookedProperties;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\MultiParameterAdderDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\MultiParameterAdderParentDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\MultiParameterAdderValue;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\MutatorPrefixesDummy;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\NotAnAccessorDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\NotInstantiable;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\ParentDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Php71Dummy;
@@ -41,6 +52,11 @@ use Symfony\Component\PropertyInfo\Tests\Fixtures\SnakeCaseDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\UnderscoreDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\VirtualProperties;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\VoidNeverReturnTypeDummy;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\WithAccessors\Bar;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\WithAccessors\DivergingTypes;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\WithAccessors\InvalidMapping;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\WithAccessors\JustAdderAndRemover;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\WithAccessors\JustGetterOrSetter;
 use Symfony\Component\TypeInfo\Type;
 
 /**
@@ -180,6 +196,11 @@ class ReflectionExtractorTest extends TestCase
         );
     }
 
+    public function testGetPropertiesIgnoresMethodsThatOnlyLookLikeAccessors()
+    {
+        $this->assertSame(['real'], $this->extractor->getProperties(NotAnAccessorDummy::class));
+    }
+
     public function testGetPropertiesWithNoPrefixes()
     {
         $noPrefixExtractor = new ReflectionExtractor([], [], []);
@@ -237,6 +258,74 @@ class ReflectionExtractorTest extends TestCase
     public function testIsNotWritableWhenAdderRequiresSeveralParameters()
     {
         $this->assertFalse($this->extractor->isWritable(MultiParameterAdderParentDummy::class, 'link'));
+    }
+
+    public function testGetPropertiesWithAttribute()
+    {
+        $extractor = new ReflectionExtractor();
+
+        self::assertSame(['priority', 'tags', 'mailbox', 'active', 'name'], $extractor->getProperties(Bar::class));
+    }
+
+    // Standard "get" prefix
+    #[TestWith([Dummy::class, 'getA', 'a'])]
+    #[TestWith([Dummy::class, 'getDOB', 'DOB'])]
+    #[TestWith([Dummy::class, 'getId', 'Id'])]
+    #[TestWith([Dummy::class, 'get123', '123'])]
+    #[TestWith([Dummy::class, 'getXTotals', 'xTotals'])]
+    // Standard "set" prefix
+    #[TestWith([Dummy::class, 'setB', 'B'])]
+    #[TestWith([Dummy::class, 'setSelf', 'self'])]
+    #[TestWith([Dummy::class, 'setRealParent', 'realParent'])]
+    #[TestWith([Dummy::class, 'setDate', 'date'])]
+    // "is" / "has" / "can" prefixes
+    #[TestWith([Dummy::class, 'isC', 'c'])]
+    #[TestWith([Dummy::class, 'canD', 'd'])]
+    #[TestWith([Dummy::class, 'hasElement', 'element'])]
+    #[TestWith([DummyWithHasser::class, 'hasUrl', 'url'])]
+    #[TestWith([DummyWithHasser::class, 'isEnabled', 'enabled'])]
+    #[TestWith([DummyWithAccessorWithoutProperty::class, 'canView', 'view'])]
+    #[TestWith([DummyWithAccessorWithoutProperty::class, 'isActive', 'active'])]
+    #[TestWith([DummyWithAccessorWithoutProperty::class, 'hasFromConstructor', 'fromConstructor'])]
+    // Array mutators with singularization
+    #[TestWith([AdderRemoverDummy::class, 'addAnalyse', 'analyses'])]
+    #[TestWith([AdderRemoverDummy::class, 'removeFoot', 'feet'])]
+    #[TestWith([Dummy::class, 'addDate', 'date'])]
+    // False accessors (ctype_lower filter)
+    #[TestWith([FalseAccessorDummy::class, 'hash', null])]
+    #[TestWith([FalseAccessorDummy::class, 'cancel', null])]
+    #[TestWith([FalseAccessorDummy::class, 'gettings', null])]
+    #[TestWith([FalseAccessorDummy::class, 'settings', null])]
+    #[TestWith([FalseAccessorDummy::class, 'isolate', null])]
+    #[TestWith([FalseAccessorDummy::class, 'getValid', 'valid'])]
+    // Uppercase property name
+    #[TestWith([FalseAccessorDummy::class, 'getFoo', 'Foo'])]
+    // Underscore after prefix
+    #[TestWith([FalseAccessorDummy::class, 'get_foo', '_foo'])]
+    // Static methods
+    #[TestWith([Dummy::class, 'getStatic', null])]
+    #[TestWith([Dummy::class, 'staticGetter', null])]
+    #[TestWith([Dummy::class, 'staticSetter', null])]
+    // Non-existent methods
+    #[TestWith([Dummy::class, 'nonExistentMethod', null])]
+    #[TestWith(['NonExistent\\ClassName', 'someMethod', null])]
+    // #[WithAccessors] attribute
+    #[TestWith([Bar::class, 'currentPriority', 'priority'])]
+    #[TestWith([Bar::class, 'changePriority', 'priority'])]
+    #[TestWith([Bar::class, 'allTags', 'tags'])]
+    #[TestWith([Bar::class, 'replaceTags', 'tags'])]
+    #[TestWith([Bar::class, 'attachTag', 'tags'])]
+    #[TestWith([Bar::class, 'detachTag', 'tags'])]
+    #[TestWith([Bar::class, 'isEnabled', 'active'])]
+    #[TestWith([Bar::class, 'retrieveName', 'name'])]
+    #[TestWith([Bar::class, 'renameTo', 'name'])]
+    #[TestWith([JustGetterOrSetter::class, 'checkVisibility', 'visible'])]
+    #[TestWith([JustGetterOrSetter::class, 'updateStatus', 'status'])]
+    #[TestWith([JustAdderAndRemover::class, 'enqueue', 'items'])]
+    #[TestWith([JustAdderAndRemover::class, 'dequeue', 'items'])]
+    public function testGetPropertyName(string $class, string $method, ?string $expectedProperty)
+    {
+        $this->assertSame($expectedProperty, $this->extractor->getPropertyName($class, $method));
     }
 
     public function testReadonlyPropertiesAreNotWriteable()
@@ -297,6 +386,8 @@ class ReflectionExtractorTest extends TestCase
             ['Id', false],
             ['Guid', true],
             ['guid', false],
+            ['privateMutator', false],
+            ['protectedMutator', false],
         ];
     }
 
@@ -306,12 +397,36 @@ class ReflectionExtractorTest extends TestCase
         $this->assertTrue($this->extractor->isReadable(SnakeCaseDummy::class, 'snake_readonly'));
     }
 
+    public function testIsReadableWithAttribute()
+    {
+        $extractor = new ReflectionExtractor();
+
+        self::assertTrue($extractor->isReadable(Bar::class, 'name'));
+        self::assertTrue($extractor->isReadable(Bar::class, 'priority'));
+
+        self::assertTrue($extractor->isReadable(JustGetterOrSetter::class, 'visible'));
+        self::assertFalse($extractor->isReadable(JustGetterOrSetter::class, 'status'));
+        self::assertFalse($extractor->isReadable(JustAdderAndRemover::class, 'items'));
+    }
+
     public function testIsWriteableSnakeCase()
     {
         $this->assertTrue($this->extractor->isWritable(SnakeCaseDummy::class, 'snake_property'));
         $this->assertFalse($this->extractor->isWritable(SnakeCaseDummy::class, 'snake_readonly'));
         // Ensure that it's still possible to write to the property using the (old) snake name
         $this->assertTrue($this->extractor->isWritable(SnakeCaseDummy::class, 'snake_method'));
+    }
+
+    public function testIsWritableWithAttribute()
+    {
+        $extractor = new ReflectionExtractor();
+
+        self::assertTrue($extractor->isWritable(Bar::class, 'name'));
+        self::assertTrue($extractor->isWritable(Bar::class, 'priority'));
+
+        self::assertFalse($extractor->isWritable(JustGetterOrSetter::class, 'visible'));
+        self::assertTrue($extractor->isWritable(JustGetterOrSetter::class, 'status'));
+        self::assertTrue($extractor->isWritable(JustAdderAndRemover::class, 'items'));
     }
 
     public function testSingularize()
@@ -410,6 +525,71 @@ class ReflectionExtractorTest extends TestCase
         ];
     }
 
+    public function testGetReadAccessorPrefersTheGetterSetterOverIsHasCanAccessors()
+    {
+        $readAccessor = $this->extractor->getReadInfo(DummyWithGetterSetter::class, 'payments', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyReadInfo::TYPE_METHOD, $readAccessor->getType());
+        $this->assertSame('payments', $readAccessor->getName());
+
+        $readAccessor = $this->extractor->getReadInfo(DummyWithGetterSetter::class, 'payments');
+
+        $this->assertSame(PropertyReadInfo::TYPE_METHOD, $readAccessor->getType());
+        $this->assertSame('hasPayments', $readAccessor->getName());
+    }
+
+    public function testGetReadAccessorDoesNotPreferTheStaticNamedConstructor()
+    {
+        $readAccessor = $this->extractor->getReadInfo(DummyWithStaticConstructorAndAccessor::class, 'zero', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyReadInfo::TYPE_METHOD, $readAccessor->getType());
+        $this->assertSame('isZero', $readAccessor->getName());
+    }
+
+    public function testGetReadAccessorTriesTheStaticMethodNamedAfterThePropertyLast()
+    {
+        $readAccessor = $this->extractor->getReadInfo(DummyWithStaticConstructorAndAccessor::class, 'one', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyReadInfo::TYPE_METHOD, $readAccessor->getType());
+        $this->assertSame('one', $readAccessor->getName());
+        $this->assertTrue($readAccessor->isStatic());
+    }
+
+    public function testGetReadAccessorKeepsAConfiguredStaticAccessorWhenGetterSetterExtractionIsDisabled()
+    {
+        $extractor = new ReflectionExtractor(null, ['']);
+        $readAccessor = $extractor->getReadInfo(DummyWithNonAsciiStaticAccessor::class, 'émail');
+
+        $this->assertSame(PropertyReadInfo::TYPE_METHOD, $readAccessor->getType());
+        $this->assertSame('émail', $readAccessor->getName());
+        $this->assertTrue($readAccessor->isStatic());
+    }
+
+    public function testGetReadAccessorPrefersThePropertyOverTheStaticMethodNamedAfterIt()
+    {
+        $readAccessor = $this->extractor->getReadInfo(DummyWithStaticConstructorAndAccessor::class, 'positive', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyReadInfo::TYPE_PROPERTY, $readAccessor->getType());
+        $this->assertSame('positive', $readAccessor->getName());
+    }
+
+    #[TestWith(['name', 'retrieveName'])]
+    #[TestWith(['priority', 'currentPriority'])]
+    #[TestWith(['tags', 'allTags'])]
+    #[TestWith(['mailbox', 'readMailbox'])]
+    #[TestWith(['active', 'isEnabled'])]
+    public function testGetReadAccessorWithAttribute(string $property, string $expectedAccessorName)
+    {
+        $extractor = new ReflectionExtractor();
+        $readAccessor = $extractor->getReadInfo(Bar::class, $property);
+
+        self::assertNotNull($readAccessor);
+        self::assertSame(PropertyReadInfo::TYPE_METHOD, $readAccessor->getType());
+        self::assertSame($expectedAccessorName, $readAccessor->getName());
+        self::assertSame(PropertyReadInfo::VISIBILITY_PUBLIC, $readAccessor->getVisibility());
+        self::assertFalse($readAccessor->isStatic());
+    }
+
     #[DataProvider('writeMutatorProvider')]
     public function testGetWriteMutator($class, $property, $allowConstruct, $found, $type, $name, $addName, $removeName, $visibility, $static)
     {
@@ -463,7 +643,7 @@ class ReflectionExtractorTest extends TestCase
             [Dummy::class, 'foo', false, true, PropertyWriteInfo::TYPE_PROPERTY, 'foo', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71Dummy::class, 'bar', false, true, PropertyWriteInfo::TYPE_METHOD, 'setBar', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71Dummy::class, 'string', false, false, '', '', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
-            [Php71Dummy::class, 'string', true, true,  PropertyWriteInfo::TYPE_CONSTRUCTOR, 'string', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
+            [Php71Dummy::class, 'string', true, true, PropertyWriteInfo::TYPE_CONSTRUCTOR, 'string', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71Dummy::class, 'baz', false, true, PropertyWriteInfo::TYPE_ADDER_AND_REMOVER, null, 'addBaz', 'removeBaz', PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71DummyExtended::class, 'bar', false, true, PropertyWriteInfo::TYPE_METHOD, 'setBar', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71DummyExtended::class, 'string', false, false, -1, '', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
@@ -471,7 +651,7 @@ class ReflectionExtractorTest extends TestCase
             [Php71DummyExtended::class, 'baz', false, true, PropertyWriteInfo::TYPE_ADDER_AND_REMOVER, null, 'addBaz', 'removeBaz', PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71DummyExtended2::class, 'bar', false, true, PropertyWriteInfo::TYPE_METHOD, 'setBar', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71DummyExtended2::class, 'string', false, false, '', '', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
-            [Php71DummyExtended2::class, 'string', true, false,  '', '', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
+            [Php71DummyExtended2::class, 'string', true, false, '', '', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [Php71DummyExtended2::class, 'baz', false, true, PropertyWriteInfo::TYPE_ADDER_AND_REMOVER, null, 'addBaz', 'removeBaz', PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [SnakeCaseDummy::class, 'snake_property', false, true, PropertyWriteInfo::TYPE_METHOD, 'setSnakeProperty', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
             [SnakeCaseDummy::class, 'snake_method', false, true, PropertyWriteInfo::TYPE_METHOD, 'setSnake_method', null, null, PropertyWriteInfo::VISIBILITY_PUBLIC, false],
@@ -488,6 +668,108 @@ class ReflectionExtractorTest extends TestCase
         self::assertNotNull($writeMutator);
         self::assertSame(PropertyWriteInfo::TYPE_NONE, $writeMutator->getType());
         self::assertSame([\sprintf('The property "baz" in class "%s" can be defined with the methods "addBaz()", "removeBaz()" but the new value must be an array or an instance of \Traversable', Php71Dummy::class)], $writeMutator->getErrors());
+    }
+
+    public function testGetWriteMutatorPrefersTheSetterOverTheStaticMethodNamedAfterTheProperty()
+    {
+        $writeMutator = $this->extractor->getWriteInfo(DummyWithStaticMutator::class, 'quantity', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyWriteInfo::TYPE_METHOD, $writeMutator->getType());
+        $this->assertSame('setQuantity', $writeMutator->getName());
+    }
+
+    public function testGetWriteMutatorPrefersThePropertyOverTheStaticMethodNamedAfterIt()
+    {
+        $writeMutator = $this->extractor->getWriteInfo(DummyWithStaticMutator::class, 'value', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyWriteInfo::TYPE_PROPERTY, $writeMutator->getType());
+        $this->assertSame('value', $writeMutator->getName());
+    }
+
+    public function testGetWriteMutatorTriesTheStaticMethodNamedAfterThePropertyLast()
+    {
+        $writeMutator = $this->extractor->getWriteInfo(DummyWithStaticMutator::class, 'amount', ['enable_getter_setter_extraction' => true]);
+
+        $this->assertSame(PropertyWriteInfo::TYPE_METHOD, $writeMutator->getType());
+        $this->assertSame('amount', $writeMutator->getName());
+        $this->assertTrue($writeMutator->isStatic());
+    }
+
+    #[TestWith([Bar::class, 'name', PropertyWriteInfo::TYPE_METHOD, 'renameTo', null, null])]
+    #[TestWith([Bar::class, 'priority', PropertyWriteInfo::TYPE_METHOD, 'changePriority', null, null])]
+    #[TestWith([Bar::class, 'tags', PropertyWriteInfo::TYPE_ADDER_AND_REMOVER, 'replaceTags', 'attachTag', 'detachTag'])]
+    #[TestWith([Bar::class, 'mailbox', PropertyWriteInfo::TYPE_ADDER_AND_REMOVER, 'replaceMailbox', 'attachLetter', 'detachLetter'])]
+    #[TestWith([JustGetterOrSetter::class, 'status', PropertyWriteInfo::TYPE_METHOD, 'updateStatus', null, null])]
+    public function testGetWriteMutatorWithAttribute(string $class, string $property, string $type, string $name, ?string $addName, ?string $removeName)
+    {
+        $extractor = new ReflectionExtractor();
+        $writeMutator = $extractor->getWriteInfo($class, $property);
+
+        self::assertNotNull($writeMutator);
+        self::assertSame($type, $writeMutator->getType());
+
+        if (PropertyWriteInfo::TYPE_ADDER_AND_REMOVER === $writeMutator->getType()) {
+            self::assertNotNull($writeMutator->getAdderInfo());
+            self::assertSame($addName, $writeMutator->getAdderInfo()->getName());
+            self::assertNotNull($writeMutator->getRemoverInfo());
+            self::assertSame($removeName, $writeMutator->getRemoverInfo()->getName());
+        } elseif (PropertyWriteInfo::TYPE_METHOD === $writeMutator->getType()) {
+            self::assertSame($name, $writeMutator->getName());
+            self::assertSame(PropertyWriteInfo::VISIBILITY_PUBLIC, $writeMutator->getVisibility());
+            self::assertFalse($writeMutator->isStatic());
+        }
+    }
+
+    public function testDisabledAdderAndRemoverWithAttributeReturnsError()
+    {
+        $extractor = new ReflectionExtractor();
+        $writeMutator = $extractor->getWriteInfo(JustAdderAndRemover::class, 'items', [
+            'enable_adder_remover_extraction' => false,
+        ]);
+
+        self::assertNotNull($writeMutator);
+        self::assertSame(PropertyWriteInfo::TYPE_NONE, $writeMutator->getType());
+        self::assertSame([\sprintf('The property "items" in class "%s" can be defined with the methods "enqueue()", "dequeue()" but the new value must be an array or an instance of \Traversable', JustAdderAndRemover::class)], $writeMutator->getErrors());
+    }
+
+    #[DataProvider('accessorPrefixesProvider')]
+    public function testAttributeAccessorWinsWhateverThePrefixesAre(?array $accessorPrefixes)
+    {
+        $extractor = new ReflectionExtractor(accessorPrefixes: $accessorPrefixes);
+
+        self::assertEquals(Type::bool(), $extractor->getType(DivergingTypes::class, 'enabled'));
+    }
+
+    #[DataProvider('mutatorPrefixesProvider')]
+    public function testAttributeAdderWinsWhateverThePrefixesAre(?array $mutatorPrefixes)
+    {
+        $extractor = new ReflectionExtractor(mutatorPrefixes: $mutatorPrefixes);
+
+        self::assertEquals(Type::list(Type::string()), $extractor->getType(DivergingTypes::class, 'items'));
+    }
+
+    public static function accessorPrefixesProvider(): iterable
+    {
+        yield 'defaults' => [null];
+        yield 'is before get' => [['is', 'get', 'has', 'can']];
+        yield 'no get at all' => [['is']];
+    }
+
+    public static function mutatorPrefixesProvider(): iterable
+    {
+        yield 'defaults' => [null];
+        yield 'set before add' => [['set', 'add', 'remove']];
+        yield 'no add at all' => [['set']];
+    }
+
+    public function testMappingExceptionOnInvalidAccessorMethod()
+    {
+        $extractor = new ReflectionExtractor();
+
+        $this->expectException(MappingException::class);
+        $this->expectExceptionMessage('Invalid #[WithAccessors] mapping on property "prop" of class');
+
+        $extractor->isReadable(InvalidMapping::class, 'prop');
     }
 
     public function testGetWriteInfoReadonlyProperties()
@@ -548,10 +830,20 @@ class ReflectionExtractorTest extends TestCase
     public function testVirtualProperties()
     {
         $this->assertTrue($this->extractor->isReadable(VirtualProperties::class, 'virtualNoSetHook'));
+        $this->assertTrue($this->extractor->getReadInfo(VirtualProperties::class, 'virtualNoSetHook')->isVirtual());
+        $this->assertTrue($this->extractor->getReadInfo(VirtualProperties::class, 'virtualNoSetHook')->hasHook());
         $this->assertTrue($this->extractor->isReadable(VirtualProperties::class, 'virtualSetHookOnly'));
+        $this->assertFalse($this->extractor->getReadInfo(VirtualProperties::class, 'virtualSetHookOnly')->isVirtual());
+        $this->assertFalse($this->extractor->getReadInfo(VirtualProperties::class, 'virtualSetHookOnly')->hasHook());
+        $this->assertTrue($this->extractor->isReadable(VirtualProperties::class, 'virtualSetOnly'));
+        $this->assertTrue($this->extractor->getReadInfo(VirtualProperties::class, 'virtualSetOnly')->isVirtual());
+        $this->assertFalse($this->extractor->getReadInfo(VirtualProperties::class, 'virtualSetOnly')->hasHook());
         $this->assertTrue($this->extractor->isReadable(VirtualProperties::class, 'virtualHook'));
+        $this->assertFalse($this->extractor->getReadInfo(VirtualProperties::class, 'virtualHook')->isVirtual());
+        $this->assertTrue($this->extractor->getReadInfo(VirtualProperties::class, 'virtualHook')->hasHook());
         $this->assertFalse($this->extractor->isWritable(VirtualProperties::class, 'virtualNoSetHook'));
         $this->assertTrue($this->extractor->isWritable(VirtualProperties::class, 'virtualSetHookOnly'));
+        $this->assertTrue($this->extractor->isWritable(VirtualProperties::class, 'virtualSetOnly'));
         $this->assertTrue($this->extractor->isWritable(VirtualProperties::class, 'virtualHook'));
     }
 
@@ -593,6 +885,20 @@ class ReflectionExtractorTest extends TestCase
         $this->assertSame(PropertyWriteInfo::TYPE_PROPERTY, $writeMutator->getType());
         $this->assertSame($readVisibility, $readMutator->getVisibility());
         $this->assertSame($writeVisibility, $writeMutator->getVisibility());
+    }
+
+    #[RequiresPhp('>=8.4.0')]
+    public function testHookedProperties()
+    {
+        $this->assertTrue($this->extractor->getReadInfo(HookedProperties::class, 'hookGetOnly')->hasHook());
+        $this->assertFalse($this->extractor->getReadInfo(HookedProperties::class, 'hookGetOnly')->isVirtual());
+        $this->assertFalse($this->extractor->getWriteInfo(HookedProperties::class, 'hookGetOnly')->hasHook());
+        $this->assertFalse($this->extractor->getReadInfo(HookedProperties::class, 'hookSetOnly')->hasHook());
+        $this->assertFalse($this->extractor->getReadInfo(HookedProperties::class, 'hookSetOnly')->isVirtual());
+        $this->assertTrue($this->extractor->getWriteInfo(HookedProperties::class, 'hookSetOnly')->hasHook());
+        $this->assertTrue($this->extractor->getReadInfo(HookedProperties::class, 'hookBoth')->hasHook());
+        $this->assertFalse($this->extractor->getReadInfo(HookedProperties::class, 'hookBoth')->isVirtual());
+        $this->assertTrue($this->extractor->getWriteInfo(HookedProperties::class, 'hookBoth')->hasHook());
     }
 
     public static function provideAsymmetricVisibilityMutator(): iterable
@@ -757,6 +1063,26 @@ class ReflectionExtractorTest extends TestCase
         yield ['defaultNull', null];
     }
 
+    #[DataProvider('provideTypesWithAttribute')]
+    public function testExtractTypeWithAttribute(string $class, string $property, Type $type)
+    {
+        $extractor = new ReflectionExtractor();
+
+        self::assertEquals($type, $extractor->getType($class, $property));
+    }
+
+    public static function provideTypesWithAttribute(): iterable
+    {
+        yield [Bar::class, 'name', Type::string()];
+        yield [Bar::class, 'priority', Type::int()];
+        yield [Bar::class, 'tags', Type::list(Type::int())];
+        yield [Bar::class, 'mailbox', Type::list(Type::int())];
+        yield [Bar::class, 'active', Type::bool()];
+        yield [JustGetterOrSetter::class, 'visible', Type::bool()];
+        yield [JustGetterOrSetter::class, 'status', Type::nullable(Type::string())];
+        yield [JustAdderAndRemover::class, 'items', Type::list(Type::int())];
+    }
+
     #[DataProvider('constructorTypesProvider')]
     public function testExtractTypeConstructor(string $class, string $property, ?Type $type)
     {
@@ -861,5 +1187,24 @@ class ReflectionExtractorTest extends TestCase
         $this->assertEquals(Type::bool(), $this->extractor->getType(DummyWithAccessorWithoutProperty::class, 'view'));
         $this->assertEquals(Type::bool(), $this->extractor->getType(DummyWithAccessorWithoutProperty::class, 'active'));
         $this->assertEquals(Type::bool(), $this->extractor->getType(DummyWithAccessorWithoutProperty::class, 'fromConstructor'));
+    }
+
+    public function testTypeAndWriteInfoUseTheSameMutator()
+    {
+        $setFirstExtractor = new ReflectionExtractor(['set', 'with']);
+
+        $this->assertEquals(Type::object(\stdClass::class), $setFirstExtractor->getType(MutatorPrefixesDummy::class, 'prop'));
+        $this->assertSame('setProp', $setFirstExtractor->getWriteInfo(MutatorPrefixesDummy::class, 'prop')->getName());
+
+        $withFirstExtractor = new ReflectionExtractor(['with', 'set']);
+
+        $this->assertEquals(Type::string(), $withFirstExtractor->getType(MutatorPrefixesDummy::class, 'prop'));
+        $this->assertSame('withProp', $withFirstExtractor->getWriteInfo(MutatorPrefixesDummy::class, 'prop')->getName());
+    }
+
+    public function testSingularPropertyTypeComesFromTheAdder()
+    {
+        $this->assertEquals(Type::list(Type::object(\DateTime::class)), $this->extractor->getType(MutatorPrefixesDummy::class, 'item'));
+        $this->assertSame('addItem', $this->extractor->getWriteInfo(MutatorPrefixesDummy::class, 'item')->getAdderInfo()->getName());
     }
 }

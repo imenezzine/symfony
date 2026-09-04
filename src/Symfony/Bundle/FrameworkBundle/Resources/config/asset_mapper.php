@@ -108,6 +108,8 @@ return static function (ContainerConfigurator $container) {
             ->args([
                 service('.inner'),
                 service('asset_mapper'),
+                service('request_stack'),
+                abstract_arg('dev server public prefix'),
             ])
 
         ->set('asset_mapper.dev_server_subscriber', AssetMapperDevServerSubscriber::class)
@@ -178,6 +180,7 @@ return static function (ContainerConfigurator $container) {
                 service('asset_mapper.importmap.config_reader'),
                 service('asset_mapper.importmap.remote_package_downloader'),
                 service('asset_mapper.importmap.resolver'),
+                service('asset_mapper.importmap.update_checker'),
             ])
         ->alias(ImportMapManager::class, 'asset_mapper.importmap.manager')
 
@@ -186,6 +189,7 @@ return static function (ContainerConfigurator $container) {
                 service('asset_mapper'),
                 service('asset_mapper.compiled_asset_mapper_config_reader'),
                 service('asset_mapper.importmap.config_reader'),
+                abstract_arg('integrity hash algorithms'),
             ])
 
         ->set('asset_mapper.importmap.remote_package_storage', RemotePackageStorage::class)
@@ -228,7 +232,11 @@ return static function (ContainerConfigurator $container) {
         ->args([
             service('asset_mapper.importmap.config_reader'),
             service('asset_mapper.http_client'),
+            service('clock')->nullOnInvalid(),
+            abstract_arg('minimum release age'),
+            service('logger')->nullOnInvalid(),
         ])
+        ->tag('monolog.logger', ['channel' => 'asset_mapper'])
 
         ->set('asset_mapper.importmap.command.require', ImportMapRequireCommand::class)
             ->args([

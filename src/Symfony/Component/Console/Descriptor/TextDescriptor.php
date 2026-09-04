@@ -15,9 +15,12 @@ use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Helper\Helper;
+use Symfony\Component\Console\Helper\OutputWrapper;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\StreamOutput;
+use Symfony\Component\Console\Terminal;
 
 /**
  * Text descriptor.
@@ -28,6 +31,9 @@ use Symfony\Component\Console\Input\InputOption;
  */
 class TextDescriptor extends Descriptor
 {
+    private const MIN_DESCRIPTION_WIDTH = 20;
+    private const FALLBACK_DESCRIPTION_INDENT = 6;
+
     protected function describeInputArgument(InputArgument $argument, array $options = []): void
     {
         if (null !== $argument->getDefault() && (!\is_array($argument->getDefault()) || \count($argument->getDefault()))) {
@@ -38,14 +44,28 @@ class TextDescriptor extends Descriptor
 
         $totalWidth = $options['total_width'] ?? Helper::width($argument->getName());
         $spacingWidth = $totalWidth - Helper::width($argument->getName());
+        $terminalWidth = $this->getTerminalWidth($options);
 
-        $this->writeText(\sprintf('  <info>%s</info>  %s%s%s',
-            $argument->getName(),
-            str_repeat(' ', $spacingWidth),
-            // + 4 = 2 spaces before <info>, 2 spaces after </info>
-            preg_replace('/\s*[\r\n]\s*/', "\n".str_repeat(' ', $totalWidth + 4), $argument->getDescription()),
-            $default
-        ), $options);
+        $description = preg_replace('/\s*[\r\n]\s*/', "\n", $argument->getDescription());
+        $fullDescription = $description.$default;
+
+        // + 4 = 2 spaces before <info>, 2 spaces after </info>
+        $descriptionIndent = $totalWidth + 4;
+        $availableWidth = $terminalWidth - $descriptionIndent;
+
+        if ($availableWidth >= self::MIN_DESCRIPTION_WIDTH) {
+            $this->writeText(\sprintf('  <info>%s</info>  %s%s',
+                $argument->getName(),
+                str_repeat(' ', $spacingWidth),
+                $this->wrapText($fullDescription, $availableWidth, $descriptionIndent)
+            ), $options);
+        } else {
+            $this->writeText(\sprintf("  <info>%s</info>\n%s%s",
+                $argument->getName(),
+                str_repeat(' ', self::FALLBACK_DESCRIPTION_INDENT),
+                $this->wrapText($fullDescription, max(1, $terminalWidth - self::FALLBACK_DESCRIPTION_INDENT), self::FALLBACK_DESCRIPTION_INDENT)
+            ), $options);
+        }
     }
 
     protected function describeInputOption(InputOption $option, array $options = []): void
@@ -72,42 +92,51 @@ class TextDescriptor extends Descriptor
         );
 
         $spacingWidth = $totalWidth - Helper::width($synopsis);
+        $terminalWidth = $this->getTerminalWidth($options);
 
-        $this->writeText(\sprintf('  <info>%s</info>  %s%s%s%s',
-            $synopsis,
-            str_repeat(' ', $spacingWidth),
-            // + 4 = 2 spaces before <info>, 2 spaces after </info>
-            preg_replace('/\s*[\r\n]\s*/', "\n".str_repeat(' ', $totalWidth + 4), $option->getDescription()),
-            $default,
-            $option->isArray() ? '<comment> (multiple values allowed)</comment>' : ''
-        ), $options);
+        $synopsis = \sprintf('<%1$s>%2$s</%1$s>', $option->isDeprecated() ? 'fg=gray' : 'info', $synopsis);
+
+        $prefix = ($option->isDeprecated() ? '[deprecated] ' : '').($option->isHidden() ? '[hidden] ' : '');
+        $description = preg_replace('/\s*[\r\n]\s*/', "\n", trim($prefix.$option->getDescription()));
+        $fullDescription = $description.$default.($option->isArray() ? '<comment> (multiple values allowed)</comment>' : '');
+
+        // + 4 = 2 spaces before the synopsis, 2 spaces after it
+        $descriptionIndent = $totalWidth + 4;
+        $availableWidth = $terminalWidth - $descriptionIndent;
+
+        if ($availableWidth >= self::MIN_DESCRIPTION_WIDTH) {
+            $this->writeText(\sprintf('  %s  %s%s', $synopsis, str_repeat(' ', $spacingWidth), $this->wrapText($fullDescription, $availableWidth, $descriptionIndent)), $options);
+        } else {
+            $this->writeText(\sprintf("  %s\n%s%s", $synopsis, str_repeat(' ', self::FALLBACK_DESCRIPTION_INDENT), $this->wrapText($fullDescription, max(1, $terminalWidth - self::FALLBACK_DESCRIPTION_INDENT), self::FALLBACK_DESCRIPTION_INDENT)), $options);
+        }
     }
 
     protected function describeInputDefinition(InputDefinition $definition, array $options = []): void
     {
-        $totalWidth = $this->calculateTotalWidthForOptions($definition->getOptions());
-        foreach ($definition->getArguments() as $argument) {
+        $inputArguments = $definition->getArguments();
+        $inputOptions = $this->removeHiddenOptions($definition->getOptions(), $options);
+        $totalWidth = $this->calculateTotalWidthForOptions($inputOptions);
+        foreach ($inputArguments as $argument) {
             $totalWidth = max($totalWidth, Helper::width($argument->getName()));
         }
 
-        if ($definition->getArguments()) {
+        if ($inputArguments) {
             $this->writeText('<comment>Arguments:</comment>', $options);
             $this->writeText("\n");
-            foreach ($definition->getArguments() as $argument) {
+            foreach ($inputArguments as $argument) {
                 $this->describeInputArgument($argument, array_merge($options, ['total_width' => $totalWidth]));
                 $this->writeText("\n");
             }
         }
 
-        if ($definition->getArguments() && $definition->getOptions()) {
-            $this->writeText("\n");
-        }
-
-        if ($definition->getOptions()) {
+        if ($inputOptions) {
+            if ($inputArguments) {
+                $this->writeText("\n");
+            }
             $laterOptions = [];
 
             $this->writeText('<comment>Options:</comment>', $options);
-            foreach ($definition->getOptions() as $option) {
+            foreach ($inputOptions as $option) {
                 if (\strlen($option->getShortcut() ?? '') > 1) {
                     $laterOptions[] = $option;
                     continue;
@@ -125,11 +154,12 @@ class TextDescriptor extends Descriptor
     protected function describeCommand(Command $command, array $options = []): void
     {
         $command->mergeApplicationDefinition(false);
+        $terminalWidth = $this->getTerminalWidth($options);
 
         if ($description = $command->getDescription()) {
             $this->writeText('<comment>Description:</comment>', $options);
             $this->writeText("\n");
-            $this->writeText('  '.$description);
+            $this->writeText('  '.$this->wrapText($description, $terminalWidth - 2, 2));
             $this->writeText("\n\n");
         }
 
@@ -141,7 +171,7 @@ class TextDescriptor extends Descriptor
         $this->writeText("\n");
 
         $definition = $command->getDefinition();
-        if ($definition->getOptions() || $definition->getArguments()) {
+        if ($this->removeHiddenOptions($definition->getOptions(), $options) || $definition->getArguments()) {
             $this->writeText("\n");
             $this->describeInputDefinition($definition, $options);
             $this->writeText("\n");
@@ -152,7 +182,7 @@ class TextDescriptor extends Descriptor
             $this->writeText("\n");
             $this->writeText('<comment>Help:</comment>', $options);
             $this->writeText("\n");
-            $this->writeText('  '.str_replace("\n", "\n  ", $help), $options);
+            $this->writeText('  '.$this->wrapText($help, $terminalWidth - 2, 2), $options);
             $this->writeText("\n");
         }
     }
@@ -170,6 +200,8 @@ class TextDescriptor extends Descriptor
                 $this->writeText("\n");
             }
         } else {
+            $terminalWidth = $this->getTerminalWidth($options);
+
             if ('' != $help = $application->getHelp()) {
                 $this->writeText("$help\n\n", $options);
             }
@@ -218,7 +250,15 @@ class TextDescriptor extends Descriptor
                     $spacingWidth = $width - Helper::width($name);
                     $command = $commands[$name];
                     $commandAliases = $name === $command->getName() ? $this->getCommandAliasesText($command) : '';
-                    $this->writeText(\sprintf('  <info>%s</info>%s%s', $name, str_repeat(' ', $spacingWidth), $commandAliases.$command->getDescription()), $options);
+                    $cmdDescription = $commandAliases.$command->getDescription();
+                    $descriptionIndent = $width + 2;
+                    $availableWidth = $terminalWidth - $descriptionIndent;
+
+                    if ($availableWidth > 0) {
+                        $cmdDescription = $this->wrapText($cmdDescription, $availableWidth, $descriptionIndent);
+                    }
+
+                    $this->writeText(\sprintf('  <info>%s</info>%s%s', $name, str_repeat(' ', $spacingWidth), $cmdDescription), $options);
                 }
             }
 
@@ -313,5 +353,31 @@ class TextDescriptor extends Descriptor
         }
 
         return $totalWidth;
+    }
+
+    private function getTerminalWidth(array $options): int
+    {
+        if (isset($options['terminal_width'])) {
+            return $options['terminal_width'];
+        }
+
+        if ($this->output instanceof StreamOutput && stream_isatty($this->output->getStream())) {
+            return (new Terminal())->getWidth();
+        }
+
+        return \PHP_INT_MAX;
+    }
+
+    private function wrapText(string $text, int $width, int $indent): string
+    {
+        // 65535 is the PCRE quantifier limit OutputWrapper builds its pattern from; wider means no wrapping anyway
+        if ($width > 0 && $width <= 65535) {
+            // measures the visible width: formatter tags and multibyte characters do not count
+            $text = (new OutputWrapper())->wrap($text, $width);
+        }
+
+        $text = str_replace("\r\n", "\n", $text);
+
+        return str_replace("\n", "\n".str_repeat(' ', $indent), $text);
     }
 }

@@ -24,6 +24,7 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\JsonMockResponse;
+use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\Security\Core\Exception\BadCredentialsException;
 use Symfony\Component\Security\Core\User\OidcUser;
 use Symfony\Component\Security\Http\AccessToken\Oidc\OidcTokenHandler;
@@ -194,7 +195,7 @@ class OidcTokenHandlerTest extends TestCase
     {
         return (new CompactSerializer())->serialize((new JWSBuilder(new AlgorithmManager([
             new ES256(),
-        ])))->create()
+        ])))
             ->withPayload($payload)
             ->addSignature(self::getJWK(), ['alg' => 'ES256'])
             ->build()
@@ -272,6 +273,53 @@ class OidcTokenHandlerTest extends TestCase
         $this->assertSame('e21bf182-1538-406e-8ccb-e25a17aba39f', $userBadge->getUserIdentifier());
     }
 
+    public function testDiscoveryRejectsAnOversizedJwks()
+    {
+        $token = $this->buildJWS(json_encode(['sub' => 'e21bf182-1538-406e-8ccb-e25a17aba39f']));
+
+        $oversized = json_encode(['keys' => [['kty' => 'oct', 'use' => 'sig', 'k' => str_repeat('A', 1024 * 1024)]]]);
+        $httpClient = new MockHttpClient([
+            new JsonMockResponse(['jwks_uri' => 'https://www.example.com/.well-known/jwks.json']),
+            new MockResponse($oversized, ['response_headers' => ['content-type' => 'application/json']]),
+        ]);
+
+        $handler = new OidcTokenHandler(
+            new AlgorithmManager([new ES256()]),
+            null,
+            self::AUDIENCE,
+            ['https://www.example.com']
+        );
+        $handler->enableDiscovery(new ArrayAdapter(), $httpClient, 'oidc_config');
+
+        $this->expectException(BadCredentialsException::class);
+        $this->expectExceptionMessage('Invalid credentials.');
+
+        $handler->getUserBadgeFrom($token);
+    }
+
+    public function testDiscoveryRejectsAJwksWithoutKeys()
+    {
+        $token = $this->buildJWS(json_encode(['sub' => 'e21bf182-1538-406e-8ccb-e25a17aba39f']));
+
+        $httpClient = new MockHttpClient([
+            new JsonMockResponse(['jwks_uri' => 'https://www.example.com/.well-known/jwks.json']),
+            new JsonMockResponse(['error' => 'temporarily_unavailable']),
+        ]);
+
+        $handler = new OidcTokenHandler(
+            new AlgorithmManager([new ES256()]),
+            null,
+            self::AUDIENCE,
+            ['https://www.example.com']
+        );
+        $handler->enableDiscovery(new ArrayAdapter(), $httpClient, 'oidc_config');
+
+        $this->expectException(BadCredentialsException::class);
+        $this->expectExceptionMessage('Invalid credentials.');
+
+        $handler->getUserBadgeFrom($token);
+    }
+
     public function testGetsUserIdentifierWithMultipleDiscoveryEndpoints()
     {
         $time = time();
@@ -335,11 +383,50 @@ class OidcTokenHandlerTest extends TestCase
         $this->assertTrue($cache->hasItem('oidc_config'));
     }
 
+    public function testDiscoveryDocumentsOfEveryClientAreRequestedBeforeTheirJwks()
+    {
+        // the responses are lazy, so requesting every ".well-known" document before consuming
+        // any of them is what lets those round trips happen concurrently
+        $requestedUrls = [];
+        $httpClients = [];
+        foreach ([1, 2] as $provider) {
+            $httpClients[] = new MockHttpClient(static function ($method, $url) use (&$requestedUrls, $provider): JsonMockResponse {
+                $requestedUrls[] = $url;
+
+                if (str_contains($url, 'openid-configuration')) {
+                    return new JsonMockResponse(['jwks_uri' => \sprintf('https://provider%d.example.com/jwks.json', $provider)]);
+                }
+
+                return new JsonMockResponse(['keys' => [array_merge((1 === $provider ? self::getJWK() : self::getSecondJWK())->all(), ['use' => 'sig'])]]);
+            }, \sprintf('https://provider%d.example.com/', $provider));
+        }
+
+        $handler = new OidcTokenHandler(new AlgorithmManager([new ES256()]), null, self::AUDIENCE, ['https://www.example.com']);
+        $handler->enableDiscovery(new ArrayAdapter(), $httpClients, 'oidc_config');
+
+        $time = time();
+        $handler->getUserBadgeFrom(self::buildJWSWithKey(json_encode([
+            'iat' => $time,
+            'nbf' => $time,
+            'exp' => $time + 3600,
+            'iss' => 'https://www.example.com',
+            'aud' => self::AUDIENCE,
+            'sub' => 'user-from-provider1',
+        ]), self::getJWK()));
+
+        $this->assertSame([
+            'https://provider1.example.com/.well-known/openid-configuration',
+            'https://provider2.example.com/.well-known/openid-configuration',
+            'https://provider1.example.com/jwks.json',
+            'https://provider2.example.com/jwks.json',
+        ], $requestedUrls);
+    }
+
     private static function buildJWSWithKey(string $payload, JWK $jwk): string
     {
         return (new CompactSerializer())->serialize((new JWSBuilder(new AlgorithmManager([
             new ES256(),
-        ])))->create()
+        ])))
             ->withPayload($payload)
             ->addSignature($jwk, ['alg' => 'ES256'])
             ->build()
@@ -384,6 +471,51 @@ class OidcTokenHandlerTest extends TestCase
         $this->assertSame(2, $requestCount);
         $this->assertSame('user-cache-control', $handler->getUserBadgeFrom($token)->getUserIdentifier());
         $this->assertSame(2, $requestCount);
+    }
+
+    public function testResetForcesANewDiscoveryOnTheNextAuthentication()
+    {
+        $requestedUrls = [];
+        $httpClient = new MockHttpClient(static function ($method, $url) use (&$requestedUrls): JsonMockResponse {
+            $requestedUrls[] = $url;
+
+            if (str_contains($url, 'openid-configuration')) {
+                return new JsonMockResponse(['jwks_uri' => 'https://www.example.com/jwks.json']);
+            }
+
+            return new JsonMockResponse(['keys' => [array_merge(self::getJWK()->all(), ['use' => 'sig'])]]);
+        });
+        $countConfigurationRequests = static function () use (&$requestedUrls): int {
+            return \count(array_filter($requestedUrls, static fn (string $url): bool => str_contains($url, 'openid-configuration')));
+        };
+
+        $time = time();
+        $token = self::buildJWS(json_encode([
+            'iat' => $time,
+            'nbf' => $time,
+            'exp' => $time + 3600,
+            'iss' => 'https://www.example.com',
+            'aud' => self::AUDIENCE,
+            'sub' => 'user-reset',
+        ]));
+
+        $cache = new ArrayAdapter();
+        $handler = new OidcTokenHandler(new AlgorithmManager([new ES256()]), null, self::AUDIENCE, ['https://www.example.com']);
+        $handler->enableDiscovery($cache, $httpClient, 'oidc_config');
+
+        $handler->getUserBadgeFrom($token);
+        $this->assertSame(1, $countConfigurationRequests());
+
+        // expired JWKS and document entries alone recompute the keys from the memoized document
+        $cache->deleteItems(['oidc_config', 'oidc_config.document.0']);
+        $handler->getUserBadgeFrom($token);
+        $this->assertSame(1, $countConfigurationRequests());
+
+        // after reset(), recomputing the keys fetches the discovery document again
+        $handler->reset();
+        $cache->deleteItems(['oidc_config', 'oidc_config.document.0']);
+        $handler->getUserBadgeFrom($token);
+        $this->assertSame(2, $countConfigurationRequests());
     }
 
     public function testDiscoveryCachesJwksAccordingToExpires()
@@ -445,6 +577,85 @@ class OidcTokenHandlerTest extends TestCase
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage('No OIDC discovery client configured.');
         $handler->computeDiscoveryKeys($item);
+    }
+
+    public function testDiscoveryDoesNotFollowRedirects()
+    {
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) {
+            $this->assertSame(0, $options['max_redirects']);
+
+            return new MockResponse('', ['http_code' => 301, 'response_headers' => ['location' => 'https://other.example.com/.well-known/openid-configuration']]);
+        });
+
+        $cache = new ArrayAdapter();
+        $handler = new OidcTokenHandler(
+            new AlgorithmManager([new ES256()]),
+            null,
+            self::AUDIENCE,
+            ['https://www.example.com']
+        );
+        $handler->enableDiscovery($cache, $httpClient, 'oidc_redirected_discovery');
+
+        $item = $this->createMock(ItemInterface::class);
+        $item->expects($this->never())->method('expiresAfter');
+
+        try {
+            $handler->computeDiscoveryKeys($item);
+            $this->fail('A BadCredentialsException should have been thrown.');
+        } catch (BadCredentialsException) {
+        }
+
+        $this->assertSame(1, $httpClient->getRequestsCount());
+    }
+
+    public function testDiscoveryRejectsJwksUriDowngradedToHttp()
+    {
+        $httpClient = new MockHttpClient([
+            new JsonMockResponse(['jwks_uri' => 'http://169.254.169.254/latest/meta-data/']),
+            new JsonMockResponse(['keys' => [array_merge(self::getJWK()->all(), ['use' => 'sig'])]]),
+        ]);
+
+        $cache = new ArrayAdapter();
+        $handler = new OidcTokenHandler(
+            new AlgorithmManager([new ES256()]),
+            null,
+            self::AUDIENCE,
+            ['https://www.example.com']
+        );
+        $handler->enableDiscovery($cache, $httpClient, 'oidc_insecure_jwks_uri');
+
+        $item = $this->createMock(ItemInterface::class);
+        $item->expects($this->never())->method('expiresAfter');
+
+        try {
+            $handler->computeDiscoveryKeys($item);
+            $this->fail('A BadCredentialsException should have been thrown.');
+        } catch (BadCredentialsException) {
+        }
+
+        $this->assertSame(1, $httpClient->getRequestsCount());
+    }
+
+    public function testDiscoveryFollowsJwksUriOfAnIssuerServedOverHttp()
+    {
+        $httpClient = new MockHttpClient([
+            new JsonMockResponse(['jwks_uri' => 'http://www.example.com/jwks.json']),
+            new JsonMockResponse(['keys' => [array_merge(self::getJWK()->all(), ['use' => 'sig'])]]),
+        ], 'http://www.example.com');
+
+        $cache = new ArrayAdapter();
+        $handler = new OidcTokenHandler(
+            new AlgorithmManager([new ES256()]),
+            null,
+            self::AUDIENCE,
+            ['http://www.example.com']
+        );
+        $handler->enableDiscovery($cache, $httpClient, 'oidc_http_issuer');
+
+        $item = $this->createMock(ItemInterface::class);
+        $item->expects($this->never())->method('expiresAfter');
+
+        $this->assertCount(1, $handler->computeDiscoveryKeys($item));
     }
 
     public function testDiscoveryThrowsWhenJwksUriIsMissing()

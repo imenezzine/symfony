@@ -67,6 +67,10 @@ use Symfony\Component\Tui\Widget\AbstractWidget;
  * ### Font
  *     font-{name}           FIGlet font (big, small, slant, standard, mini, or path)
  *
+ *     The Tailwind font-weight (font-thin to font-black) and font-family
+ *     (font-sans, font-serif, font-mono) utilities never name a FIGlet font:
+ *     they are plain CSS classes, even when a font of that name is registered.
+ *
  * ### Layout
  *     flex-row              Horizontal direction
  *     flex-col              Vertical direction
@@ -163,6 +167,15 @@ class TailwindStylesheet extends StyleSheet
         800 => 60,
         900 => 80,
         950 => 90,
+    ];
+
+    /**
+     * Tailwind font-weight and font-family keywords. They share the "font-"
+     * prefix with the FIGlet font directive and must not name a font.
+     */
+    private const FONT_UTILITY_KEYWORDS = [
+        'thin', 'extralight', 'light', 'normal', 'medium', 'semibold', 'bold', 'extrabold', 'black',
+        'sans', 'serif', 'mono',
     ];
 
     protected function getCssClasses(AbstractWidget $widget): array
@@ -334,7 +347,7 @@ class TailwindStylesheet extends StyleSheet
         }
 
         // === FONT ===
-        if (preg_match('/^font-(.+)$/', $class, $m)) {
+        if (preg_match('/^font-(.+)$/', $class, $m) && !\in_array($m[1], self::FONT_UTILITY_KEYWORDS, true)) {
             return ['font' => $m[1]];
         }
 
@@ -392,8 +405,11 @@ class TailwindStylesheet extends StyleSheet
      */
     private function parseColorValue(string $value): Color|string|int|null
     {
-        // Bracket syntax for arbitrary hex: [#ff5500]
-        if (preg_match('/^\[#([0-9a-fA-F]{3,6})]$/', $value, $m)) {
+        // Bracket syntax for arbitrary hex: [#ff5500], [#f50].
+        // Only the two lengths Color::hex() accepts: matching 4 or 5 digits here
+        // hands it a value it rejects, turning a typo into an exception while
+        // every other unparsable value is ignored.
+        if (preg_match('/^\[#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})]$/', $value, $m)) {
             return '#'.$m[1];
         }
 

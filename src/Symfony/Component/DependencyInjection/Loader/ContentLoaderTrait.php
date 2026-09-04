@@ -16,8 +16,10 @@ use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\BoundArgument;
 use Symfony\Component\DependencyInjection\Argument\EnvClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -92,6 +94,7 @@ trait ContentLoaderTrait
         'shared' => 'shared',
         'lazy' => 'lazy',
         'public' => 'public',
+        'factory' => 'factory',
         'properties' => 'properties',
         'configurator' => 'configurator',
         'calls' => 'calls',
@@ -776,6 +779,26 @@ trait ContentLoaderTrait
 
                 return new ServiceClosureArgument($argument);
             }
+            if ('lazy_proxy' === $value->getTag()) {
+                $interfaces = [];
+
+                if (\is_array($argument) && isset($argument['service'])) {
+                    if ($diff = array_diff(array_keys($argument), $supportedKeys = ['service', 'interface'])) {
+                        throw new InvalidArgumentException(\sprintf('"!lazy_proxy" tag contains unsupported key "%s"; supported ones are "%s".', implode('", "', $diff), implode('", "', $supportedKeys)));
+                    }
+
+                    $interfaces = $argument['interface'] ?? [];
+                    $argument = $argument['service'];
+                }
+
+                $argument = $this->resolveServices($argument, $file, $isParameter);
+
+                if (!$argument instanceof Reference) {
+                    throw new InvalidArgumentException(\sprintf('"!lazy_proxy" tag only accepts a service reference or an array with a "service" key in "%s".', $file));
+                }
+
+                return new LazyProxyArgument($argument, $interfaces);
+            }
             if ('env_closure' === $value->getTag()) {
                 if (\is_array($argument)) {
                     $envExpr = $argument[0] ?? null;
@@ -836,6 +859,20 @@ trait ContentLoaderTrait
 
                 return $argument;
             }
+            if ('tagged_class_map' === $value->getTag()) {
+                if (\is_array($argument) && isset($argument['tag']) && $argument['tag']) {
+                    if ($diff = array_diff(array_keys($argument), $supportedKeys = ['tag', 'index_by', 'exclude'])) {
+                        throw new InvalidArgumentException(\sprintf('"!tagged_class_map" tag contains unsupported key "%s"; supported ones are "%s".', implode('", "', $diff), implode('", "', $supportedKeys)));
+                    }
+
+                    return new TaggedClassMapArgument($argument['tag'], $argument['index_by'] ?? null, (array) ($argument['exclude'] ?? null));
+                }
+                if (\is_string($argument) && $argument) {
+                    return new TaggedClassMapArgument($argument);
+                }
+
+                throw new InvalidArgumentException(\sprintf('"!tagged_class_map" tags only accept a non empty string or an array with a key "tag" in "%s".', $file));
+            }
             if ('service' === $value->getTag()) {
                 if ($isParameter) {
                     throw new InvalidArgumentException(\sprintf('Using an anonymous service in a parameter is not allowed in "%s".', $file));
@@ -886,6 +923,15 @@ trait ContentLoaderTrait
                 $argument = $this->resolveServices(substr_replace($value, '', 1, 1), $file, $isParameter);
 
                 return new ServiceClosureArgument($argument);
+            }
+            if (str_starts_with($value, '@~')) {
+                $argument = $this->resolveServices(substr_replace($value, '', 1, 1), $file, $isParameter);
+
+                if (!$argument instanceof Reference) {
+                    throw new InvalidArgumentException(\sprintf('The "@~" prefix only accepts a service reference in "%s".', $file));
+                }
+
+                return new LazyProxyArgument($argument);
             }
             if (str_starts_with($value, '@@')) {
                 $value = substr($value, 1);

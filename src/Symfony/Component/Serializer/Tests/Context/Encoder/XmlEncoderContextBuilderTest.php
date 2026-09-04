@@ -36,6 +36,7 @@ class XmlEncoderContextBuilderTest extends TestCase
             ->withDecoderIgnoredNodeTypes($values[XmlEncoder::DECODER_IGNORED_NODE_TYPES])
             ->withEncoderIgnoredNodeTypes($values[XmlEncoder::ENCODER_IGNORED_NODE_TYPES])
             ->withEncoding($values[XmlEncoder::ENCODING])
+            ->withForceCollection($values[XmlEncoder::FORCE_COLLECTION])
             ->withFormatOutput($values[XmlEncoder::FORMAT_OUTPUT])
             ->withLoadOptions($values[XmlEncoder::LOAD_OPTIONS])
             ->withSaveOptions($values[XmlEncoder::SAVE_OPTIONS])
@@ -47,6 +48,7 @@ class XmlEncoderContextBuilderTest extends TestCase
             ->withCdataWrapping($values[XmlEncoder::CDATA_WRAPPING])
             ->withCdataWrappingPattern($values[XmlEncoder::CDATA_WRAPPING_PATTERN])
             ->withIgnoreEmptyAttributes($values[XmlEncoder::IGNORE_EMPTY_ATTRIBUTES])
+            ->withBooleanRepr($values[XmlEncoder::BOOLEAN_REPR])
             ->toArray();
 
         $this->assertSame($values, $context);
@@ -59,6 +61,7 @@ class XmlEncoderContextBuilderTest extends TestCase
             XmlEncoder::DECODER_IGNORED_NODE_TYPES => [\XML_PI_NODE, \XML_COMMENT_NODE],
             XmlEncoder::ENCODER_IGNORED_NODE_TYPES => [\XML_TEXT_NODE],
             XmlEncoder::ENCODING => 'UTF-8',
+            XmlEncoder::FORCE_COLLECTION => ['order'],
             XmlEncoder::FORMAT_OUTPUT => false,
             XmlEncoder::LOAD_OPTIONS => \LIBXML_COMPACT,
             XmlEncoder::SAVE_OPTIONS => \LIBXML_NOERROR,
@@ -70,6 +73,7 @@ class XmlEncoderContextBuilderTest extends TestCase
             XmlEncoder::CDATA_WRAPPING => false,
             XmlEncoder::CDATA_WRAPPING_PATTERN => '/[<>&"\']/',
             XmlEncoder::IGNORE_EMPTY_ATTRIBUTES => true,
+            XmlEncoder::BOOLEAN_REPR => ['true', 'false'],
         ]];
 
         yield 'With null values' => [[
@@ -77,6 +81,7 @@ class XmlEncoderContextBuilderTest extends TestCase
             XmlEncoder::DECODER_IGNORED_NODE_TYPES => null,
             XmlEncoder::ENCODER_IGNORED_NODE_TYPES => null,
             XmlEncoder::ENCODING => null,
+            XmlEncoder::FORCE_COLLECTION => null,
             XmlEncoder::FORMAT_OUTPUT => null,
             XmlEncoder::LOAD_OPTIONS => null,
             XmlEncoder::SAVE_OPTIONS => null,
@@ -88,6 +93,7 @@ class XmlEncoderContextBuilderTest extends TestCase
             XmlEncoder::CDATA_WRAPPING => null,
             XmlEncoder::CDATA_WRAPPING_PATTERN => null,
             XmlEncoder::IGNORE_EMPTY_ATTRIBUTES => null,
+            XmlEncoder::BOOLEAN_REPR => null,
         ]];
     }
 }

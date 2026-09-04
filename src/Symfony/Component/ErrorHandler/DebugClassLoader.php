@@ -970,6 +970,11 @@ class DebugClassLoader
                     default => $definingClass,
                 };
 
+                // don't autoload here: the class that holds the constant might extend a class that is still being loaded
+                if (!class_exists($definingClass, false) && !interface_exists($definingClass, false)) {
+                    return;
+                }
+
                 if (!\defined($definingClass.'::'.$constantName)) {
                     return;
                 }
@@ -1072,7 +1077,7 @@ class DebugClassLoader
      */
     private function patchReturnTypeWillChange(\ReflectionMethod $method): void
     {
-        if (\count($method->getAttributes(\ReturnTypeWillChange::class))) {
+        if ($method->getAttributes(\ReturnTypeWillChange::class)) {
             return;
         }
 

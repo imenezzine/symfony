@@ -21,6 +21,7 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Serialization\Serializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Serializer as SerializerComponent;
@@ -108,6 +109,33 @@ class AmqpReceiverTest extends TestCase
         $receiver->reject(new Envelope(new \stdClass(), [new AmqpReceivedStamp($amqpEnvelope, 'queueName')]));
     }
 
+    public function testItSupportsKeepalive()
+    {
+        $this->assertInstanceOf(KeepaliveReceiverInterface::class, new AmqpReceiver($this->createStub(Connection::class)));
+    }
+
+    public function testItKeepsReceivedMessageAlive()
+    {
+        $amqpEnvelope = $this->createAMQPEnvelope();
+        $connection = $this->createMock(Connection::class);
+        $connection->expects($this->once())->method('keepalive');
+
+        $receiver = new AmqpReceiver($connection, $this->createStub(SerializerInterface::class));
+        $receiver->keepalive(new Envelope(new \stdClass(), [new AmqpReceivedStamp($amqpEnvelope, 'queueName')]));
+    }
+
+    public function testItThrowsATransportExceptionIfItCannotKeepMessageAlive()
+    {
+        $this->expectException(TransportException::class);
+
+        $amqpEnvelope = $this->createAMQPEnvelope();
+        $connection = $this->createMock(Connection::class);
+        $connection->expects($this->once())->method('keepalive')->willThrowException(new \AMQPException());
+
+        $receiver = new AmqpReceiver($connection, $this->createStub(SerializerInterface::class));
+        $receiver->keepalive(new Envelope(new \stdClass(), [new AmqpReceivedStamp($amqpEnvelope, 'queueName')]));
+    }
+
     public function testTransportMessageIdStampIsCreatedWhenMessageIdIsSet()
     {
         $serializer = new Serializer(
@@ -191,6 +219,28 @@ class AmqpReceiverTest extends TestCase
         $this->assertInstanceOf(MessageDecodingFailedException::class, $envelopes[0]->getMessage());
     }
 
+    public function testItPassesTheRoutingKeyToTheSerializer()
+    {
+        $amqpEnvelope = $this->createAMQPEnvelope();
+
+        $connection = $this->createMock(Connection::class);
+        $connection->method('getQueueNames')->willReturn(['queueName']);
+        $connection->method('get')->with('queueName')->willReturn($amqpEnvelope);
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects($this->once())
+            ->method('decode')
+            ->with([
+                'body' => '{"message": "Hi"}',
+                'headers' => ['type' => DummyMessage::class],
+                'extra' => ['routing_key' => 'dummy_routing_key'],
+            ])
+            ->willReturn(new Envelope(new DummyMessage('Hi')));
+
+        $receiver = new AmqpReceiver($connection, $serializer);
+        iterator_to_array($receiver->get());
+    }
+
     private function createAMQPEnvelope(?string $messageId = null, string $body = '{"message": "Hi"}'): \AMQPEnvelope
     {
         $envelope = $this->createStub(\AMQPEnvelope::class);
@@ -199,6 +249,7 @@ class AmqpReceiverTest extends TestCase
             'type' => DummyMessage::class,
         ]);
         $envelope->method('getMessageId')->willReturn($messageId);
+        $envelope->method('getRoutingKey')->willReturn('dummy_routing_key');
 
         return $envelope;
     }

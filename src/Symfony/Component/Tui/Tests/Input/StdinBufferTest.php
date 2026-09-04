@@ -13,6 +13,9 @@ namespace Symfony\Component\Tui\Tests\Input;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\Tui\Event\PasteCompletedEvent;
+use Symfony\Component\Tui\Event\PasteStartedEvent;
 use Symfony\Component\Tui\Input\StdinBuffer;
 
 class StdinBufferTest extends TestCase
@@ -344,6 +347,87 @@ class StdinBufferTest extends TestCase
         $this->assertSame('Hello World', $pastedContent);
     }
 
+    public function testPasteLifecycleEventsAreDispatched()
+    {
+        $dispatcher = new EventDispatcher();
+        $buffer = new StdinBuffer($dispatcher);
+        $events = [];
+        $pastedContent = null;
+
+        $dispatcher->addListener(PasteStartedEvent::class, static function () use (&$events) {
+            $events[] = 'started';
+        });
+        $dispatcher->addListener(PasteCompletedEvent::class, static function () use (&$events) {
+            $events[] = 'completed';
+        });
+        $buffer->onPaste(static function (string $content) use (&$pastedContent) {
+            $pastedContent = $content;
+        });
+
+        $buffer->process("\x1b[200~Hello");
+
+        $this->assertSame(['started'], $events);
+        $this->assertNull($pastedContent);
+
+        $buffer->process(" World\x1b[201~");
+
+        $this->assertSame(['started', 'completed'], $events);
+        $this->assertSame('Hello World', $pastedContent);
+    }
+
+    public function testPasteLifecycleEventsAreDispatchedOnOverflow()
+    {
+        $dispatcher = new EventDispatcher();
+        $buffer = new StdinBuffer($dispatcher);
+        $events = [];
+
+        $dispatcher->addListener(PasteStartedEvent::class, static function () use (&$events) {
+            $events[] = 'started';
+        });
+        $dispatcher->addListener(PasteCompletedEvent::class, static function () use (&$events) {
+            $events[] = 'completed';
+        });
+        $buffer->onData(static function (string $data) {});
+        $buffer->onPaste(static function (string $content) {});
+
+        $buffer->process("\x1b[200~");
+        $buffer->process(str_repeat('A', 17 * 1024 * 1024));
+
+        $this->assertSame(['started'], $events);
+
+        $buffer->process("\x1b[201~");
+
+        $this->assertSame(['started', 'completed'], $events);
+    }
+
+    public function testClearMidPasteDispatchesPasteCompleted()
+    {
+        $dispatcher = new EventDispatcher();
+        $buffer = new StdinBuffer($dispatcher);
+        $events = [];
+        $pastes = [];
+
+        $dispatcher->addListener(PasteStartedEvent::class, static function () use (&$events) {
+            $events[] = 'started';
+        });
+        $dispatcher->addListener(PasteCompletedEvent::class, static function () use (&$events) {
+            $events[] = 'completed';
+        });
+        $buffer->onPaste(static function (string $content) use (&$pastes) {
+            $pastes[] = $content;
+        });
+
+        $buffer->process("\x1b[200~partial");
+        $buffer->clear();
+
+        $this->assertSame(['started', 'completed'], $events);
+        $this->assertSame([], $pastes, 'A discarded paste must not reach the paste callback');
+
+        $buffer->clear();
+
+        $this->assertSame(['started', 'completed'], $events, 'Clearing outside a paste must not dispatch events');
+    }
+
     public function testDataAfterPasteEndIsProcessed()
     {
         $buffer = new StdinBuffer();
@@ -432,8 +516,77 @@ class StdinBufferTest extends TestCase
         $this->assertSame([], $sequences);
         $this->assertSame(['[paste exceeded 16 MiB limit]'], $pastes);
 
+        // The terminal is still sending the paste, so what follows is pasted
+        // content and not typing.
+        $buffer->process("rm -rf /tmp/x\r");
+
+        $this->assertSame([], $sequences, 'Content sent after the abort is dropped, not delivered as keys');
+        $this->assertSame(['[paste exceeded 16 MiB limit]'], $pastes, 'The overflow notice is sent once');
+    }
+
+    public function testInputResumesOnceAnAbortedPasteEnds()
+    {
+        $buffer = new StdinBuffer();
+        $sequences = [];
+        $pastes = [];
+
+        $buffer->onData(static function (string $data) use (&$sequences) { $sequences[] = $data; });
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+
+        $buffer->process("\x1b[200~");
+        $buffer->process(str_repeat('A', 17 * 1024 * 1024));
+        $buffer->process("tail\x1b");
+        $buffer->process('[201~');
+
+        $this->assertSame([], $sequences, 'The end marker is not delivered as a key');
+        $this->assertSame(['[paste exceeded 16 MiB limit]'], $pastes);
+
         $buffer->process('B');
-        $this->assertSame(['B'], $sequences, 'Buffer should accept new input after abort');
+        $buffer->process("\x1b[200~next\x1b[201~");
+
+        $this->assertSame(['B'], $sequences);
+        $this->assertSame(['[paste exceeded 16 MiB limit]', 'next'], $pastes);
+    }
+
+    public function testFlushKeepsAHeldEndMarkerWhileAPasteIsOpen()
+    {
+        $buffer = new StdinBuffer();
+        $sequences = [];
+        $pastes = [];
+
+        $buffer->onData(static function (string $data) use (&$sequences) { $sequences[] = $data; });
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+
+        // A read can end on the ESC of the end marker. Emitting it as the
+        // Escape key would leave the paste open with no way to close it.
+        $buffer->process("\x1b[200~AA\x1b");
+        $buffer->flush();
+        $buffer->process('[201~x');
+        $buffer->flush();
+
+        $this->assertSame(['AA'], $pastes);
+        $this->assertSame(['x'], $sequences);
+    }
+
+    public function testUnterminatedPasteAbortsAtCapWhenEveryWriteEndsWithAPartialEndMarker()
+    {
+        $buffer = new StdinBuffer();
+        $pastes = [];
+
+        $buffer->onData(static function (string $data) {});
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+
+        $buffer->process("\x1b[200~");
+
+        // A lone ESC is a one-byte prefix of "\x1b[201~", so it gets held back
+        // for the next read instead of being appended to the content. The cap
+        // has to be enforced on that path too, or a writer that ends every
+        // chunk this way never reaches it and the buffer grows unbounded.
+        for ($i = 0; $i < 24 && !$pastes; ++$i) {
+            $buffer->process(str_repeat('A', 1024 * 1024)."\x1b");
+        }
+
+        $this->assertSame(['[paste exceeded 16 MiB limit]'], $pastes);
     }
 
     public function testUnterminatedOscAbortsAtCap()
@@ -450,5 +603,86 @@ class StdinBufferTest extends TestCase
 
         $buffer->process('B');
         $this->assertSame(['B'], $sequences, 'Buffer should accept new input after abort');
+    }
+
+    public function testMalformedSgrMouseSequenceDoesNotBlockLaterInput()
+    {
+        $buffer = new StdinBuffer();
+        $sequences = [];
+
+        $buffer->onData(static function (string $data) use (&$sequences) { $sequences[] = $data; });
+
+        // Four parameters instead of three: the terminator is already there, so
+        // more data can never make this sequence valid.
+        $buffer->process("\x1b[<3;1;1;1M");
+        $buffer->process('ab');
+
+        $this->assertSame(["\x1b[<3;1;1;1M", 'a', 'b'], $sequences);
+        $this->assertSame('', $buffer->getBuffer());
+    }
+
+    public function testNestedPasteStartMarkerIsKeptAsPastedContent()
+    {
+        $buffer = new StdinBuffer();
+        $pastes = [];
+
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+
+        $buffer->process("\x1b[200~AAA");
+        $buffer->process("\x1b[200~BBB\x1b[201~");
+
+        $this->assertSame(["AAA\x1b[200~BBB"], $pastes);
+    }
+
+    public function testNestedPasteStartMarkerInASingleReadIsKeptAsPastedContent()
+    {
+        $buffer = new StdinBuffer();
+        $pastes = [];
+
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+
+        $buffer->process("\x1b[200~AAA\x1b[200~BBB\x1b[201~");
+
+        $this->assertSame(["AAA\x1b[200~BBB"], $pastes);
+    }
+
+    #[DataProvider('provideSplitPasteEndMarkers')]
+    public function testPasteEndMarkerSplitAcrossReadsStillClosesThePaste(string $first, string $second)
+    {
+        $buffer = new StdinBuffer();
+        $pastes = [];
+        $sequences = [];
+
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+        $buffer->onData(static function (string $data) use (&$sequences) { $sequences[] = $data; });
+
+        $buffer->process($first);
+        $buffer->process($second);
+        $buffer->process('x');
+
+        $this->assertSame(['AABB'], $pastes);
+        $this->assertSame(['x'], $sequences, 'Buffer should accept new input after the paste');
+    }
+
+    public static function provideSplitPasteEndMarkers(): array
+    {
+        return [
+            'split after ESC' => ["\x1b[200~AABB\x1b", '[201~'],
+            'split mid marker' => ["\x1b[200~AABB\x1b[2", '01~'],
+            'split before terminator' => ["\x1b[200~AABB\x1b[201", '~'],
+        ];
+    }
+
+    public function testPasteContentThatLooksLikeAPartialEndMarkerIsKept()
+    {
+        $buffer = new StdinBuffer();
+        $pastes = [];
+
+        $buffer->onPaste(static function (string $data) use (&$pastes) { $pastes[] = $data; });
+
+        $buffer->process("\x1b[200~AA\x1b[2");
+        $buffer->process("XX\x1b[201~");
+
+        $this->assertSame(["AA\x1b[2XX"], $pastes);
     }
 }

@@ -83,7 +83,9 @@ class FormType extends BaseType
                 $view->vars['attr']['readonly'] = true;
             }
 
-            $helpTranslationParameters = array_merge($view->parent->vars['help_translation_parameters'], $helpTranslationParameters);
+            if (!$options['help'] instanceof TranslatableInterface) {
+                $helpTranslationParameters = array_merge($view->parent->vars['help_translation_parameters'], $helpTranslationParameters);
+            }
         }
 
         $formConfig = $form->getConfig();
@@ -117,6 +119,10 @@ class FormType extends BaseType
         }
 
         $view->vars['multipart'] = $multipart;
+
+        if (!$view->parent) {
+            self::resolveFormId($view, $form);
+        }
     }
 
     public function configureOptions(OptionsResolver $resolver): void
@@ -138,7 +144,14 @@ class FormType extends BaseType
         };
 
         // Wrap "post_max_size_message" in a closure to translate it lazily
-        $uploadMaxSizeMessage = static fn (Options $options) => static fn () => $options['post_max_size_message'];
+        $uploadMaxSizeMessage = static function (Options $options) {
+            // Read the message here rather than in the returned closure: an arrow
+            // function would capture $options and keep one Options instance alive
+            // for every resolved form.
+            $postMaxSizeMessage = $options['post_max_size_message'];
+
+            return static fn () => $postMaxSizeMessage;
+        };
 
         // For any form that is not represented by a single HTML control,
         // errors should bubble up by default
@@ -169,6 +182,7 @@ class FormType extends BaseType
             'post_max_size_message' => 'The uploaded file was too large. Please try to upload a smaller file.',
             'upload_max_size_message' => $uploadMaxSizeMessage, // internal
             'allow_file_upload' => false,
+            'allow_array_submission' => false,
             'help' => null,
             'help_attr' => [],
             'help_html' => false,
@@ -202,5 +216,77 @@ class FormType extends BaseType
     public function getBlockPrefix(): string
     {
         return 'form';
+    }
+
+    /**
+     * Fills the "form_id" view variable of a root form and points the descendants that use the
+     * "form_attr" option at it.
+     *
+     * The option can sit on any descendant, so the id is only known once the whole view tree
+     * exists, which is what finishView() guarantees.
+     */
+    private static function resolveFormId(FormView $view, FormInterface $form): void
+    {
+        $rootFormAttr = $form->getConfig()->getOption('form_attr');
+        $identifier = null;
+        $referencing = [];
+
+        self::collectFormAttr($view, $form, (bool) $rootFormAttr, $identifier, $referencing);
+
+        // the id is only worth rendering on the <form> element once something points at it, so
+        // that forms that do not use "form_attr" keep the markup they had
+        if (!$referencing) {
+            return;
+        }
+
+        // a string "form_attr" on the root already went into vars["id"], and it wins over the one
+        // of a descendant
+        if (\is_string($rootFormAttr) && '' !== $rootFormAttr) {
+            $identifier = $view->vars['id'];
+        }
+
+        // an explicit id is the one the theme renders, and a string "form_attr" is an identifier
+        // the application chose for that very purpose, so only an id derived from the form name
+        // needs a prefix to tell it apart from the id of the element wrapping the fields
+        $explicitId = $view->vars['attr']['id'] ?? null;
+        $formId = \is_string($explicitId) && '' !== $explicitId ? $explicitId : $identifier;
+
+        if (null === $formId && '' !== $view->vars['id']) {
+            $formId = 'form_'.$view->vars['id'];
+        }
+
+        if (null === $formId) {
+            throw new LogicException('"form_attr" option must be a string identifier on root form when it has no id.');
+        }
+
+        $view->vars['form_id'] = $formId;
+
+        foreach ($referencing as $child) {
+            $child->vars['attr']['form'] = $formId;
+        }
+    }
+
+    /**
+     * @param list<FormView> $referencing
+     */
+    private static function collectFormAttr(FormView $view, FormInterface $form, bool $all, ?string &$identifier, array &$referencing): void
+    {
+        foreach ($form as $name => $child) {
+            if (!isset($view->children[$name])) {
+                continue;
+            }
+
+            $formAttr = $child->getConfig()->getOption('form_attr', false);
+
+            if ($all || $formAttr) {
+                $referencing[] = $view->children[$name];
+            }
+
+            if (null === $identifier && \is_string($formAttr) && '' !== $formAttr) {
+                $identifier = $formAttr;
+            }
+
+            self::collectFormAttr($view->children[$name], $child, $all, $identifier, $referencing);
+        }
     }
 }

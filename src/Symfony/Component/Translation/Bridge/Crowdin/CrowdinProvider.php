@@ -64,14 +64,14 @@ final class CrowdinProvider implements ProviderInterface
 
     public function write(TranslatorBagInterface $translatorBag): void
     {
-        $fileList = $this->getFileList();
-        $languageMapping = $this->getLanguageMapping();
+        $fileIds = $this->getFileIds();
+        [$languageIds, $sourceLanguageId] = $this->getLanguageIds();
 
         $defaultLocaleCatalogue = $translatorBag->getCatalogue($this->defaultLocale);
         foreach ($defaultLocaleCatalogue->getDomains() as $domain) {
             $content = $this->xliffFileDumper->formatCatalogue($defaultLocaleCatalogue, $domain, ['default_locale' => $this->defaultLocale]);
 
-            if ($fileId = $this->getFileIdByDomain($fileList, $domain)) {
+            if ($fileId = $fileIds[$domain] ?? null) {
                 $sourceFileInfo = $this->downloadSourceFile($fileId);
                 $sourceFile = $this->client->request('GET', $sourceFileInfo->toArray()['data']['url']);
 
@@ -88,7 +88,7 @@ final class CrowdinProvider implements ProviderInterface
             } else {
                 $file = $this->addFile($domain, $content);
 
-                $fileList[$file['name']] = $file['id'];
+                $fileIds[$domain] = $file['id'];
             }
         }
 
@@ -100,18 +100,26 @@ final class CrowdinProvider implements ProviderInterface
             if ($locale === $this->defaultLocale) {
                 continue;
             }
+            if (!isset($languageIds[$locale])) {
+                $this->logger->warning(\sprintf('Ignored "%s" locale because it is not configured or mapped in the project.', $locale));
+
+                continue;
+            }
+            if ($sourceLanguageId === $languageIds[$locale]) {
+                continue;
+            }
 
             foreach ($catalogue->getDomains() as $domain) {
                 if (!$catalogue->all($domain)) {
                     continue;
                 }
 
-                if ($fileId = $this->getFileIdByDomain($fileList, $domain)) {
+                if ($fileId = $fileIds[$domain] ?? null) {
                     $responses[] = $this->importTranslations(
                         $fileId,
                         $domain,
                         $this->xliffFileDumper->formatCatalogue($catalogue, $domain, ['default_locale' => $this->defaultLocale]),
-                        $languageMapping[$locale] ?? $locale,
+                        $languageIds[$locale],
                     );
                 }
             }
@@ -187,24 +195,34 @@ final class CrowdinProvider implements ProviderInterface
 
     public function read(array $domains, array $locales): TranslatorBag
     {
-        $fileList = $this->getFileList();
-        $languageMapping = $this->getLanguageMapping();
+        $fileIds = $this->getFileIds();
+        [$languageIds, $sourceLanguageId] = $this->getLanguageIds();
+
+        $domains = $domains ?: array_keys($fileIds);
+
+        // flipping keeps one locale per language, the mapped one when there is a mapping
+        $locales = $locales ?: array_flip($languageIds);
+        foreach ($locales as $i => $locale) {
+            if (!isset($languageIds[$locale])) {
+                $this->logger->warning(\sprintf('Ignored "%s" locale because it is not configured or mapped in the project.', $locale));
+
+                unset($locales[$i]);
+            }
+        }
 
         $translatorBag = new TranslatorBag();
         $responses = [];
 
         foreach ($domains as $domain) {
-            $fileId = $this->getFileIdByDomain($fileList, $domain);
-
-            if (!$fileId) {
+            if (!$fileId = $fileIds[$domain] ?? null) {
                 continue;
             }
 
             foreach ($locales as $locale) {
-                if ($locale !== $this->defaultLocale) {
-                    $response = $this->exportProjectTranslations($languageMapping[$locale] ?? $locale, $fileId);
-                } else {
+                if ($sourceLanguageId === $languageIds[$locale]) {
                     $response = $this->downloadSourceFile($fileId);
+                } else {
+                    $response = $this->exportProjectTranslations($languageIds[$locale], $fileId);
                 }
 
                 $responses[] = [$response, $locale, $domain];
@@ -253,13 +271,11 @@ final class CrowdinProvider implements ProviderInterface
 
     public function delete(TranslatorBagInterface $translatorBag): void
     {
-        $fileList = $this->getFileList();
+        $fileIds = $this->getFileIds();
         $defaultCatalogue = $translatorBag->getCatalogue($this->defaultLocale);
 
         foreach ($defaultCatalogue->all() as $domain => $messages) {
-            $fileId = $this->getFileIdByDomain($fileList, $domain);
-
-            if (!$fileId) {
+            if (!$fileId = $fileIds[$domain] ?? null) {
                 continue;
             }
 
@@ -287,11 +303,6 @@ final class CrowdinProvider implements ProviderInterface
                 throw new ProviderException(\sprintf('Unable to update file "%d" and domain "%s": "%s".', $fileId, $domain, $e->getMessage()), $e->getResponse(), previous: $e);
             }
         }
-    }
-
-    private function getFileIdByDomain(array $filesMap, string $domain): ?int
-    {
-        return $filesMap[\sprintf('%s.%s', $domain, 'xlf')] ?? null;
     }
 
     /**
@@ -349,12 +360,12 @@ final class CrowdinProvider implements ProviderInterface
      * @see https://support.crowdin.com/developer/api/v2/#tag/Translations/operation/api.projects.translations.imports (Crowdin API)
      * @see https://support.crowdin.com/developer/enterprise/api/v2/#tag/Translations/operation/api.projects.translations.enterprise.imports (Crowdin Enterprise API)
      */
-    private function importTranslations(int $fileId, string $domain, string $content, string $locale): ResponseInterface
+    private function importTranslations(int $fileId, string $domain, string $content, string $languageId): ResponseInterface
     {
         return $this->client->request('POST', $this->getProjectEndpoint('translations/imports'), [
             'json' => [
                 'storageId' => $this->addStorage($domain, $content),
-                'languageIds' => [str_replace('_', '-', $locale)],
+                'languageIds' => [$languageId],
                 'fileId' => $fileId,
             ],
         ]);
@@ -377,7 +388,7 @@ final class CrowdinProvider implements ProviderInterface
     {
         return $this->client->request('POST', $this->getProjectEndpoint('translations/exports'), [
             'json' => [
-                'targetLanguageId' => str_replace('_', '-', $languageId),
+                'targetLanguageId' => $languageId,
                 'fileIds' => [$fileId],
             ],
         ]);
@@ -417,7 +428,7 @@ final class CrowdinProvider implements ProviderInterface
      * @see https://support.crowdin.com/developer/api/v2/#tag/Source-Files/operation/api.projects.files.getMany (Crowdin API)
      * @see https://support.crowdin.com/developer/enterprise/api/v2/#tag/Source-Files/operation/api.projects.files.getMany (Crowdin Enterprise API)
      */
-    private function getFileList(): array
+    private function getFileIds(): array
     {
         $response = $this->client->request('GET', $this->getProjectEndpoint('files'));
 
@@ -428,31 +439,52 @@ final class CrowdinProvider implements ProviderInterface
         $fileList = $response->toArray()['data'];
         $result = [];
         foreach ($fileList as $file) {
-            $result[$file['data']['name']] = $file['data']['id'];
+            if (str_ends_with($file['data']['name'], '.xlf')) {
+                $result[substr($file['data']['name'], 0, -4)] = $file['data']['id'];
+            }
         }
 
         return $result;
     }
 
     /**
+     * @return array{array<string, string>, string} The language IDs indexed by locale, then the source language ID
+     *
      * @see https://support.crowdin.com/developer/api/v2/#tag/Projects/operation/api.projects.get (Crowdin API)
      * @see https://support.crowdin.com/developer/enterprise/api/v2/#tag/Projects-and-Groups/operation/api.projects.get (Crowdin Enterprise API)
      */
-    private function getLanguageMapping(): array
+    private function getLanguageIds(): array
     {
         $response = $this->client->request('GET', $this->getProjectEndpoint());
 
         if (200 !== $response->getStatusCode()) {
-            throw new ProviderException('Unable to get project info.', $response);
+            throw new ProviderException('Unable to get project settings.', $response);
         }
 
         $projectInfo = $response->toArray()['data'];
-        $mapping = [];
-        foreach ($projectInfo['languageMapping'] ?? [] as $key => $value) {
-            $mapping[$value['locale']] = $key;
+
+        $languageIds = [$projectInfo['sourceLanguageId'], ...$projectInfo['targetLanguageIds']];
+        $languageIds = array_combine(
+            array_map(static fn (string $languageId) => str_replace('-', '_', $languageId), $languageIds),
+            $languageIds,
+        );
+
+        if (!isset($projectInfo['languageMapping'])) {
+            $this->logger->warning('API key does not allow to access language mapping.');
+
+            return [$languageIds, $projectInfo['sourceLanguageId']];
         }
 
-        return $mapping;
+        foreach ($projectInfo['languageMapping'] as $languageId => $mapping) {
+            if (isset($mapping['locale'])) {
+                // a language keeps its ID as an alias, so both spellings are accepted
+                $languageIds[str_replace('-', '_', $mapping['locale'])] = $languageId;
+            } else {
+                $this->logger->warning(\sprintf('Ignored "%s" mapping because it has no "locale" placeholder.', $languageId));
+            }
+        }
+
+        return [$languageIds, $projectInfo['sourceLanguageId']];
     }
 
     private function getProjectEndpoint(string $endpoint = ''): string

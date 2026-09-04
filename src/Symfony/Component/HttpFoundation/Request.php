@@ -246,6 +246,8 @@ class Request
 
     /**
      * @var string[]
+     *
+     * @deprecated since Symfony 8.2, this property is never populated anymore
      */
     protected static array $trustedHosts = [];
 
@@ -269,6 +271,8 @@ class Request
     private array $trustedValuesCache = [];
 
     private static int $trustedHeaderSet = -1;
+
+    private static ?string $trustedHostsRegexp = null;
 
     private bool $isIisRewrite = false;
 
@@ -684,8 +688,8 @@ class Request
     public static function setTrustedHosts(array $hostPatterns): void
     {
         self::$trustedHostPatterns = array_map(static fn ($hostPattern) => \sprintf('{%s}i', $hostPattern), $hostPatterns);
-        // we need to reset trusted hosts on trusted host patterns change
-        self::$trustedHosts = [];
+        // the branch reset group keeps capturing groups, back references and inline modifiers local to each pattern
+        self::$trustedHostsRegexp = $hostPatterns ? \sprintf('{(?|(?:%s))}i', implode(')|(?:', $hostPatterns)) : null;
     }
 
     /**
@@ -1193,19 +1197,15 @@ class Request
             throw new SuspiciousOperationException(\sprintf('Invalid Host "%s".', $host));
         }
 
-        if (\count(self::$trustedHostPatterns) > 0) {
+        if (self::$trustedHostsRegexp) {
             // to avoid host header injection attacks, you should provide a list of trusted host patterns
 
-            if (\in_array($host, self::$trustedHosts, true)) {
-                return $host;
+            if (self::$trustedHosts) {
+                trigger_deprecation('symfony/http-foundation', '8.2', 'Populating the "%s::$trustedHosts" property is deprecated; it has no effect anymore.', self::class);
             }
 
-            foreach (self::$trustedHostPatterns as $pattern) {
-                if (preg_match($pattern, $host)) {
-                    self::$trustedHosts[] = $host;
-
-                    return $host;
-                }
+            if (preg_match(self::$trustedHostsRegexp, $host)) {
+                return $host;
             }
 
             if (!$this->isHostValid) {
@@ -1362,11 +1362,8 @@ class Request
             return null;
         }
 
-        if (str_starts_with($canonicalMimeType, 'application/') && str_contains($canonicalMimeType, '+')) {
-            $suffix = substr(strrchr($canonicalMimeType, '+'), 1);
-            if (isset(self::STRUCTURED_SUFFIX_FORMATS[$suffix])) {
-                return self::STRUCTURED_SUFFIX_FORMATS[$suffix];
-            }
+        if (null !== $suffixFormat = self::getStructuredSuffixFormat($canonicalMimeType)) {
+            return $suffixFormat;
         }
 
         if ($subtypeFallback && str_contains($canonicalMimeType, '/')) {
@@ -1380,6 +1377,33 @@ class Request
         }
 
         return null;
+    }
+
+    /**
+     * Gets the format associated with the structured syntax suffix of the mime type.
+     *
+     * Unlike getFormat(), registered formats take no part in the resolution: only
+     * the "+suffix" of an "application/*" mime type is considered, e.g.
+     * "application/vnd.api+json" -> "json". Use it when the underlying
+     * serialization format matters more than the registered alias.
+     *
+     * @see https://datatracker.ietf.org/doc/html/rfc6839
+     */
+    public static function getStructuredSuffixFormat(?string $mimeType): ?string
+    {
+        if (!$mimeType) {
+            return null;
+        }
+
+        if (false !== $pos = strpos($mimeType, ';')) {
+            $mimeType = trim(substr($mimeType, 0, $pos));
+        }
+
+        if (!str_starts_with($mimeType, 'application/') || false === $suffix = strrchr($mimeType, '+')) {
+            return null;
+        }
+
+        return self::STRUCTURED_SUFFIX_FORMATS[substr($suffix, 1)] ?? null;
     }
 
     /**

@@ -14,6 +14,7 @@ namespace Symfony\Bridge\Twig\Extension;
 use Symfony\Component\Security\Acl\Voter\FieldVote;
 use Symfony\Component\Security\Core\Authorization\AccessDecision;
 use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
+use Symfony\Component\Security\Core\Authorization\GuestAuthorizationCheckerInterface;
 use Symfony\Component\Security\Core\Authorization\UserAuthorizationCheckerInterface;
 use Symfony\Component\Security\Core\Exception\AuthenticationCredentialsNotFoundException;
 use Symfony\Component\Security\Core\User\UserInterface;
@@ -58,7 +59,7 @@ final class SecurityExtension extends AbstractExtension
     public function getAccessDecision(mixed $role, mixed $object = null, ?string $field = null): AccessDecision
     {
         if (!class_exists(AccessDecision::class)) {
-            throw new \LogicException(\sprintf('Using the "access_decision()" function requires symfony/security-core >= 7.3. Try running "composer %s symfony/security-core".', $this->securityChecker ? 'update' : 'require'));
+            throw new \LogicException(\sprintf('Using the "access_decision()" function requires symfony/security-core >= 7.3. Try running "%s".', $this->securityChecker ? 'composer update symfony/security-core' : 'composer require symfony/security-core'));
         }
 
         $accessDecision = new AccessDecision();
@@ -67,7 +68,7 @@ final class SecurityExtension extends AbstractExtension
         return $accessDecision;
     }
 
-    public function isGrantedForUser(UserInterface $user, mixed $attribute, mixed $subject = null, ?string $field = null, ?AccessDecision $accessDecision = null): bool
+    public function isGrantedForUser(?UserInterface $user, mixed $attribute, mixed $subject = null, ?string $field = null, ?AccessDecision $accessDecision = null): bool
     {
         if (null === $this->securityChecker) {
             return false;
@@ -75,6 +76,10 @@ final class SecurityExtension extends AbstractExtension
 
         if (!$this->securityChecker instanceof UserAuthorizationCheckerInterface) {
             throw new \LogicException(\sprintf('You cannot use "%s()" if the authorization checker doesn\'t implement "%s".', __METHOD__, UserAuthorizationCheckerInterface::class));
+        }
+
+        if (null === $user && !$this->securityChecker instanceof GuestAuthorizationCheckerInterface) {
+            throw new \LogicException(\sprintf('You cannot use "%s()" with a null user if the authorization checker doesn\'t implement "%s".%s', __METHOD__, GuestAuthorizationCheckerInterface::class, interface_exists(GuestAuthorizationCheckerInterface::class) ? '' : ' Try upgrading the "symfony/security-core" package to version 8.2 or newer.'));
         }
 
         if (null !== $field) {
@@ -92,10 +97,10 @@ final class SecurityExtension extends AbstractExtension
         }
     }
 
-    public function getAccessDecisionForUser(UserInterface $user, mixed $attribute, mixed $subject = null, ?string $field = null): AccessDecision
+    public function getAccessDecisionForUser(?UserInterface $user, mixed $attribute, mixed $subject = null, ?string $field = null): AccessDecision
     {
         if (!class_exists(AccessDecision::class)) {
-            throw new \LogicException(\sprintf('Using the "access_decision_for_user()" function requires symfony/security-core >= 7.3. Try running "composer %s symfony/security-core".', $this->securityChecker ? 'update' : 'require'));
+            throw new \LogicException(\sprintf('Using the "access_decision_for_user()" function requires symfony/security-core >= 7.3. Try running "%s".', $this->securityChecker ? 'composer update symfony/security-core' : 'composer require symfony/security-core'));
         }
 
         $accessDecision = new AccessDecision();
@@ -122,22 +127,46 @@ final class SecurityExtension extends AbstractExtension
         return $this->impersonateUrlGenerator->generateExitPath($exitTo);
     }
 
-    public function getImpersonateUrl(string $identifier): string
+    public function getImpersonateUrl(string $identifier, ?string $targetUri = null): string
     {
         if (null === $this->impersonateUrlGenerator) {
             return '';
         }
 
-        return $this->impersonateUrlGenerator->generateImpersonationUrl($identifier);
+        return $this->impersonateUrlGenerator->generateImpersonationUrl($identifier, $targetUri);
     }
 
-    public function getImpersonatePath(string $identifier): string
+    public function getImpersonatePath(string $identifier, ?string $targetUri = null): string
     {
         if (null === $this->impersonateUrlGenerator) {
             return '';
         }
 
-        return $this->impersonateUrlGenerator->generateImpersonationPath($identifier);
+        return $this->impersonateUrlGenerator->generateImpersonationPath($identifier, $targetUri);
+    }
+
+    /**
+     * @return array{action: string, fields: array<string, string>}
+     */
+    public function getImpersonateForm(string $identifier, ?string $targetUri = null): array
+    {
+        if (null === $this->impersonateUrlGenerator) {
+            return ['action' => '', 'fields' => []];
+        }
+
+        return $this->impersonateUrlGenerator->generateImpersonationForm($identifier, $targetUri);
+    }
+
+    /**
+     * @return array{action: string, fields: array<string, string>}
+     */
+    public function getImpersonateExitForm(?string $targetUri = null): array
+    {
+        if (null === $this->impersonateUrlGenerator) {
+            return ['action' => '', 'fields' => []];
+        }
+
+        return $this->impersonateUrlGenerator->generateExitForm($targetUri);
     }
 
     public function getFunctions(): array
@@ -149,6 +178,8 @@ final class SecurityExtension extends AbstractExtension
             new TwigFunction('impersonation_exit_path', $this->getImpersonateExitPath(...)),
             new TwigFunction('impersonation_url', $this->getImpersonateUrl(...)),
             new TwigFunction('impersonation_path', $this->getImpersonatePath(...)),
+            new TwigFunction('impersonation_form', $this->getImpersonateForm(...)),
+            new TwigFunction('impersonation_exit_form', $this->getImpersonateExitForm(...)),
         ];
 
         if ($this->securityChecker instanceof UserAuthorizationCheckerInterface) {

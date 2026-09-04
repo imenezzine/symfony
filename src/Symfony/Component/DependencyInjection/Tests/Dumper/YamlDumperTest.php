@@ -20,6 +20,7 @@ use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\EnvClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\AutowirePass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -139,6 +140,18 @@ class YamlDumperTest extends TestCase
         $this->assertStringEqualsGeneratedFile('services_with_tagged_argument.yml', $dumper->dump());
     }
 
+    public function testTaggedClassMapArguments()
+    {
+        $container = new ContainerBuilder();
+
+        $container->register('foo_service_tagged_class_map', 'Bar')->addArgument(new TaggedClassMapArgument('foo'));
+        $container->register('foo2_service_tagged_class_map', 'Bar')->addArgument(new TaggedClassMapArgument('foo', 'key', ['Baz']));
+        $container->register('foo3_service_tagged_class_map', 'Bar')->addArgument(new TaggedClassMapArgument('foo', null, ['Baz', 'Qux']));
+
+        $dumper = new YamlDumper($container);
+        $this->assertStringEqualsGeneratedFile('services_with_tagged_class_map_argument.yml', $dumper->dump());
+    }
+
     #[IgnoreDeprecations]
     #[Group('legacy')]
     public function testDeprecatedTaggedArguments()
@@ -182,6 +195,25 @@ class YamlDumperTest extends TestCase
 
         $dumper = new YamlDumper($container);
         $this->assertStringEqualsGeneratedFile('services_with_service_closure.yml', $dumper->dump());
+    }
+
+    public function testDumpLoadLazyProxyArgument()
+    {
+        $container = new ContainerBuilder();
+        $loader = new YamlFileLoader($container, new FileLocator(self::$fixturesPath.'/yaml'));
+        $loader->load('services_with_lazy_proxy_argument.yml');
+
+        $dumper = new YamlDumper($container);
+        $this->assertStringEqualsGeneratedFile('services_dump_load_lazy_proxy.yml', $dumper->dump());
+
+        $reloadedContainer = new ContainerBuilder();
+        $loader = new YamlFileLoader($reloadedContainer, new FileLocator(self::$fixturesPath.'/yaml'));
+        $loader->load('services_dump_load_lazy_proxy.yml');
+
+        $this->assertEquals(
+            $container->getDefinition('bar_service')->getArguments(),
+            $reloadedContainer->getDefinition('bar_service')->getArguments(),
+        );
     }
 
     public function testEnvClosure()

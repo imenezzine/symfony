@@ -19,21 +19,25 @@ use Symfony\Component\Mailer\Bridge\AhaSend\Transport\AhaSendTransportFactory;
 use Symfony\Component\Mailer\Bridge\Amazon\Transport\SesTransportFactory;
 use Symfony\Component\Mailer\Bridge\Azure\Transport\AzureTransportFactory;
 use Symfony\Component\Mailer\Bridge\Brevo\Transport\BrevoTransportFactory;
+use Symfony\Component\Mailer\Bridge\Cloudflare\Transport\CloudflareTransportFactory;
 use Symfony\Component\Mailer\Bridge\Google\Transport\GmailTransportFactory;
 use Symfony\Component\Mailer\Bridge\Infobip\Transport\InfobipTransportFactory;
 use Symfony\Component\Mailer\Bridge\Mailchimp\Transport\MandrillTransportFactory;
 use Symfony\Component\Mailer\Bridge\MailerSend\Transport\MailerSendTransportFactory;
 use Symfony\Component\Mailer\Bridge\Mailgun\Transport\MailgunTransportFactory;
 use Symfony\Component\Mailer\Bridge\Mailjet\Transport\MailjetTransportFactory;
+use Symfony\Component\Mailer\Bridge\MailKite\Transport\MailKiteTransportFactory;
 use Symfony\Component\Mailer\Bridge\Mailomat\Transport\MailomatTransportFactory;
 use Symfony\Component\Mailer\Bridge\MailPace\Transport\MailPaceTransportFactory;
 use Symfony\Component\Mailer\Bridge\Mailtrap\Transport\MailtrapTransportFactory;
 use Symfony\Component\Mailer\Bridge\Postal\Transport\PostalTransportFactory;
 use Symfony\Component\Mailer\Bridge\Postmark\Transport\PostmarkTransportFactory;
+use Symfony\Component\Mailer\Bridge\PufferPost\Transport\PufferPostTransportFactory;
 use Symfony\Component\Mailer\Bridge\Resend\Transport\ResendTransportFactory;
 use Symfony\Component\Mailer\Bridge\Scaleway\Transport\ScalewayTransportFactory;
 use Symfony\Component\Mailer\Bridge\Sendgrid\Transport\SendgridTransportFactory;
 use Symfony\Component\Mailer\Bridge\Sweego\Transport\SweegoTransportFactory;
+use Symfony\Component\Mailer\Bridge\TurboSmtp\Transport\TurboSmtpTransportFactory;
 use Symfony\Component\Mailer\Exception\UnsupportedSchemeException;
 use Symfony\Component\Mailer\Transport\Dsn;
 
@@ -47,22 +51,26 @@ final class UnsupportedSchemeExceptionTest extends TestCase
             AhaSendTransportFactory::class => false,
             AzureTransportFactory::class => false,
             BrevoTransportFactory::class => false,
+            CloudflareTransportFactory::class => false,
             GmailTransportFactory::class => false,
             InfobipTransportFactory::class => false,
             MailPaceTransportFactory::class => false,
             MailerSendTransportFactory::class => false,
             MailgunTransportFactory::class => false,
             MailjetTransportFactory::class => false,
+            MailKiteTransportFactory::class => false,
             MailomatTransportFactory::class => false,
             MandrillTransportFactory::class => false,
             PostalTransportFactory::class => false,
             PostmarkTransportFactory::class => false,
+            PufferPostTransportFactory::class => false,
             MailtrapTransportFactory::class => false,
             ResendTransportFactory::class => false,
             ScalewayTransportFactory::class => false,
             SendgridTransportFactory::class => false,
             SesTransportFactory::class => false,
             SweegoTransportFactory::class => false,
+            TurboSmtpTransportFactory::class => false,
         ]);
     }
 
@@ -82,22 +90,26 @@ final class UnsupportedSchemeExceptionTest extends TestCase
         yield ['ahasend', 'symfony/aha-send-mailer'];
         yield ['azure', 'symfony/azure-mailer'];
         yield ['brevo', 'symfony/brevo-mailer'];
+        yield ['cloudflare', 'symfony/cloudflare-mailer'];
         yield ['gmail', 'symfony/google-mailer'];
         yield ['infobip', 'symfony/infobip-mailer'];
         yield ['mailersend', 'symfony/mailersend-mailer'];
         yield ['mailgun', 'symfony/mailgun-mailer'];
         yield ['mailjet', 'symfony/mailjet-mailer'];
+        yield ['mailkite', 'symfony/mail-kite-mailer'];
         yield ['mailomat', 'symfony/mailomat-mailer'];
         yield ['mailpace', 'symfony/mail-pace-mailer'];
         yield ['mandrill', 'symfony/mailchimp-mailer'];
         yield ['postal', 'symfony/postal-mailer'];
         yield ['postmark', 'symfony/postmark-mailer'];
+        yield ['pufferpost', 'symfony/puffer-post-mailer'];
         yield ['mailtrap', 'symfony/mailtrap-mailer'];
         yield ['resend', 'symfony/resend-mailer'];
         yield ['scaleway', 'symfony/scaleway-mailer'];
         yield ['sendgrid', 'symfony/sendgrid-mailer'];
         yield ['ses', 'symfony/amazon-mailer'];
         yield ['sweego', 'symfony/sweego-mailer'];
+        yield ['turbosmtp', 'symfony/turbo-smtp-mailer'];
     }
 
     #[DataProvider('messageWhereSchemeIsNotPartOfSchemeToPackageMapProvider')]

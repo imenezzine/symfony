@@ -13,7 +13,9 @@ namespace Symfony\Component\Messenger\Bridge\AmazonSqs\Tests\Transport;
 
 use AsyncAws\Core\Exception\Http\NetworkException;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Bridge\AmazonSqs\Tests\Fixtures\DummyMessage;
+use Symfony\Component\Messenger\Bridge\AmazonSqs\Transport\AmazonSqsFairQueueStamp;
 use Symfony\Component\Messenger\Bridge\AmazonSqs\Transport\AmazonSqsFifoStamp;
 use Symfony\Component\Messenger\Bridge\AmazonSqs\Transport\AmazonSqsSender;
 use Symfony\Component\Messenger\Bridge\AmazonSqs\Transport\AmazonSqsXrayTraceHeaderStamp;
@@ -87,6 +89,48 @@ class AmazonSqsSenderTest extends TestCase
         $serializer->expects($this->once())->method('encode')->with($envelope)->willReturn($encoded);
 
         $sender = new AmazonSqsSender($connection, $serializer);
+        $sender->send($envelope);
+    }
+
+    public function testSendWithAmazonSqsFairQueueStamp()
+    {
+        $envelope = (new Envelope(new DummyMessage('Oy')))
+            ->with($stamp = new AmazonSqsFairQueueStamp('tenant-123'));
+
+        $encoded = ['body' => '...', 'headers' => ['type' => DummyMessage::class]];
+
+        $connection = $this->createMock(Connection::class);
+        $connection->expects($this->once())->method('send')
+            ->with($encoded['body'], $encoded['headers'], 0, $stamp->getMessageGroupId());
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->with($envelope)->willReturn($encoded);
+
+        $sender = new AmazonSqsSender($connection, $serializer);
+        $sender->send($envelope);
+    }
+
+    public function testSendWithAmazonSqsFairQueueStampWontWorkAlongsideFifoStamp()
+    {
+        $envelope = (new Envelope(new DummyMessage('Oy')))
+            ->with($fifoStamp = new AmazonSqsFifoStamp('testGroup', 'testDeduplicationId'))
+            ->with(new AmazonSqsFairQueueStamp('tenant-123'));
+
+        $encoded = ['body' => '...', 'headers' => ['type' => DummyMessage::class]];
+
+        $connection = $this->createMock(Connection::class);
+        $connection->expects($this->once())->method('send')
+            ->with($encoded['body'], $encoded['headers'], 0, $fifoStamp->getMessageGroupId(), $fifoStamp->getMessageDeduplicationId());
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->with($envelope)->willReturn($encoded);
+
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->once())
+            ->method('debug')
+            ->with($this->stringContains('takes precedence'), $this->anything());
+
+        $sender = new AmazonSqsSender($connection, $serializer, $logger);
         $sender->send($envelope);
     }
 

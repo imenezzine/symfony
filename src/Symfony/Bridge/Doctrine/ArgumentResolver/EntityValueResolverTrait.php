@@ -100,6 +100,30 @@ trait EntityValueResolverTrait
     }
 
     /**
+     * Finds a list of entities by criteria.
+     */
+    private function findByCriteria(ObjectManager $manager, MapEntity $options, array $criteria): array
+    {
+        try {
+            return $manager->getRepository($options->class)->findBy($criteria);
+        } catch (ConversionException) {
+            return [];
+        }
+    }
+
+    /**
+     * Finds an entity via closure.
+     */
+    private function findViaClosure(ObjectManager $manager, MapEntity $options, mixed $context): object|iterable|null
+    {
+        try {
+            return ($options->expr)($context, $manager->getRepository($options->class));
+        } catch (NoResultException|ConversionException) {
+            return null;
+        }
+    }
+
+    /**
      * Finds an entity by criteria.
      */
     private function findOneByCriteria(ObjectManager $manager, MapEntity $options, array $criteria): ?object

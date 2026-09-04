@@ -68,6 +68,10 @@ class UnsupportedSchemeException extends LogicException
             'class' => Bridge\Expo\ExpoTransportFactory::class,
             'package' => 'symfony/expo-notifier',
         ],
+        'facebook-page' => [
+            'class' => Bridge\FacebookPage\FacebookPageTransportFactory::class,
+            'package' => 'symfony/facebook-page-notifier',
+        ],
         'fakechat' => [
             'class' => Bridge\FakeChat\FakeChatTransportFactory::class,
             'package' => 'symfony/fake-chat-notifier',
@@ -103,6 +107,10 @@ class UnsupportedSchemeException extends LogicException
         'infobip' => [
             'class' => Bridge\Infobip\InfobipTransportFactory::class,
             'package' => 'symfony/infobip-notifier',
+        ],
+        'instagram' => [
+            'class' => Bridge\Instagram\InstagramTransportFactory::class,
+            'package' => 'symfony/instagram-notifier',
         ],
         'iqsms' => [
             'class' => Bridge\Iqsms\IqsmsTransportFactory::class,
@@ -284,6 +292,10 @@ class UnsupportedSchemeException extends LogicException
             'class' => Bridge\SmsFactor\SmsFactorTransportFactory::class,
             'package' => 'symfony/sms-factor-notifier',
         ],
+        'sms-proxima' => [
+            'class' => Bridge\SmsProxima\SmsProximaTransportFactory::class,
+            'package' => 'symfony/sms-proxima-notifier',
+        ],
         'smsmode' => [
             'class' => Bridge\Smsmode\SmsmodeTransportFactory::class,
             'package' => 'symfony/smsmode-notifier',
@@ -316,6 +328,10 @@ class UnsupportedSchemeException extends LogicException
             'class' => Bridge\Termii\TermiiTransportFactory::class,
             'package' => 'symfony/termii-notifier',
         ],
+        'threads' => [
+            'class' => Bridge\Threads\ThreadsTransportFactory::class,
+            'package' => 'symfony/threads-notifier',
+        ],
         'turbosms' => [
             'class' => Bridge\TurboSms\TurboSmsTransportFactory::class,
             'package' => 'symfony/turbo-sms-notifier',
@@ -335,6 +351,10 @@ class UnsupportedSchemeException extends LogicException
         'vonage' => [
             'class' => Bridge\Vonage\VonageTransportFactory::class,
             'package' => 'symfony/vonage-notifier',
+        ],
+        'whatsapp' => [
+            'class' => Bridge\WhatsApp\WhatsAppTransportFactory::class,
+            'package' => 'symfony/whats-app-notifier',
         ],
         'yunpian' => [
             'class' => Bridge\Yunpian\YunpianTransportFactory::class,

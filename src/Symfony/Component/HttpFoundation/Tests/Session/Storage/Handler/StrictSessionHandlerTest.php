@@ -13,13 +13,19 @@ namespace Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Session\Storage\Handler\AbstractSessionHandler;
+use Symfony\Component\HttpFoundation\Session\Storage\Handler\ClearableSessionHandlerInterface;
 use Symfony\Component\HttpFoundation\Session\Storage\Handler\StrictSessionHandler;
+use Symfony\Component\HttpFoundation\Tests\Fixtures\BareSessionHandler;
+
+abstract class ClearableInnerSessionHandler extends BareSessionHandler implements ClearableSessionHandlerInterface
+{
+}
 
 class StrictSessionHandlerTest extends TestCase
 {
     public function testOpen()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('open')
             ->with('path', 'name')->willReturn(true);
         $proxy = new StrictSessionHandler($handler);
@@ -31,7 +37,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testCloseSession()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('close')
             ->willReturn(true);
         $proxy = new StrictSessionHandler($handler);
@@ -41,7 +47,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testValidateIdOK()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('data');
         $proxy = new StrictSessionHandler($handler);
@@ -51,7 +57,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testValidateIdKO()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('');
         $proxy = new StrictSessionHandler($handler);
@@ -61,7 +67,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testRead()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('data');
         $proxy = new StrictSessionHandler($handler);
@@ -71,7 +77,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testReadWithValidateIdOK()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('data');
         $proxy = new StrictSessionHandler($handler);
@@ -82,7 +88,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testReadWithValidateIdMismatch()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->exactly(2))->method('read')
             ->willReturnCallback(function (...$args) {
                 static $series = [
@@ -104,7 +110,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testUpdateTimestamp()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('write')
             ->with('id', 'data')->willReturn(true);
         $proxy = new StrictSessionHandler($handler);
@@ -114,7 +120,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testWrite()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('write')
             ->with('id', 'data')->willReturn(true);
         $proxy = new StrictSessionHandler($handler);
@@ -124,7 +130,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testWriteEmptyNewSession()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('');
         $handler->expects($this->never())->method('write');
@@ -139,7 +145,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testWriteEmptyExistingSession()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('data');
         $handler->expects($this->never())->method('write');
@@ -153,7 +159,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testDestroy()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('destroy')
             ->with('id')->willReturn(true);
         $proxy = new StrictSessionHandler($handler);
@@ -164,7 +170,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testDestroyNewSession()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('');
         $handler->expects($this->once())->method('destroy')->willReturn(true);
@@ -177,7 +183,7 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testDestroyNonEmptyNewSession()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('read')
             ->with('id')->willReturn('');
         $handler->expects($this->once())->method('write')
@@ -194,11 +200,29 @@ class StrictSessionHandlerTest extends TestCase
 
     public function testGc()
     {
-        $handler = $this->createMock(\SessionHandlerInterface::class);
+        $handler = $this->createMock(BareSessionHandler::class);
         $handler->expects($this->once())->method('gc')
             ->with(123)->willReturn(1);
         $proxy = new StrictSessionHandler($handler);
 
         $this->assertSame(1, $proxy->gc(123));
+    }
+
+    public function testClearForwardsToInnerHandler()
+    {
+        $handler = $this->createMock(ClearableInnerSessionHandler::class);
+        $handler->expects($this->once())->method('clear');
+        $proxy = new StrictSessionHandler($handler);
+
+        $proxy->clear();
+    }
+
+    public function testClearThrowsWhenInnerHandlerNotClearable()
+    {
+        $handler = $this->createStub(BareSessionHandler::class);
+        $proxy = new StrictSessionHandler($handler);
+
+        $this->expectException(\LogicException::class);
+        $proxy->clear();
     }
 }

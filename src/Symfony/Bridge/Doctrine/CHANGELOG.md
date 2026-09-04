@@ -6,12 +6,20 @@ CHANGELOG
 
  * Add IterableToArrayCollectionTransformer for ObjectMapper
  * Throw a `ConstraintDefinitionException` from `UniqueEntity` when a checked field holds an array or is a to-many association, instead of building a query that cannot match
+ * Allow using closures with the `#[MapEntity]` attribute
+ * Deprecate `DoctrineCloseConnectionMiddleware` in favor of the new `DoctrineDbalCloseConnectionMiddleware`
+ * Deprecate `DoctrineOpenTransactionLoggerMiddleware` in favor of the new `DoctrineDbalOpenTransactionLoggerMiddleware`
+ * Deprecate `DoctrinePingConnectionMiddleware` in favor of the new `DoctrineDbalPingConnectionMiddleware`
+ * Add `DoctrineDbalTransactionMiddleware` to wrap all handlers in a single DBAL transaction without requiring the ORM
+ * Map the `DatePoint`, `DayPoint` and `TimePoint` property types to their Doctrine types, so schema tools detect them without an explicit `type`
+ * Load a list of entities into `array`-typed controller and command arguments with `#[MapEntity]`, using `findBy()`
+ * Add the `EntityExists` constraint for validating that a value references an existing entity
 
 8.1
 ---
 
  * Add option `uid_format` to `EntityType`
- * Deprecate setting an `$aliasMap` in `RegisterMappingsPass`. Namespace aliases are no longer supported in Doctrine.
+ * Deprecate setting an `$aliasMap` in `RegisterMappingsPass`; namespace aliases are no longer supported in Doctrine
 
 8.0
 ---

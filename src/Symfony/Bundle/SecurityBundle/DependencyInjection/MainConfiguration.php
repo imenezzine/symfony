@@ -14,6 +14,7 @@ namespace Symfony\Bundle\SecurityBundle\DependencyInjection;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\AbstractFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\AuthenticatorFactoryInterface;
 use Symfony\Component\Config\Definition\Builder\ArrayNodeDefinition;
+use Symfony\Component\Config\Definition\Builder\NodeBuilder;
 use Symfony\Component\Config\Definition\Builder\TreeBuilder;
 use Symfony\Component\Config\Definition\ConfigurationInterface;
 use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
@@ -130,6 +131,16 @@ class MainConfiguration implements ConfigurationInterface
                 ->arrayNode('access_control', 'rule')
                     ->cannotBeOverwritten()
                     ->prototype('array')
+                        ->beforeNormalization()
+                            ->ifArray()
+                            ->then(static function (array $v) {
+                                if (isset($v['roles'], $v['allow_if']) || isset($v['role'], $v['allow_if'])) {
+                                    trigger_deprecation('symfony/security-bundle', '8.2', 'Configuring both an access control rule "allow_if" and "roles" is deprecated, update "allow_if" instead.');
+                                }
+
+                                return $v;
+                            })
+                        ->end()
                         ->children()
                             ->scalarNode('request_matcher')->defaultNull()->end()
                             ->scalarNode('requires_channel')->defaultNull()->end()
@@ -154,11 +165,17 @@ class MainConfiguration implements ConfigurationInterface
                                 ->prototype('scalar')->end()
                             ->end()
                             ->scalarNode('allow_if')->defaultNull()->end()
-                        ->end()
-                        ->children()
                             ->arrayNode('roles', 'role')
                                 ->beforeNormalization()->ifString()->then(static fn ($v) => preg_split('/\s*,\s*/', $v))->end()
                                 ->prototype('scalar')->end()
+                                ->validate()
+                                    ->ifTrue(static fn (array $v) => \count($v) > 1)
+                                    ->then(static function (array $v) {
+                                        trigger_deprecation('symfony/security-bundle', '8.2', 'Configuring an access control rule with many "roles" is deprecated, use "allow_if" or role hierarchy instead.');
+
+                                        return $v;
+                                    })
+                                ->end()
                             ->end()
                         ->end()
                     ->end()
@@ -267,11 +284,32 @@ class MainConfiguration implements ConfigurationInterface
             ->end()
             ->arrayNode('switch_user')
                 ->canBeUnset()
+                ->beforeNormalization()
+                    ->ifArray()
+                    ->then(static function ($v) {
+                        if (isset($v['csrf_token_manager'])) {
+                            $v['enable_csrf'] ??= true;
+                        } elseif ($v['enable_csrf'] ?? false) {
+                            $v['csrf_token_manager'] = 'security.csrf.token_manager';
+                        }
+
+                        return $v;
+                    })
+                ->end()
                 ->children()
                     ->scalarNode('provider')->end()
                     ->scalarNode('parameter')->defaultValue('_switch_user')->end()
                     ->scalarNode('role')->defaultValue('ROLE_ALLOWED_TO_SWITCH')->end()
                     ->scalarNode('target_route')->defaultValue(null)->end()
+                    ->scalarNode('path')
+                        ->defaultNull()
+                        ->cannotBeEmpty()
+                        ->info('Restrict user switching to this path (a path or route name). Declaring the route POST-only is up to the application. The parameter is no longer read from the request headers in this mode.')
+                    ->end()
+                    ->booleanNode('enable_csrf')->defaultNull()->end()
+                    ->scalarNode('csrf_token_id')->defaultValue('switch_user')->end()
+                    ->scalarNode('csrf_parameter')->defaultValue('_csrf_token')->end()
+                    ->scalarNode('csrf_token_manager')->end()
                 ->end()
             ->end()
             ->arrayNode('required_badges', 'required_badge')
@@ -317,7 +355,7 @@ class MainConfiguration implements ConfigurationInterface
         $firewallNodeBuilder
             ->end()
             ->validate()
-                ->ifTrue(static fn ($v) => true === $v['security'] && isset($v['pattern']) && !isset($v['request_matcher']))
+                ->ifTrue(static fn ($v) => $v['security'] && isset($v['pattern']) && !isset($v['request_matcher']))
                 ->then(static function ($firewall) use ($abstractFactoryKeys) {
                     foreach ($abstractFactoryKeys as $k) {
                         if (!isset($firewall[$k]['check_path'])) {
@@ -367,23 +405,21 @@ class MainConfiguration implements ConfigurationInterface
                         ->end()
                     ->end()
                 ->end()
+                ->appendFromCallback(function (NodeBuilder $builder) {
+                    foreach ($this->userProviderFactories as $factory) {
+                        $name = str_replace('-', '_', $factory->getKey());
+                        $factoryNode = $builder->arrayNode($name)->canBeUnset();
+
+                        $factory->addConfiguration($factoryNode);
+                    }
+                })
             ->end()
-        ;
-
-        foreach ($this->userProviderFactories as $factory) {
-            $name = str_replace('-', '_', $factory->getKey());
-            $factoryNode = $providerNodeBuilder->children()->arrayNode($name)->canBeUnset();
-
-            $factory->addConfiguration($factoryNode);
-        }
-
-        $providerNodeBuilder
             ->validate()
                 ->ifTrue(static fn ($v) => \count($v) > 1)
                 ->thenInvalid('You cannot set multiple provider types for the same provider')
             ->end()
             ->validate()
-                ->ifTrue(static fn ($v) => 0 === \count($v))
+                ->ifTrue(static fn ($v) => !$v)
                 ->thenInvalid('You must set a provider definition for the provider.')
             ->end()
         ;

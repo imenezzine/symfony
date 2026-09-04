@@ -43,22 +43,26 @@ class ImportMapConfigReaderTest extends TestCase
         $importMap = <<<EOF
             <?php
             return [
-                'remote_package' => [
-                    'version' => '3.2.1',
-                ],
-                'local_package' => [
-                    'path' => 'app.js',
-                ],
-                'type_css' => [
-                    'path' => 'styles/app.css',
-                    'type' => 'css',
-                ],
                 'entry_point' => [
                     'path' => 'entry.js',
                     'entrypoint' => true,
                 ],
+                'local_package' => [
+                    'path' => 'app.js',
+                ],
                 'package/with_file.js' => [
                     'version' => '1.0.0',
+                ],
+                'raw_esm_package' => [
+                    'version' => '2.0.0',
+                    'esm' => false,
+                ],
+                'remote_package' => [
+                    'version' => '3.2.1',
+                ],
+                'type_css' => [
+                    'path' => 'styles/app.css',
+                    'type' => 'css',
                 ],
             ];
             EOF;
@@ -76,9 +80,19 @@ class ImportMapConfigReaderTest extends TestCase
         $this->assertInstanceOf(ImportMapEntries::class, $entries);
         /** @var ImportMapEntry[] $allEntries */
         $allEntries = iterator_to_array($entries);
-        $this->assertCount(5, $allEntries);
+        $this->assertCount(6, $allEntries);
 
-        $remotePackageEntry = $allEntries[0];
+        $localPackageEntry = $allEntries[1];
+        $this->assertFalse($localPackageEntry->isRemotePackage());
+        $this->assertSame('app.js', $localPackageEntry->path);
+
+        $packageWithFileEntry = $allEntries[2];
+        $this->assertSame('package/with_file.js', $packageWithFileEntry->packageModuleSpecifier);
+
+        $rawEsmEntry = $allEntries[3];
+        $this->assertFalse($rawEsmEntry->useEsm);
+
+        $remotePackageEntry = $allEntries[4];
         $this->assertSame('remote_package', $remotePackageEntry->importName);
         $this->assertSame('/path/to/vendor/remote_package.js', $remotePackageEntry->path);
         $this->assertSame('3.2.1', $remotePackageEntry->version);
@@ -86,15 +100,8 @@ class ImportMapConfigReaderTest extends TestCase
         $this->assertFalse($remotePackageEntry->isEntrypoint);
         $this->assertSame('remote_package', $remotePackageEntry->packageModuleSpecifier);
 
-        $localPackageEntry = $allEntries[1];
-        $this->assertFalse($localPackageEntry->isRemotePackage());
-        $this->assertSame('app.js', $localPackageEntry->path);
-
-        $typeCssEntry = $allEntries[2];
+        $typeCssEntry = $allEntries[5];
         $this->assertSame('css', $typeCssEntry->type->value);
-
-        $packageWithFileEntry = $allEntries[4];
-        $this->assertSame('package/with_file.js', $packageWithFileEntry->packageModuleSpecifier);
 
         // now save the original raw data from importmap.php and delete the file
         $originalImportMapData = (static fn () => eval('?>'.file_get_contents(__DIR__.'/../Fixtures/importmap_config_reader/importmap.php')))();
@@ -104,6 +111,44 @@ class ImportMapConfigReaderTest extends TestCase
         $newImportMapData = (static fn () => eval('?>'.file_get_contents(__DIR__.'/../Fixtures/importmap_config_reader/importmap.php')))();
 
         $this->assertSame($originalImportMapData, $newImportMapData);
+    }
+
+    #[DataProvider('getAlphabeticalEntriesTests')]
+    public function testWriteEntriesEstablishesAlphabeticalEntryOrder(ImportMapEntries $entries, array $expectedKeys)
+    {
+        $configReader = new ImportMapConfigReader(
+            __DIR__.'/../Fixtures/importmap_config_reader/importmap.php',
+            new RemotePackageStorage(sys_get_temp_dir()),
+        );
+
+        $configReader->writeEntries($entries);
+        $importMapData = (static fn () => eval('?>'.file_get_contents(__DIR__.'/../Fixtures/importmap_config_reader/importmap.php')))();
+
+        $this->assertSame($expectedKeys, array_keys($importMapData));
+    }
+
+    public static function getAlphabeticalEntriesTests()
+    {
+        $alpha = ImportMapEntry::createLocal('alpha', ImportMapType::JS, 'alpha.js', false);
+        $beta = ImportMapEntry::createLocal('beta', ImportMapType::JS, 'beta.js', false);
+        $gamma = ImportMapEntry::createLocal('gamma', ImportMapType::JS, 'gamma.js', false);
+        $delta = ImportMapEntry::createLocal('delta', ImportMapType::JS, 'delta.js', false);
+        $expectedKeys = [$alpha->importName, $beta->importName, $delta->importName, $gamma->importName];
+
+        yield 'ascending' => [
+            'entries' => new ImportMapEntries([$alpha, $beta, $delta, $gamma]),
+            'expectedKeys' => $expectedKeys,
+        ];
+
+        yield 'descending' => [
+            'entries' => new ImportMapEntries([$gamma, $delta, $beta, $alpha]),
+            'expectedKeys' => $expectedKeys,
+        ];
+
+        yield 'random' => [
+            'entries' => new ImportMapEntries([$delta, $beta, $alpha, $gamma]),
+            'expectedKeys' => $expectedKeys,
+        ];
     }
 
     #[DataProvider('getPathToFilesystemPathTests')]
@@ -209,5 +254,16 @@ class ImportMapConfigReaderTest extends TestCase
 
         $this->assertCount(1, $entries);
         $this->assertSame('no-scope', $entries[0]->path);
+    }
+
+    public function testCreateRemoteEntryUsesEsmByDefault()
+    {
+        $reader = new ImportMapConfigReader(__DIR__.'/../Fixtures/importmap.php', new RemotePackageStorage(sys_get_temp_dir()));
+
+        $this->assertTrue($reader->createRemoteEntry('lodash', ImportMapType::JS, '1.2.3', 'lodash', false)->useEsm);
+        $this->assertFalse($reader->createRemoteEntry('lodash', ImportMapType::JS, '1.2.3', 'lodash', false, false)->useEsm);
+
+        // the class is not final, so declaring the extra parameter would break every child that overrides the method
+        $this->assertSame(5, (new \ReflectionMethod(ImportMapConfigReader::class, 'createRemoteEntry'))->getNumberOfParameters());
     }
 }

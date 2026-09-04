@@ -291,6 +291,39 @@ class EntityValueResolverTest extends TestCase
         $this->assertSame([$object], $resolver->resolve($request, $argument));
     }
 
+    public function testResolveWithExplicitMappingTakesPrecedenceOverRouteMapping()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $request = new Request();
+        $request->attributes->set('post', 'abc');
+        $request->attributes->set('_route_mapping', ['ref' => 'post']);
+
+        $argument = $this->createArgument(
+            'stdClass',
+            new MapEntity(mapping: ['post' => 'reference']),
+            'post'
+        );
+
+        $manager->expects($this->never())
+            ->method('getClassMetadata');
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->once())
+            ->method('findOneBy')
+            ->with(['reference' => 'abc'])
+            ->willReturn($object = new \stdClass());
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with('stdClass')
+            ->willReturn($repository);
+
+        $this->assertSame([$object], $resolver->resolve($request, $argument));
+    }
+
     public function testResolveWithRouteMapping()
     {
         $manager = $this->createMock(ObjectManager::class);
@@ -490,6 +523,92 @@ class EntityValueResolverTest extends TestCase
         $resolver->resolve($request, $argument);
     }
 
+    public function testClosureMapsToArgument()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $request = new Request();
+        $request->attributes->set('id', 5);
+        $argument = $this->createArgument(
+            'stdClass',
+            new MapEntity(expr: static fn (Request $request, ObjectRepository $repository) => $repository->findOneBy(['id' => $request->attributes->get('id')])),
+            'arg1'
+        );
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->never())
+            ->method('find');
+        $repository->expects($this->once())
+            ->method('findOneBy')
+            ->with(['id' => 5])
+            ->willReturn($object = new \stdClass());
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with(\stdClass::class)
+            ->willReturn($repository);
+
+        $this->assertSame([$object], $resolver->resolve($request, $argument));
+    }
+
+    public function testClosureReturnsNullThrows404()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $request = new Request();
+        $argument = $this->createArgument(
+            'stdClass',
+            new MapEntity(expr: static fn () => null),
+            'arg1'
+        );
+
+        $repository = self::createStub(ObjectRepository::class);
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with(\stdClass::class)
+            ->willReturn($repository);
+
+        $this->expectException(NotFoundHttpException::class);
+
+        $resolver->resolve($request, $argument);
+    }
+
+    public function testClosureFailureReturns404()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $request = new Request();
+        $argument = $this->createArgument(
+            'stdClass',
+            new MapEntity(expr: static function (Request $request, ObjectRepository $repository) {
+                $repository->findOneBy(['id' => $request->attributes->get('id')]);
+
+                throw new ConversionException();
+            }),
+            'arg1'
+        );
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->once())
+            ->method('findOneBy')
+            ->with(['id' => null]);
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with(\stdClass::class)
+            ->willReturn($repository);
+
+        $this->expectException(NotFoundHttpException::class);
+
+        $resolver->resolve($request, $argument);
+    }
+
     public function testAlreadyResolved()
     {
         $manager = $this->createStub(ObjectManager::class);
@@ -502,6 +621,78 @@ class EntityValueResolverTest extends TestCase
         $argument = $this->createArgument('stdClass', name: 'arg');
 
         $this->assertSame([], $resolver->resolve($request, $argument));
+    }
+
+    public function testResolveWithFindBy()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $request = new Request();
+        $request->attributes->set('arg1', 1);
+
+        $argument = $this->createArgument('array', new MapEntity(class: \stdClass::class, mapping: ['arg1' => 'arg1']), 'arg1');
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->once())
+            ->method('findBy')
+            ->with(['arg1' => 1], null, null, null)
+            ->willReturn([$object = new \stdClass()]);
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with('stdClass')
+            ->willReturn($repository);
+
+        $this->assertSame([[$object]], $resolver->resolve($request, $argument));
+    }
+
+    public function testResolveArrayWithRouteMapping()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $request = new Request();
+        $request->attributes->set('posts', 'john');
+        $request->attributes->set('_route_mapping', ['author' => 'posts']);
+
+        $argument = $this->createArgument('array', new MapEntity(class: \stdClass::class), 'posts');
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->once())
+            ->method('findBy')
+            ->with(['author' => 'john'])
+            ->willReturn($objects = [new \stdClass(), new \stdClass()]);
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with('stdClass')
+            ->willReturn($repository);
+
+        $this->assertSame([$objects], $resolver->resolve($request, $argument));
+    }
+
+    public function testArrayArgumentSkipsTheIdentifierLookup()
+    {
+        $manager = $this->createStub(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        // without a mapping, a bare "id" route attribute wins the identifier lookup and
+        // would resolve a single entity into the array-typed argument
+        $request = new Request();
+        $request->attributes->set('id', 7);
+
+        $argument = $this->createArgument('array', new MapEntity(class: \stdClass::class), 'posts');
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->never())->method('find');
+        $manager->method('getRepository')->willReturn($repository);
+
+        $this->expectException(NearMissValueResolverException::class);
+        $resolver->resolve($request, $argument);
     }
 
     private function createArgument(?string $class = null, ?MapEntity $entity = null, string $name = 'arg', bool $isNullable = false): ArgumentMetadata

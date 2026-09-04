@@ -115,6 +115,35 @@ class EventStreamResponseTest extends TestCase
         $this->assertSameResponseContent($expected, $response);
     }
 
+    public function testRetryIsNotSharedBetweenServerEvents()
+    {
+        $first = new ServerEvent('foo', retry: 3000);
+        $second = new ServerEvent('bar', retry: 3000);
+
+        $this->assertSame("retry: 3000\ndata: foo\n\n", implode('', iterator_to_array($first)));
+        $this->assertSame("retry: 3000\ndata: bar\n\n", implode('', iterator_to_array($second)));
+    }
+
+    public function testRetryIsNotSharedBetweenStreams()
+    {
+        $callback = static function () {
+            yield new ServerEvent('foo');
+            yield new ServerEvent('bar');
+        };
+
+        $expected = <<<STR
+            retry: 2000
+            data: foo
+
+            data: bar
+
+
+            STR;
+
+        $this->assertSameResponseContent($expected, new EventStreamResponse($callback, retry: 2000));
+        $this->assertSameResponseContent($expected, new EventStreamResponse($callback, retry: 2000));
+    }
+
     public function testStreamEventWithSendMethod()
     {
         $response = new EventStreamResponse(static function (EventStreamResponse $response) {
@@ -144,6 +173,90 @@ class EventStreamResponseTest extends TestCase
         });
 
         $this->assertSameResponseContent("\n", $response);
+    }
+
+    public function testStreamEventWithMultilineStringData()
+    {
+        $response = new EventStreamResponse(static function () {
+            yield new ServerEvent(
+                data: "first line\nsecond line\rthird line\r\nfourth line",
+            );
+        });
+
+        $expected = <<<STR
+            data: first line
+            data: second line
+            data: third line
+            data: fourth line
+
+
+            STR;
+
+        $this->assertSameResponseContent($expected, $response);
+    }
+
+    public function testStreamEventWithMultilineIterableData()
+    {
+        $response = new EventStreamResponse(static function () {
+            yield new ServerEvent(
+                data: ['first line', "second line\nthird line"],
+            );
+        });
+
+        $expected = <<<STR
+            data: first line
+            data: second line
+            data: third line
+
+
+            STR;
+
+        $this->assertSameResponseContent($expected, $response);
+    }
+
+    public function testStreamEventCannotInjectFieldsThroughData()
+    {
+        $response = new EventStreamResponse(static function () {
+            yield new ServerEvent(
+                data: "legit\nevent: adminAlert\ndata: hijacked",
+                type: 'message',
+            );
+        });
+
+        $expected = <<<STR
+            event: message
+            data: legit
+            data: event: adminAlert
+            data: data: hijacked
+
+
+            STR;
+
+        $this->assertSameResponseContent($expected, $response);
+    }
+
+    public function testStreamEventCannotInjectFieldsThroughIdTypeAndComment()
+    {
+        $response = new EventStreamResponse(static function () {
+            yield new ServerEvent(
+                data: 'foo',
+                type: "message\nretry: 1",
+                id: "1\revent: adminAlert",
+                comment: "bla\r\nbla",
+            );
+        });
+
+        $expected = <<<STR
+            : bla
+            : bla
+            id: 1event: adminAlert
+            event: messageretry: 1
+            data: foo
+
+
+            STR;
+
+        $this->assertSameResponseContent($expected, $response);
     }
 
     private function assertSameResponseContent(string $expected, EventStreamResponse $response): void

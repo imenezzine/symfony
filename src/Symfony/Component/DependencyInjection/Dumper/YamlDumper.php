@@ -16,8 +16,10 @@ use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\ArgumentInterface;
 use Symfony\Component\DependencyInjection\Argument\EnvClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\Definition;
@@ -254,6 +256,15 @@ class YamlDumper extends Dumper
 
             return new TaggedValue('service_closure', $this->dumpValue($value));
         }
+        if ($value instanceof LazyProxyArgument) {
+            [$reference, $interfaces] = $value->getValues();
+
+            if (!$interfaces) {
+                return new TaggedValue('lazy_proxy', $this->dumpValue($reference));
+            }
+
+            return new TaggedValue('lazy_proxy', ['service' => $this->dumpValue($reference), 'interface' => $interfaces]);
+        }
         if ($value instanceof EnvClosureArgument) {
             $envExpr = $this->container->resolveEnvPlaceholders($value->getValue());
             $default = $value->getDefault();
@@ -266,6 +277,24 @@ class YamlDumper extends Dumper
         }
         if ($value instanceof ArgumentInterface) {
             $tag = $value;
+
+            if ($value instanceof TaggedClassMapArgument) {
+                $defaultIndexAttribute = preg_match('/[^.]++$/', $value->getTag(), $matches) ? $matches[0] : $value->getTag();
+
+                if ($defaultIndexAttribute === $value->getIndexAttribute() && !$value->getExclude()) {
+                    return new TaggedValue('tagged_class_map', $value->getTag());
+                }
+
+                $content = ['tag' => $value->getTag()];
+                if ($defaultIndexAttribute !== $value->getIndexAttribute()) {
+                    $content['index_by'] = $value->getIndexAttribute();
+                }
+                if ($excludes = $value->getExclude()) {
+                    $content['exclude'] = 1 === \count($excludes) ? $excludes[0] : $excludes;
+                }
+
+                return new TaggedValue('tagged_class_map', $content);
+            }
 
             if ($value instanceof TaggedIteratorArgument || ($value instanceof ServiceLocatorArgument && $tag = $value->getTaggedIteratorArgument())) {
                 if (null === $tag->getIndexAttribute()) {

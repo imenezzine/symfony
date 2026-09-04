@@ -129,18 +129,23 @@
     "require-dev": {
         "amphp/http-client": "^5.0",
         "amphp/http-tunnel": "^2.0",
+        "amphp/mysql": "^3.1",
+        "amphp/parallel": "^2.0",
+        "amphp/postgres": "^2.2",
+        "amphp/sql": "^2.1",
         "async-aws/dynamo-db": "^3.0",
         "async-aws/ses": "^1.0",
         "async-aws/sqs": "^1.0|^2.0",
         "async-aws/sns": "^1.0",
-        "cache/integration-tests": "dev-master",
+        "cache/integration-tests": "^1.0.5",
         "doctrine/collections": "^1.8|^2.0",
         "doctrine/data-fixtures": "^1.1|^2",
         "doctrine/dbal": "^4.3",
         "doctrine/orm": "^3.4",
         "dragonmantank/cron-expression": "^3.1",
         "egulias/email-validator": "^2.1.10|^3.1|^4",
-        "guzzlehttp/guzzle": "^7.10",
+        "fabpot/amphp-sqlite3": "^1.0",
+        "guzzlehttp/guzzle": "^7.10|^8.0",
         "jolicode/jolinotif": "^2.7.2|^3.0",
         "jsonpath-standard/jsonpath-compliance-test-suite": "*",
         "league/commonmark": "^2.9",
@@ -151,6 +156,7 @@
         "monolog/monolog": "^3.0",
         "nikic/php-parser": "^5.0",
         "nyholm/psr7": "^1.0",
+        "opis/json-schema": "^2.6",
         "pda/pheanstalk": "^5.1|^7.0|^8.0",
         "php-http/discovery": "^1.15",
         "php-http/httplug": "^1.0|^2.0",
@@ -231,7 +237,7 @@
             "url": "src/Symfony/Contracts",
             "options": {
                 "versions": {
-                    "symfony/contracts": "3.7.x-dev"
+                    "symfony/contracts": "3.8.x-dev"
                 }
             }
         },

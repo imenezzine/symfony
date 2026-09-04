@@ -35,12 +35,24 @@ class ParameterBagTest extends TestCase
 
     public function testClear()
     {
-        $bag = new ParameterBag($parameters = [
+        $bag = new ParameterBag([
             'foo' => 'foo',
             'bar' => 'bar',
         ]);
+        $bag->deprecate('foo', 'symfony/test', '6.3');
+        $bag->resolve();
         $bag->clear();
         $this->assertEquals([], $bag->all(), '->clear() removes all parameters');
+        $this->assertEquals([], $bag->allDeprecated(), '->clear() removes all deprecated parameters');
+        $this->assertFalse($bag->isResolved(), '->clear() resets the resolved state');
+
+        $bag->set('base', 'value');
+        $bag->set('ref', '%base%');
+        $bag->set('escaped', 'foo %%bar%% baz');
+        $bag->resolve();
+        $this->assertSame('value', $bag->get('ref'), '->resolve() resolves parameters added after clear()');
+        $this->assertSame('foo %bar% baz', $bag->get('escaped'), '->resolve() unescapes parameters added after clear() only once');
+        $this->assertTrue($bag->isResolved());
     }
 
     public function testRemove()
@@ -356,6 +368,16 @@ class ParameterBagTest extends TestCase
 
         $this->assertEquals('I\'m a %foo%', $bag->get('bar'), '->resolveValue() supports % escaping by doubling it');
         $this->assertEquals(['bar' => ['ding' => 'I\'m a bar %foo %bar']], $bag->get('foo'), '->resolveValue() supports % escaping by doubling it');
+    }
+
+    public function testResolveValueKeepsEscapingOnAResolvedBag()
+    {
+        $bag = new ParameterBag(['foo' => 'I\'m a %%bar%%']);
+        $bag->resolve();
+
+        $this->assertSame('I\'m a %%bar%%', $bag->resolveValue('%foo%'), '->resolveValue() returns escaped values once the bag is resolved');
+        $this->assertSame('ding I\'m a %%bar%% dong', $bag->resolveValue('ding %foo% dong'), '->resolveValue() returns escaped values once the bag is resolved');
+        $this->assertSame('I\'m a %bar%', $bag->unescapeValue($bag->resolveValue('%foo%')));
     }
 
     public function testEscapeValue()

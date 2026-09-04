@@ -14,6 +14,7 @@ namespace Symfony\Component\VarDumper\Tests\Dumper;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Process\Process;
 use Symfony\Component\VarDumper\Caster\ClassDumpStub;
 use Symfony\Component\VarDumper\Caster\ClassStub;
 use Symfony\Component\VarDumper\Caster\CutStub;
@@ -34,6 +35,13 @@ use Twig\Loader\FilesystemLoader;
 class CliDumperTest extends TestCase
 {
     use VarDumperTestTrait;
+
+    public function testC1ControlCharsAreEscaped()
+    {
+        $this->assertDumpEquals('"a\u{9B}b"', "a\u{9B}b");
+        $this->assertDumpEquals('"\e\u{9B}\u{80}"', "\e\u{9B}\u{80}");
+        $this->assertDumpEquals('"\u{A0}é"', "\u{A0}\u{E9}");
+    }
 
     public function testGet()
     {
@@ -570,5 +578,22 @@ class CliDumperTest extends TestCase
                 $_ENV['SYMFONY_IDE'] = $ide;
             }
         }
+    }
+
+    public function testColorsOnTerminalWhenDumpingToPhpOutput()
+    {
+        if (!Process::isPtySupported()) {
+            $this->markTestSkipped('PTY is not supported.');
+        }
+
+        $process = new Process([\PHP_BINARY, __DIR__.'/../Fixtures/dump_colors.php'], null, [
+            'COMPONENT_ROOT' => __DIR__.'/../../',
+            'TERM' => 'xterm-256color',
+            'NO_COLOR' => false,
+        ]);
+        $process->setPty(true);
+        $process->mustRun();
+
+        $this->assertSame('tty=true colors=true', trim($process->getOutput()));
     }
 }

@@ -16,6 +16,9 @@ use Symfony\Bundle\FrameworkBundle\Tests\Fixtures\Suit;
 use Symfony\Component\DependencyInjection\Alias;
 use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
+use Symfony\Component\DependencyInjection\Attribute\AsTaggedItem;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
@@ -225,8 +228,11 @@ class ObjectsProvider
                 ->addArgument(new IteratorArgument([
                     new Reference('definition_1'),
                     new Reference('.definition_2'),
+                    new LazyProxyArgument(new Reference('.definition_2')),
                 ]))
                 ->addArgument(new AbstractArgument('placeholder'))
+                ->addArgument(new LazyProxyArgument(new Reference('.definition_2')))
+                ->addArgument(new LazyProxyArgument(new Reference('.definition_2'), ['Full\\Qualified\\Interface1', 'Full\\Qualified\\Interface2']))
                 ->setFactory(['Full\\Qualified\\FactoryClass', 'get']),
             '.definition_2' => $definition2
                 ->setPublic(false)
@@ -244,6 +250,18 @@ class ObjectsProvider
                 ->setFile('/path/to/file')
                 ->setFactory([new Definition('Full\\Qualified\\FactoryClass'), 'get']),
             'definition_without_class' => new Definition(),
+        ];
+    }
+
+    public static function getContainerDefinitionsWithTaggedClassMap()
+    {
+        $taggedClassMap = new TaggedClassMapArgument('app.message', 'format');
+        $taggedClassMap->setValues(['foo' => 'Full\\Qualified\\FooMessage']);
+
+        return [
+            'definition_tagged_class_map' => (new Definition('Full\\Qualified\\Class1'))
+                ->setPublic(true)
+                ->addArgument($taggedClassMap),
         ];
     }
 
@@ -296,6 +314,24 @@ class ObjectsProvider
                 ->setLazy(false)
                 ->setAbstract(false)
                 ->addTag('tag1', ['priority' => 0]),
+        ];
+    }
+
+    public static function getContainerBuildersWithTaggedItemPriorityTags()
+    {
+        $builder = new ContainerBuilder();
+        $builder->setDefinitions(self::getContainerDefinitionsWithTaggedItemPriorityTags());
+
+        return ['builder_tagged_item' => $builder];
+    }
+
+    public static function getContainerDefinitionsWithTaggedItemPriorityTags()
+    {
+        return [
+            'definition_no_priority' => (new Definition(TaggedItemWithPriorityClass::class))->setPublic(true)->addTag('tag1', ['attr1' => 'val1']),
+            'definition_attribute_priority' => (new Definition(TaggedItemWithPriorityClass::class))->setPublic(true)->setAutoconfigured(true)->addTag('tag1', ['attr1' => 'val1']),
+            'definition_tag_priority' => (new Definition('Full\\Qualified\\Class1'))->setPublic(true)->addTag('tag1', ['priority' => 20]),
+            'definition_method_priority' => (new Definition(TaggedItemWithPriorityMethodClass::class))->setPublic(true)->setAutoconfigured(true)->addTag('tag1')->addTag('tag1', ['priority' => 5]),
         ];
     }
 
@@ -399,4 +435,18 @@ class ClassWithDocCommentOnMultipleLines
  */
 class ClassWithDocCommentWithoutInitialSpace
 {
+}
+
+#[AsTaggedItem(priority: 30)]
+class TaggedItemWithPriorityClass
+{
+}
+
+#[AsTaggedItem(priority: 99)]
+class TaggedItemWithPriorityMethodClass
+{
+    public static function getDefaultPriority(): int
+    {
+        return 10;
+    }
 }

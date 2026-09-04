@@ -22,6 +22,7 @@ use Symfony\Bundle\SecurityBundle\Security\FirewallMap;
 use Symfony\Component\DependencyInjection\Container;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -33,15 +34,84 @@ use Symfony\Component\Security\Core\Authorization\TraceableAccessDecisionManager
 use Symfony\Component\Security\Core\Authorization\Voter\TraceableVoter;
 use Symfony\Component\Security\Core\Authorization\Voter\Vote;
 use Symfony\Component\Security\Core\Authorization\Voter\VoterInterface;
+use Symfony\Component\Security\Core\Dumper\MermaidDumper;
 use Symfony\Component\Security\Core\Role\RoleHierarchy;
 use Symfony\Component\Security\Core\User\InMemoryUser;
+use Symfony\Component\Security\Core\User\InMemoryUserProvider;
+use Symfony\Component\Security\Csrf\CsrfToken;
+use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
+use Symfony\Component\Security\Http\Event\TokenDeauthenticatedEvent;
 use Symfony\Component\Security\Http\Firewall\AbstractListener;
+use Symfony\Component\Security\Http\Impersonate\ImpersonateUrlGenerator;
 use Symfony\Component\Security\Http\Logout\LogoutUrlGenerator;
 use Symfony\Component\VarDumper\Caster\ClassStub;
+use Symfony\Component\VarDumper\Cloner\Data;
 use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 class SecurityDataCollectorTest extends TestCase
 {
+    public function testCollectDeauthentication()
+    {
+        $token = new UsernamePasswordToken(new InMemoryUser('jane', 'password'), 'main', ['ROLE_USER']);
+        $event = new TokenDeauthenticatedEvent($token, new Request(), 'the user has changed', [InMemoryUserProvider::class]);
+
+        $collector = new SecurityDataCollector(new TokenStorage());
+        $collector->collectDeauthentication($event);
+        $collector->collect(new Request(), new Response());
+
+        $this->assertSame([
+            'reason' => 'the user has changed',
+            'providers' => [InMemoryUserProvider::class],
+            'user' => 'jane',
+        ], $collector->getDeauthentication());
+    }
+
+    public function testDeauthenticationReachesEveryProfileOfTheRequest()
+    {
+        $token = new UsernamePasswordToken(new InMemoryUser('jane', 'password'), 'main', ['ROLE_USER']);
+
+        $collector = new SecurityDataCollector(new TokenStorage());
+        $collector->collectDeauthentication(new TokenDeauthenticatedEvent($token, new Request()));
+
+        // a sub-request finishes before the main one, so it collects first
+        $collector->collect(new Request(), new Response());
+        $this->assertNotNull($collector->getDeauthentication());
+
+        $collector->collect(new Request(), new Response());
+        $this->assertNotNull($collector->getDeauthentication());
+    }
+
+    public function testResetClearsDeauthentication()
+    {
+        $token = new UsernamePasswordToken(new InMemoryUser('jane', 'password'), 'main', ['ROLE_USER']);
+
+        $collector = new SecurityDataCollector(new TokenStorage());
+        $collector->collectDeauthentication(new TokenDeauthenticatedEvent($token, new Request()));
+        $collector->reset();
+        $collector->collect(new Request(), new Response());
+
+        $this->assertNull($collector->getDeauthentication());
+    }
+
+    public function testGetDeauthenticationAfterLateCollect()
+    {
+        $token = new UsernamePasswordToken(new InMemoryUser('jane', 'password'), 'main', ['ROLE_USER']);
+
+        $collector = new SecurityDataCollector(new TokenStorage());
+        $collector->collectDeauthentication(new TokenDeauthenticatedEvent($token, new Request(), 'the user could not be found by any user provider', [InMemoryUserProvider::class]));
+        $collector->collect(new Request(), new Response());
+        $collector->lateCollect();
+
+        $deauthentication = $collector->getDeauthentication();
+
+        $this->assertInstanceOf(Data::class, $deauthentication);
+        $this->assertSame([
+            'reason' => 'the user could not be found by any user provider',
+            'providers' => [InMemoryUserProvider::class],
+            'user' => 'jane',
+        ], $deauthentication->getValue(true));
+    }
+
     public function testCollectWhenSecurityIsDisabled()
     {
         $collector = new SecurityDataCollector(null, null, null, null, null, null);
@@ -64,7 +134,15 @@ class SecurityDataCollectorTest extends TestCase
     public function testCollectWhenAuthenticationTokenIsNull()
     {
         $tokenStorage = new TokenStorage();
-        $collector = new SecurityDataCollector($tokenStorage, $this->getRoleHierarchy(), null, null, null, null);
+        $mermaidDumper = $this->createMock(MermaidDumper::class);
+
+        $mermaidDumper
+            ->expects($this->once())
+            ->method('dump')
+            ->with($this->getRoleHierarchy())
+            ->willReturn('graph TD; A-->B;');
+
+        $collector = new SecurityDataCollector($tokenStorage, $this->getRoleHierarchy(), mermaidDumper: $mermaidDumper);
         $collector->collect(new Request(), new Response());
 
         $this->assertTrue($collector->isEnabled());
@@ -85,8 +163,15 @@ class SecurityDataCollectorTest extends TestCase
     {
         $tokenStorage = new TokenStorage();
         $tokenStorage->setToken(new UsernamePasswordToken(new InMemoryUser('hhamon', 'P4$$w0rD', $roles), 'provider', $roles));
+        $mermaidDumper = $this->createMock(MermaidDumper::class);
 
-        $collector = new SecurityDataCollector($tokenStorage, $this->getRoleHierarchy(), null, null, null, null);
+        $mermaidDumper
+            ->expects($this->once())
+            ->method('dump')
+            ->with($this->getRoleHierarchy())
+            ->willReturn('graph TD; A-->B;');
+
+        $collector = new SecurityDataCollector($tokenStorage, $this->getRoleHierarchy(), mermaidDumper: $mermaidDumper);
         $collector->collect(new Request(), new Response());
         $collector->lateCollect();
 
@@ -108,8 +193,15 @@ class SecurityDataCollectorTest extends TestCase
 
         $tokenStorage = new TokenStorage();
         $tokenStorage->setToken(new SwitchUserToken(new InMemoryUser('hhamon', 'P4$$w0rD', ['ROLE_USER']), 'provider', ['ROLE_USER'], $adminToken));
+        $mermaidDumper = $this->createMock(MermaidDumper::class);
 
-        $collector = new SecurityDataCollector($tokenStorage, $this->getRoleHierarchy(), null, null, null, null);
+        $mermaidDumper
+            ->expects($this->once())
+            ->method('dump')
+            ->with($this->getRoleHierarchy())
+            ->willReturn('graph TD; A-->B;');
+
+        $collector = new SecurityDataCollector($tokenStorage, $this->getRoleHierarchy(), mermaidDumper: $mermaidDumper);
         $collector->collect(new Request(), new Response());
         $collector->lateCollect();
 
@@ -122,6 +214,39 @@ class SecurityDataCollectorTest extends TestCase
         $this->assertSame(['ROLE_USER'], $collector->getRoles()->getValue(true));
         $this->assertSame([], $collector->getInheritedRoles()->getValue(true));
         $this->assertSame('hhamon', $collector->getUser());
+    }
+
+    public function testCollectImpersonationExitPathFromTheUrlGenerator()
+    {
+        $adminToken = new UsernamePasswordToken(new InMemoryUser('yceruto', 'P4$$w0rD', ['ROLE_ADMIN']), 'provider', ['ROLE_ADMIN']);
+
+        $tokenStorage = new TokenStorage();
+        $tokenStorage->setToken(new SwitchUserToken(new InMemoryUser('hhamon', 'P4$$w0rD', ['ROLE_USER']), 'provider', ['ROLE_USER'], $adminToken));
+
+        $switchUser = [
+            'parameter' => '_switch_user',
+            'path' => '/switch-user',
+            'enable_csrf' => true,
+            'csrf_parameter' => '_csrf_token',
+            'csrf_token_id' => 'switch_user',
+        ];
+
+        $firewallMap = $this->createStub(FirewallMap::class);
+        $firewallMap->method('getFirewallConfig')->willReturn(new FirewallConfig('dummy', 'security.user_checker.dummy', switchUser: $switchUser));
+
+        $request = Request::create('/profile');
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('getToken')->willReturn(new CsrfToken('switch_user', 'T0K3N'));
+
+        $impersonateUrlGenerator = new ImpersonateUrlGenerator($requestStack, $firewallMap, $tokenStorage, null, $csrfTokenManager);
+
+        $collector = new SecurityDataCollector($tokenStorage, null, null, null, $firewallMap, null, $impersonateUrlGenerator);
+        $collector->collect($request, new Response());
+
+        $this->assertSame('/switch-user?_switch_user=_exit&_csrf_token=T0K3N&_target_path=%2Fprofile', $collector->getImpersonationExitPath());
     }
 
     public function testGetFirewall()

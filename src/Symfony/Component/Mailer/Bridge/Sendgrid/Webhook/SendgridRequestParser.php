@@ -28,6 +28,8 @@ use Symfony\Component\Webhook\Exception\RejectWebhookException;
  */
 final class SendgridRequestParser extends AbstractRequestParser
 {
+    private const TIMESTAMP_TOLERANCE = 300;
+
     public function __construct(
         private readonly SendgridPayloadConverter $converter,
     ) {
@@ -44,23 +46,17 @@ final class SendgridRequestParser extends AbstractRequestParser
     /**
      * @return AbstractMailerEvent[]
      */
-    protected function doParse(Request $request, string $secret): array
+    protected function doParse(Request $request, #[\SensitiveParameter] string $secret): array
     {
-        $content = $request->toArray();
-        if (
-            !isset($content[0]['email'])
-            || !isset($content[0]['timestamp'])
-            || !isset($content[0]['event'])
-            || !isset($content[0]['sg_event_id'])
-        ) {
-            throw new RejectWebhookException(406, 'Payload is malformed.');
-        }
-
         if ($secret) {
             if (!$request->headers->get('X-Twilio-Email-Event-Webhook-Signature')
                 || !$request->headers->get('X-Twilio-Email-Event-Webhook-Timestamp')
             ) {
                 throw new RejectWebhookException(406, 'Signature is required.');
+            }
+
+            if (abs(time() - (int) $request->headers->get('X-Twilio-Email-Event-Webhook-Timestamp')) > self::TIMESTAMP_TOLERANCE) {
+                throw new RejectWebhookException(406, 'Timestamp is outside the allowed time window.');
             }
 
             $this->validateSignature(
@@ -69,6 +65,16 @@ final class SendgridRequestParser extends AbstractRequestParser
                 $request->getContent(),
                 $secret,
             );
+        }
+
+        $content = $request->toArray();
+        if (
+            !isset($content[0]['email'])
+            || !isset($content[0]['timestamp'])
+            || !isset($content[0]['event'])
+            || !isset($content[0]['sg_event_id'])
+        ) {
+            throw new RejectWebhookException(406, 'Payload is malformed.');
         }
 
         try {

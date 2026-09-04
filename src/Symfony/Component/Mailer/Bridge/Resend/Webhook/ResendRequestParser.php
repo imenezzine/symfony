@@ -27,6 +27,8 @@ use Symfony\Component\Webhook\Exception\RejectWebhookException;
 
 final class ResendRequestParser extends AbstractRequestParser
 {
+    private const TIMESTAMP_TOLERANCE = 300;
+
     public function __construct(
         private readonly ResendPayloadConverter $converter,
     ) {
@@ -51,6 +53,8 @@ final class ResendRequestParser extends AbstractRequestParser
             throw new InvalidArgumentException('A non-empty secret is required.');
         }
 
+        $this->validateSignature($request->getContent(), $request->headers, $secret);
+
         $content = $request->toArray();
 
         if (
@@ -66,8 +70,6 @@ final class ResendRequestParser extends AbstractRequestParser
             throw new RejectWebhookException(406, 'Payload is malformed.');
         }
 
-        $this->validateSignature($request->getContent(), $request->headers, $secret);
-
         try {
             return $this->converter->convert($content);
         } catch (ParseException $e) {
@@ -75,12 +77,16 @@ final class ResendRequestParser extends AbstractRequestParser
         }
     }
 
-    private function validateSignature(string $payload, HeaderBag $headers, string $secret): void
+    private function validateSignature(string $payload, HeaderBag $headers, #[\SensitiveParameter] string $secret): void
     {
         $secret = $this->decodeSecret($secret);
         $messageId = $headers->get('svix-id');
         $messageTimestamp = (int) $headers->get('svix-timestamp');
         $messageSignature = $headers->get('svix-signature');
+
+        if (abs(time() - $messageTimestamp) > self::TIMESTAMP_TOLERANCE) {
+            throw new RejectWebhookException(406, 'Timestamp is outside the allowed time window.');
+        }
 
         $signature = $this->sign($secret, $messageId, $messageTimestamp, $payload);
         $expectedSignature = explode(',', $signature, 2)[1];
@@ -88,14 +94,11 @@ final class ResendRequestParser extends AbstractRequestParser
         $signatureFound = false;
 
         foreach ($passedSignatures as $versionedSignature) {
-            $signatureParts = explode(',', $versionedSignature, 2);
-            $version = $signatureParts[0];
+            [$version, $passedSignature] = explode(',', $versionedSignature, 2) + [1 => ''];
 
             if ('v1' !== $version) {
                 continue;
             }
-
-            $passedSignature = $signatureParts[1];
 
             if (hash_equals($expectedSignature, $passedSignature)) {
                 $signatureFound = true;
@@ -109,7 +112,7 @@ final class ResendRequestParser extends AbstractRequestParser
         }
     }
 
-    private function sign(string $secret, string $messageId, int $timestamp, string $payload): string
+    private function sign(#[\SensitiveParameter] string $secret, string $messageId, int $timestamp, string $payload): string
     {
         $toSign = \sprintf('%s.%s.%s', $messageId, $timestamp, $payload);
         $hash = hash_hmac('sha256', $toSign, $secret);
@@ -118,7 +121,7 @@ final class ResendRequestParser extends AbstractRequestParser
         return 'v1,'.$signature;
     }
 
-    private function decodeSecret(string $secret): string
+    private function decodeSecret(#[\SensitiveParameter] string $secret): string
     {
         $prefix = 'whsec_';
         if (str_starts_with($secret, $prefix)) {

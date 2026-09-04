@@ -15,9 +15,13 @@ use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\Mailer\Exception\TransportException;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractApiTransport;
+use Symfony\Component\Mailer\Transport\RemoteTemplateTransportInterface;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Contracts\HttpClient\Exception\DecodingExceptionInterface;
@@ -25,7 +29,7 @@ use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
-class MailjetApiTransport extends AbstractApiTransport
+class MailjetApiTransport extends AbstractApiTransport implements RemoteTemplateTransportInterface
 {
     private const HOST = 'api.mailjet.com';
     private const API_VERSION = '3.1';
@@ -93,7 +97,7 @@ class MailjetApiTransport extends AbstractApiTransport
         }
 
         // The response needs to contains a 'Messages' key that is an array
-        if (!\array_key_exists('Messages', $result) || !\is_array($result['Messages']) || 0 === \count($result['Messages'])) {
+        if (!\array_key_exists('Messages', $result) || !\is_array($result['Messages']) || !$result['Messages']) {
             throw new HttpTransportException(\sprintf('Unable to send an email: "%s" malformed api response.', $response->getContent(false)), $response);
         }
 
@@ -112,14 +116,17 @@ class MailjetApiTransport extends AbstractApiTransport
             $html = stream_get_contents($html);
         }
         [$attachments, $inlines, $html] = $this->prepareAttachments($email, $html);
+        $template = $email instanceof RemoteTemplateEmail ? $email->getRemoteTemplate() : null;
 
         $message = [
             'From' => $this->formatAddress($envelope->getSender()),
             'To' => $this->formatAddresses($this->getRecipients($email, $envelope)),
-            'Subject' => $email->getSubject(),
-            'Attachments' => $attachments,
-            'InlinedAttachments' => $inlines,
         ];
+        if (null === $template || null !== $email->getSubject()) {
+            $message['Subject'] = $email->getSubject();
+        }
+        $message['Attachments'] = $attachments;
+        $message['InlinedAttachments'] = $inlines;
         if ($emails = $email->getCc()) {
             $message['Cc'] = $this->formatAddresses($emails);
         }
@@ -139,9 +146,26 @@ class MailjetApiTransport extends AbstractApiTransport
             $message['HTMLPart'] = $html;
         }
 
+        // resolve the generic header first, so a native x-mailjet-track* header always wins regardless of iteration order
+        if ($tracking = TrackingHeader::fromHeaders($email->getHeaders())) {
+            if (null !== $tracking->getOpens()) {
+                $message['TrackOpens'] = $tracking->getOpens() ? 'enabled' : 'disabled';
+            }
+            if (null !== $tracking->getClicks()) {
+                $message['TrackClicks'] = $tracking->getClicks() ? 'enabled' : 'disabled';
+            }
+        }
+
         foreach ($email->getHeaders()->all() as $headerName => $header) {
             if ($convertConf = self::HEADER_TO_MESSAGE[$headerName] ?? false) {
+                if ('x-mj-templateid' === $headerName) {
+                    trigger_deprecation('symfony/mailjet-mailer', '8.2', 'Using the "X-MJ-TemplateID" email header to select a Mailjet template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class);
+                }
                 $message[$convertConf[0]] = $this->castCustomHeader($header->getBodyAsString(), $convertConf[1]);
+                continue;
+            }
+
+            if (0 === strcasecmp($headerName, TrackingHeader::NAME)) {
                 continue;
             }
 
@@ -150,6 +174,17 @@ class MailjetApiTransport extends AbstractApiTransport
             }
 
             $message['Headers'][$header->getName()] = $header->getBodyAsString();
+        }
+
+        if (null !== $template) {
+            if (!ctype_digit($template->getReference())) {
+                throw new InvalidArgumentException(\sprintf('The Mailjet API expects a numeric template id, "%s" given.', $template->getReference()));
+            }
+            $message['TemplateID'] = (int) $template->getReference();
+            $message['TemplateLanguage'] = true;
+            if ($template->getVariables()) {
+                $message['Variables'] = $template->getVariables();
+            }
         }
 
         return [

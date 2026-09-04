@@ -13,11 +13,11 @@ namespace Symfony\Component\Form\Extension\Core\Type;
 
 use Symfony\Component\Form\AbstractRendererEngine;
 use Symfony\Component\Form\AbstractType;
-use Symfony\Component\Form\Exception\LogicException;
 use Symfony\Component\Form\FormBuilderInterface;
 use Symfony\Component\Form\FormInterface;
 use Symfony\Component\Form\FormView;
 use Symfony\Component\OptionsResolver\OptionsResolver;
+use Symfony\Contracts\Translation\TranslatableInterface;
 
 /**
  * Encapsulates common logic of {@link FormType} and {@link ButtonType}.
@@ -57,19 +57,14 @@ abstract class BaseType extends AbstractType
 
             $translationDomain ??= $view->parent->vars['translation_domain'];
 
-            $labelTranslationParameters = array_merge($view->parent->vars['label_translation_parameters'], $labelTranslationParameters);
+            if (!$options['label'] instanceof TranslatableInterface) {
+                $labelTranslationParameters = array_merge($view->parent->vars['label_translation_parameters'], $labelTranslationParameters);
+            }
+
             $attrTranslationParameters = array_merge($view->parent->vars['attr_translation_parameters'], $attrTranslationParameters);
 
             if (!$labelFormat) {
                 $labelFormat = $view->parent->vars['label_format'];
-            }
-
-            $rootFormAttrOption = $form->getRoot()->getConfig()->getOption('form_attr');
-            if ($options['form_attr'] || $rootFormAttrOption) {
-                $options['attr']['form'] = \is_string($rootFormAttrOption) ? $rootFormAttrOption : $form->getRoot()->getName();
-                if (empty($options['attr']['form'])) {
-                    throw new LogicException('"form_attr" option must be a string identifier on root form when it has no id.');
-                }
             }
         } else {
             $id = \is_string($options['form_attr']) ? $options['form_attr'] : $name;
@@ -94,6 +89,9 @@ abstract class BaseType extends AbstractType
         $view->vars = array_replace($view->vars, [
             'form' => $view,
             'id' => $id,
+            // filled by FormType::finishView(), which is the first point where the "form_attr"
+            // option of every descendant is known
+            'form_id' => null,
             'name' => $name,
             'full_name' => $fullName,
             'disabled' => $form->isDisabled(),

@@ -68,7 +68,7 @@ class FileType extends AbstractType
 
                 // Since the array is never considered empty in the view data format
                 // on submission, we need to evaluate the configured empty data here
-                if ([] === $data) {
+                if (!$data) {
                     $emptyData = $form->getConfig()->getEmptyData();
                     $data = $emptyData instanceof \Closure ? $emptyData($form, $data) : $emptyData;
                 }
@@ -76,7 +76,7 @@ class FileType extends AbstractType
                 $event->setData($data);
             } elseif ($requestHandler->isFileUpload($event->getData()) && method_exists($requestHandler, 'getUploadFileError') && null !== $errorCode = $requestHandler->getUploadFileError($event->getData())) {
                 $form->addError($this->getFileUploadError($errorCode));
-            } elseif (!$requestHandler->isFileUpload($event->getData())) {
+            } elseif (!($options['allow_array_submission'] && \is_array($event->getData())) && !$requestHandler->isFileUpload($event->getData())) {
                 $event->setData(null);
             }
         });

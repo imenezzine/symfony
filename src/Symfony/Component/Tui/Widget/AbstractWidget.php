@@ -13,6 +13,7 @@ namespace Symfony\Component\Tui\Widget;
 
 use Symfony\Component\Tui\Event\AbstractEvent;
 use Symfony\Component\Tui\Exception\RenderException;
+use Symfony\Component\Tui\Render\LineBufferInterface;
 use Symfony\Component\Tui\Render\RenderContext;
 use Symfony\Component\Tui\Style\DefaultStyleSheet;
 use Symfony\Component\Tui\Style\Style;
@@ -42,12 +43,11 @@ abstract class AbstractWidget
     /** @var array<class-string<AbstractEvent>, list<callable>> */
     private array $listeners = [];
 
-    // Render cache: stores the last output of Renderer::renderWidget()
+    // Render cache: stores the last output of Renderer::renderWidgetLines()
     // keyed on (renderRevision, columns, rows) so unchanged widgets
     // skip style resolution, layout, chrome, and content rendering.
 
-    /** @var string[]|null */
-    private ?array $renderCacheLines = null;
+    private ?LineBufferInterface $renderCacheLines = null;
     private int $renderCacheRevision = -1;
     private int $renderCacheColumns = -1;
     private int $renderCacheRows = -1;
@@ -229,8 +229,11 @@ abstract class AbstractWidget
             $context->getFocusManager()->remove($this);
         }
 
-        $this->listeners = [];
-
+        // The listeners stay. They live on this widget and are dispatched
+        // from it, so there is nothing registered elsewhere to unwind, and
+        // dropping them silently unhooks the callbacks a caller registered
+        // on a widget it still holds and may add back. Releasing one is the
+        // caller's call to make, through off().
         $this->onDetach();
         $this->parent = null;
         $this->context = null;
@@ -286,7 +289,9 @@ abstract class AbstractWidget
      * Register a listener for a specific event type on this widget.
      *
      * The listener is only called when this specific widget dispatches the event.
-     * Listeners are stored locally on the widget and automatically cleared on detach.
+     * Listeners are stored locally on the widget and live as long as it does:
+     * taking the widget out of the tree and adding it back keeps them. Use
+     * {@see off()} to release one.
      *
      * @param class-string<AbstractEvent> $eventClass The event class to listen for
      * @param callable                    $listener   The listener to invoke
@@ -301,6 +306,44 @@ abstract class AbstractWidget
     }
 
     /**
+     * Remove listeners registered on this widget for a specific event type.
+     *
+     * Passing a listener removes every registration of it, comparing by
+     * identity: the callable has to be the one that was passed to {@see on()},
+     * which for an inline closure means the same instance. First-class
+     * callables of the same method on the same object do match. Passing no
+     * listener removes every listener the widget holds for the event class.
+     *
+     * @param class-string<AbstractEvent> $eventClass The event class to stop listening for
+     * @param callable|null               $listener   The listener to remove, or null for all of them
+     *
+     * @return $this
+     */
+    final public function off(string $eventClass, ?callable $listener = null): static
+    {
+        if (null === $listener) {
+            unset($this->listeners[$eventClass]);
+
+            return $this;
+        }
+
+        $remaining = [];
+        foreach ($this->listeners[$eventClass] ?? [] as $registered) {
+            if ($registered !== $listener && !($listener instanceof \Closure && $registered == $listener)) {
+                $remaining[] = $registered;
+            }
+        }
+
+        if ($remaining) {
+            $this->listeners[$eventClass] = $remaining;
+        } else {
+            unset($this->listeners[$eventClass]);
+        }
+
+        return $this;
+    }
+
+    /**
      * Return the cached render output if still valid.
      *
      * The cache is keyed on (renderRevision, columns, rows). A cache hit
@@ -310,9 +353,9 @@ abstract class AbstractWidget
      *
      * @internal Used by the Renderer
      *
-     * @return string[]|null Cached lines, or null on miss
+     * @return LineBufferInterface|null Cached lines, or null on miss
      */
-    final public function getRenderCache(int $columns, int $rows): ?array
+    final public function getRenderCache(int $columns, int $rows): ?LineBufferInterface
     {
         if ($this->renderCacheRevision === $this->getRenderRevision()
             && $this->renderCacheColumns === $columns
@@ -328,10 +371,8 @@ abstract class AbstractWidget
      * Store the render output for future cache lookups.
      *
      * @internal Used by the Renderer
-     *
-     * @param string[] $lines
      */
-    final public function setRenderCache(array $lines, int $columns, int $rows): void
+    final public function setRenderCache(LineBufferInterface $lines, int $columns, int $rows): void
     {
         $this->renderCacheLines = $lines;
         $this->renderCacheRevision = $this->getRenderRevision();
@@ -355,10 +396,14 @@ abstract class AbstractWidget
     /**
      * Lifecycle hook: override to sync state before rendering.
      *
-     * Called by the Renderer on every frame, even when the render cache is
-     * valid. Use it to update child widget content, manage overlays, or
-     * perform other pre-render state updates. Keep it lightweight; heavy
-     * work should be guarded by dirty checks.
+     * Called before the Renderer renders this widget, including when its own
+     * render cache is valid. Use it to update child widget content, manage
+     * overlays, or perform other pre-render state updates. Keep it lightweight;
+     * heavy work should be guarded by dirty checks.
+     *
+     * This is not a per-frame tick: when an ancestor's cached subtree is reused,
+     * this widget is not visited at all. Use {@see ScheduledTickTrait} for work
+     * that must run on every frame.
      */
     public function beforeRender(): void
     {
@@ -386,6 +431,50 @@ abstract class AbstractWidget
      * @return string[] One element per terminal row
      */
     abstract public function render(RenderContext $context): array;
+
+    /**
+     * Post-process the widget's finished lines, chrome included.
+     *
+     * The Renderer calls this with the fully rendered box: content, padding,
+     * border and background are already applied. Override it to rewrite the
+     * box as a whole, e.g. to paint a layer under it, dim it or mask it,
+     * something render() cannot do because chrome is applied after it.
+     *
+     * The result is cached with the render, so a widget that animates its
+     * post-processing must call invalidate() to produce a new frame.
+     *
+     * The width contract of render() applies to the returned lines too.
+     *
+     * @param list<string> $lines One element per terminal row
+     *
+     * @return list<string>
+     */
+    public function postRender(array $lines, RenderContext $context): array
+    {
+        return $lines;
+    }
+
+    /**
+     * Makes a widget a child of this one, so it takes part in the render tree.
+     *
+     * Call it from a widget that owns other widgets, once the child is stored.
+     * It is safe to call before this widget is attached itself: the child joins
+     * the context along with its parent.
+     */
+    final protected function attachChild(self $child): void
+    {
+        $child->setParent($this);
+        $this->getContext()?->attachChild($this, $child);
+    }
+
+    /**
+     * Releases a widget previously passed to attachChild().
+     */
+    final protected function detachChild(self $child): void
+    {
+        $child->setParent(null);
+        $this->getContext()?->detachChild($child);
+    }
 
     /**
      * @internal

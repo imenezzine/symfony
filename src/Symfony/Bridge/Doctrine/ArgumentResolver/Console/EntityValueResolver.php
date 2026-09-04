@@ -56,7 +56,7 @@ final class EntityValueResolver implements ValueResolverInterface
         }
 
         $type = $member->getType();
-        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+        if (!$type instanceof \ReflectionNamedType || ($type->isBuiltin() && 'array' !== $type->getName())) {
             return [];
         }
 
@@ -86,7 +86,11 @@ final class EntityValueResolver implements ValueResolverInterface
         }
 
         $message = '';
-        if (null !== $options->expr) {
+        if ($options->expr instanceof \Closure) {
+            if (null === $object = $this->findViaClosure($manager, $options, $input)) {
+                $message = ' The closure returned null.';
+            }
+        } elseif (null !== $options->expr) {
             $variables = array_merge($input->getArguments(), $input->getOptions(), ['input' => $input]);
             if (null === $object = $this->findViaExpression($this->expressionLanguage, $manager, $options, $variables)) {
                 $message = \sprintf(' The expression "%s" returned null.', $options->expr);
@@ -95,7 +99,12 @@ final class EntityValueResolver implements ValueResolverInterface
             if (!$criteria = $this->getCriteria($inputName, $input, $options, $manager, $isOption)) {
                 throw new NearMissValueResolverException(\sprintf('Cannot find mapping for "%s": use the #[MapEntity] attribute to configure entity resolution.', $options->class));
             }
-            $object = $this->findOneByCriteria($manager, $options, $criteria);
+
+            if ('array' === $type->getName()) {
+                $object = $this->findByCriteria($manager, $options, $criteria);
+            } else {
+                $object = $this->findOneByCriteria($manager, $options, $criteria);
+            }
         }
 
         if (null === $object && !$member->isNullable()) {

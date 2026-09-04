@@ -18,6 +18,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Bridge\PhpUnit\ClassExistsMock;
 use Symfony\Component\Config\Resource\ClassExistenceResource;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -26,6 +27,7 @@ use Symfony\Component\DependencyInjection\Compiler\AutowirePass;
 use Symfony\Component\DependencyInjection\Compiler\AutowireRequiredMethodsPass;
 use Symfony\Component\DependencyInjection\Compiler\DecoratorServicePass;
 use Symfony\Component\DependencyInjection\Compiler\ResolveClassPass;
+use Symfony\Component\DependencyInjection\Compiler\ResolveLazyProxyPass;
 use Symfony\Component\DependencyInjection\Compiler\TagDecoratorPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -481,6 +483,23 @@ class AutowirePassTest extends TestCase
 
         $definition = $container->getDefinition('opt');
         $this->assertSame('b', (string) $definition->getArgument(0));
+    }
+
+    public function testNullableIntersectionTypedReferenceIsAutowired()
+    {
+        $container = new ContainerBuilder();
+
+        $container->register('b', \stdClass::class);
+        $container->setAlias(CollisionInterface::class, 'b');
+        $container->setAlias(AnotherInterface::class, 'b');
+
+        $container->register('some_locator', 'stdClass')
+            ->addArgument(new TypedReference($type = '('.CollisionInterface::class.'&'.AnotherInterface::class.')|null', $type, ContainerBuilder::IGNORE_ON_INVALID_REFERENCE))
+            ->addTag('container.service_locator');
+
+        (new AutowirePass())->process($container);
+
+        $this->assertSame('b', (string) $container->getDefinition('some_locator')->getArgument(0));
     }
 
     public function testParameterWithNullUnionIsAutowired()
@@ -1404,6 +1423,28 @@ class AutowirePassTest extends TestCase
         $this->assertSame(['foo'], $definition->getArguments());
     }
 
+    public function testAutowireAttributeKeepsPercentEscaping()
+    {
+        $container = new ContainerBuilder();
+
+        $container->register('foo', AutowireAttributeNullFallback::class)
+            ->setAutowired(true)
+            ->setPublic(true)
+        ;
+
+        $container->setParameter('required.parameter', 'my friend %%s has %%d dogs');
+        $container->setParameter('optional.parameter', '50%%%% off');
+
+        $container->compile();
+
+        $this->assertSame('my friend %%s has %%d dogs', $container->getDefinition('foo')->getArgument(0));
+
+        $service = $container->get('foo');
+
+        $this->assertSame('my friend %s has %d dogs', $service->required);
+        $this->assertSame('50%% off', $service->optional);
+    }
+
     public function testAsDecoratorAttribute()
     {
         $container = new ContainerBuilder();
@@ -1536,8 +1577,14 @@ class AutowirePassTest extends TestCase
 
         (new AutowirePass())->process($container);
 
-        $expected = new Reference('.lazy.'.A::class);
+        $expected = new LazyProxyArgument(new TypedReference(A::class, A::class));
         $this->assertEquals($expected, $container->getDefinition('foo')->getArgument(0));
+
+        (new ResolveLazyProxyPass())->process($container);
+
+        $expected->setValues([new TypedReference(A::class, A::class), [], new Reference('.lazy.'.A::class)]);
+        $this->assertEquals($expected, $container->getDefinition('foo')->getArgument(0));
+        $this->assertTrue($container->getDefinition('.lazy.'.A::class)->isLazy());
     }
 
     public function testLazyServiceAttributeOnAlreadyLazyService()
@@ -1548,8 +1595,32 @@ class AutowirePassTest extends TestCase
 
         (new AutowirePass())->process($container);
 
+        $expected = new LazyProxyArgument(new TypedReference(A::class, A::class));
+        $this->assertEquals($expected, $container->getDefinition('foo')->getArgument(0));
+
+        (new ResolveLazyProxyPass())->process($container);
+
         $this->assertSame(A::class, (string) $container->getDefinition('foo')->getArgument(0));
         $this->assertFalse($container->hasDefinition('.lazy.'.A::class));
+    }
+
+    public function testLazyServiceAttributeWithInterface()
+    {
+        $container = new ContainerBuilder();
+        $container->register(FinalLazyProxyImplementation::class, FinalLazyProxyImplementation::class)->setAutowired(true);
+        $container->register('foo', LazyServiceAttributeWithInterfaceAutowiring::class)->setAutowired(true);
+
+        (new AutowirePass())->process($container);
+
+        $expected = new LazyProxyArgument(new TypedReference(FinalLazyProxyImplementation::class, FinalLazyProxyImplementation::class), LazyProxyTestInterface::class);
+        $this->assertEquals($expected, $container->getDefinition('foo')->getArgument(0));
+
+        (new ResolveLazyProxyPass())->process($container);
+
+        $definition = $container->getDefinition((string) $container->getDefinition('foo')->getArgument(0)->getValues()[2]);
+
+        $this->assertTrue($definition->isLazy());
+        $this->assertSame([['interface' => LazyProxyTestInterface::class]], $definition->getTag('proxy'));
     }
 
     public function testLazyNotCompatibleWithAutowire()

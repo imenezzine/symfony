@@ -14,6 +14,7 @@ namespace Symfony\Component\Messenger\DependencyInjection;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Compiler\PriorityTaggedServiceTrait;
 use Symfony\Component\DependencyInjection\Compiler\ServiceLocatorTagPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
@@ -29,6 +30,8 @@ use Symfony\Component\Messenger\Transport\Receiver\ReceiverInterface;
  */
 class MessengerPass implements CompilerPassInterface
 {
+    use PriorityTaggedServiceTrait;
+
     public function process(ContainerBuilder $container): void
     {
         $busIds = array_keys($container->findTaggedServiceIds('messenger.bus'));
@@ -50,8 +53,8 @@ class MessengerPass implements CompilerPassInterface
         }
 
         $this->registerHandlers($container, $busIds);
-
         $this->registerTypeMapping($container);
+        $this->registerDebugCommandRouting($container);
     }
 
     private function registerHandlers(ContainerBuilder $container, array $busIds): void
@@ -62,6 +65,11 @@ class MessengerPass implements CompilerPassInterface
         $signedMessageTypes = [];
 
         foreach ($container->findTaggedServiceIds('messenger.message_handler', true) as $serviceId => $tags) {
+            // an option-less tag comes from autoconfiguration; it would defeat the configured ones
+            if ($configuredTags = array_filter($tags)) {
+                $tags = $configuredTags;
+            }
+
             foreach ($tags as $tag) {
                 if (isset($tag['bus']) && !\in_array($tag['bus'], $busIds, true)) {
                     throw new RuntimeException(\sprintf('Invalid handler service "%s": bus "%s" specified on the tag "messenger.message_handler" does not exist (known ones are: "%s").', $serviceId, $tag['bus'], implode('", "', $busIds)));
@@ -154,7 +162,27 @@ class MessengerPass implements CompilerPassInterface
         foreach ($handlersByBusAndMessage as $bus => $handlersByMessage) {
             foreach ($handlersByMessage as $message => $handlersByPriority) {
                 krsort($handlersByPriority);
-                $handlersByBusAndMessage[$bus][$message] = array_merge(...$handlersByPriority);
+                $handlers = array_merge(...$handlersByPriority);
+                $serviceIdsByName = [];
+
+                foreach ($handlers as $key => [$definitionId, $options]) {
+                    $serviceId = $handlerToOriginalServiceIdMapping[$definitionId];
+                    $name = $this->getServiceClass($container, $serviceId).'::'.($options['method'] ?? '__invoke');
+                    $serviceIdsByName[$name][$key] = $serviceId;
+                }
+
+                // several services sharing a name cannot be told apart at runtime, name them after their service id
+                foreach ($serviceIdsByName as $serviceIds) {
+                    if (1 === \count(array_unique($serviceIds))) {
+                        continue;
+                    }
+
+                    foreach ($serviceIds as $key => $serviceId) {
+                        $handlers[$key][1]['alias'] ??= $serviceId;
+                    }
+                }
+
+                $handlersByBusAndMessage[$bus][$message] = $handlers;
             }
         }
 
@@ -264,6 +292,7 @@ class MessengerPass implements CompilerPassInterface
     {
         $receiverMapping = [];
         $failureTransportsMap = [];
+
         if ($container->hasDefinition('console.command.messenger_failed_messages_retry')) {
             $commandDefinition = $container->getDefinition('console.command.messenger_failed_messages_retry');
             $globalReceiverName = $commandDefinition->getArgument(0);
@@ -276,8 +305,12 @@ class MessengerPass implements CompilerPassInterface
             }
         }
 
+        // the receivers are walked in tag priority order, so that everything derived from
+        // them keeps that order, "messenger:consume --all" included
+        $tagsById = $container->findTaggedServiceIds('messenger.receiver');
         $consumableReceiverNames = [];
-        foreach ($container->findTaggedServiceIds('messenger.receiver') as $id => $tags) {
+        foreach ($this->findAndSortTaggedServices('messenger.receiver', $container) as $reference) {
+            $id = (string) $reference;
             $receiverClass = $this->getServiceClass($container, $id);
             if (!is_subclass_of($receiverClass, ReceiverInterface::class)) {
                 throw new RuntimeException(\sprintf('Invalid receiver "%s": class "%s" must implement interface "%s".', $id, $receiverClass, ReceiverInterface::class));
@@ -285,9 +318,10 @@ class MessengerPass implements CompilerPassInterface
 
             $receiverMapping[$id] = new Reference($id);
 
-            foreach ($tags as $tag) {
+            foreach ($tagsById[$id] ?? [] as $tag) {
                 if (isset($tag['alias'])) {
                     $receiverMapping[$tag['alias']] = $receiverMapping[$id];
+
                     if ($tag['is_failure_transport'] ?? false) {
                         $failureTransportsMap[$tag['alias']] = $receiverMapping[$id];
                     }
@@ -331,6 +365,11 @@ class MessengerPass implements CompilerPassInterface
 
         if ($container->hasDefinition('console.command.messenger_stats')) {
             $container->getDefinition('console.command.messenger_stats')
+                ->replaceArgument(1, array_values($receiverNames));
+        }
+
+        if ($container->hasDefinition('console.command.messenger_show')) {
+            $container->getDefinition('console.command.messenger_show')
                 ->replaceArgument(1, array_values($receiverNames));
         }
 
@@ -460,5 +499,51 @@ class MessengerPass implements CompilerPassInterface
         }
 
         $container->getDefinition('messenger.transport.symfony_serializer')->setArgument(3, $typeToClassMap);
+    }
+
+    private function registerDebugCommandRouting(ContainerBuilder $container): void
+    {
+        if (!$container->hasDefinition('console.command.messenger_debug') || !$container->hasDefinition('messenger.senders_locator')) {
+            return;
+        }
+
+        $sendersMap = $container->getDefinition('messenger.senders_locator')->getArgument(0);
+        if (!\is_array($sendersMap)) {
+            $sendersMap = [];
+        }
+
+        $senderAliases = [];
+        foreach ($container->findTaggedServiceIds('messenger.receiver') as $id => $tags) {
+            foreach ($tags as $tag) {
+                if (isset($tag['alias'])) {
+                    $senderAliases[$tag['alias']] = $id;
+                }
+            }
+        }
+
+        $attributeMessages = [];
+        foreach ($container->findTaggedResourceIds('messenger.message', false) as $id => $tags) {
+            $class = $container->getDefinition($id)->getClass();
+            foreach ($tags as $tag) {
+                foreach ((array) ($tag['transport'] ?? []) as $transport) {
+                    $attributeMessages[$class][] = $transport;
+                }
+            }
+        }
+
+        $failureTransports = [];
+        if ($container->hasDefinition('messenger.failure.send_failed_message_to_failure_transport_listener')) {
+            $failureTransports = $container->getDefinition('messenger.failure.send_failed_message_to_failure_transport_listener')->getArguments()[2] ?? [];
+            if (!\is_array($failureTransports)) {
+                $failureTransports = [];
+            }
+        }
+
+        $container->getDefinition('console.command.messenger_debug')
+            ->setArgument(1, $sendersMap)
+            ->setArgument(2, $senderAliases)
+            ->setArgument(3, $attributeMessages)
+            ->setArgument(4, $failureTransports)
+        ;
     }
 }

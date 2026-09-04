@@ -16,15 +16,18 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\AuthenticatorFactoryInterface;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\FirewallListenerFactoryInterface;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\SecurityExtension;
+use Symfony\Bundle\SecurityBundle\Routing\OidcLoginRouteLoader;
 use Symfony\Bundle\SecurityBundle\SecurityBundle;
 use Symfony\Bundle\SecurityBundle\Tests\DependencyInjection\Fixtures\UserProviderFactory\CustomProviderFactory;
 use Symfony\Bundle\SecurityBundle\Tests\DependencyInjection\Fixtures\UserProviderFactory\DummyProviderFactory;
 use Symfony\Component\Config\Definition\Builder\NodeDefinition;
 use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Compiler\DecoratorServicePass;
 use Symfony\Component\DependencyInjection\Compiler\ResolveChildDefinitionsPass;
 use Symfony\Component\DependencyInjection\Compiler\ResolveReferencesToAliasesPass;
+use Symfony\Component\DependencyInjection\Compiler\ValidateEnvPlaceholdersPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\ExpressionLanguage\Expression;
@@ -42,6 +45,8 @@ use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Core\User\UserProviderInterface;
 use Symfony\Component\Security\Http\Authenticator\AuthenticatorInterface;
 use Symfony\Component\Security\Http\Authenticator\HttpBasicAuthenticator;
+use Symfony\Component\Security\Http\Authenticator\Oidc\OidcPublicClient;
+use Symfony\Component\Security\Http\Authenticator\Oidc\OidcSignatureVerifier;
 use Symfony\Component\Security\Http\Authenticator\Passport\Passport;
 
 class SecurityExtensionTest extends TestCase
@@ -245,7 +250,7 @@ class SecurityExtensionTest extends TestCase
         ]);
 
         $this->expectException(InvalidConfigurationException::class);
-        $this->expectExceptionMessage('Unrecognized option "some_other" under "security.providers.my_app_provider". Available options are "chain", "custom", "id", "ldap", "memory".');
+        $this->expectExceptionMessage('Unrecognized option "some_other" under "security.providers.my_app_provider". Available options are "chain", "custom", "id", "ldap", "memory", "oidc".');
 
         $container->compile();
     }
@@ -337,6 +342,89 @@ class SecurityExtensionTest extends TestCase
         $this->assertFalse($container->hasDefinition('security.access.role_hierarchy_voter'));
     }
 
+    public function testCsrfTokenManagersAreRegisteredForTheirTokenId()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'providers' => [
+                'default' => ['id' => 'foo'],
+            ],
+
+            'firewalls' => [
+                'custom_manager' => [
+                    'http_basic' => null,
+                    'logout' => ['csrf_token_manager' => 'app.csrf_token_manager'],
+                ],
+                'default_manager' => [
+                    'http_basic' => null,
+                    'logout' => ['enable_csrf' => true, 'csrf_token_id' => 'other_logout'],
+                ],
+                'no_csrf' => [
+                    'http_basic' => null,
+                    'logout' => true,
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $this->assertEquals(
+            ['logout' => new ServiceClosureArgument(new Reference('app.csrf_token_manager'))],
+            $container->getDefinition('security.csrf_token_manager_locator')->getArgument(0)
+        );
+    }
+
+    public function testTheDelegatingCsrfTokenManagerIsRemovedWhenNoFirewallNeedsIt()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'providers' => [
+                'default' => ['id' => 'foo'],
+            ],
+
+            'firewalls' => [
+                'some_firewall' => [
+                    'http_basic' => null,
+                    'logout' => ['enable_csrf' => true],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $this->assertFalse($container->hasDefinition('security.delegating_csrf_token_manager'));
+        $this->assertFalse($container->hasDefinition('security.csrf_token_manager_locator'));
+    }
+
+    public function testTwoFirewallsCannotMapTheSameTokenIdToDifferentCsrfTokenManagers()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'providers' => [
+                'default' => ['id' => 'foo'],
+            ],
+
+            'firewalls' => [
+                'first' => [
+                    'http_basic' => null,
+                    'logout' => ['csrf_token_manager' => 'app.csrf_token_manager'],
+                ],
+                'second' => [
+                    'http_basic' => null,
+                    'logout' => ['csrf_token_manager' => 'app.other_csrf_token_manager'],
+                ],
+            ],
+        ]);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('The "second" firewall configures a "csrf_token_manager" for the "logout" token id, but another firewall already configured a different one. Give them distinct "csrf_token_id" values.');
+
+        $container->compile();
+    }
+
     public function testSwitchUserNotStatelessOnStatelessFirewall()
     {
         $container = $this->getRawContainer();
@@ -358,6 +446,63 @@ class SecurityExtensionTest extends TestCase
         $container->compile();
 
         $this->assertTrue($container->getDefinition('security.authentication.switchuser_listener.some_firewall')->getArgument(9));
+    }
+
+    public function testSwitchUserCsrfTokenManagersAreRegisteredForTheirTokenId()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'providers' => [
+                'default' => ['id' => 'foo'],
+            ],
+
+            'firewalls' => [
+                'custom_manager' => [
+                    'http_basic' => null,
+                    'switch_user' => ['csrf_token_manager' => 'app.csrf_token_manager'],
+                ],
+                'default_manager' => [
+                    'http_basic' => null,
+                    'switch_user' => ['enable_csrf' => true, 'csrf_token_id' => 'other_switch_user'],
+                ],
+                'no_csrf' => [
+                    'http_basic' => null,
+                    'switch_user' => true,
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $this->assertEquals(
+            ['switch_user' => new ServiceClosureArgument(new Reference('app.csrf_token_manager'))],
+            $container->getDefinition('security.csrf_token_manager_locator')->getArgument(0)
+        );
+    }
+
+    public function testSwitchUserAndLogoutCannotMapTheSameTokenIdToDifferentCsrfTokenManagers()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'providers' => [
+                'default' => ['id' => 'foo'],
+            ],
+
+            'firewalls' => [
+                'main' => [
+                    'http_basic' => null,
+                    'logout' => ['csrf_token_id' => 'shared', 'csrf_token_manager' => 'app.csrf_token_manager'],
+                    'switch_user' => ['csrf_token_id' => 'shared', 'csrf_token_manager' => 'app.other_csrf_token_manager'],
+                ],
+            ],
+        ]);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('The "main" firewall configures a "csrf_token_manager" for the "shared" token id, but another firewall already configured a different one. Give them distinct "csrf_token_id" values.');
+
+        $container->compile();
     }
 
     public function testRoleHierarchyDumpCommandIsRegisteredWithRoleHierarchy()
@@ -779,6 +924,126 @@ class SecurityExtensionTest extends TestCase
         $this->assertSame('very', $handler->getArgument(2));
     }
 
+    public function testRememberMeSignaturePropertiesDefaultToPassword()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'firewalls' => [
+                'default' => [
+                    'remember_me' => ['secret' => 'very'],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $hasher = $container->getDefinition('security.authenticator.remember_me_signature_hasher.default');
+        $this->assertSame(['password'], $hasher->getArgument(1));
+    }
+
+    public function testRememberMeSignaturePropertiesAreImplicitByDefaultWithATokenProvider()
+    {
+        $container = $this->getRawContainer();
+
+        $container->register('custom_token_provider', \stdClass::class);
+        $container->loadFromExtension('security', [
+            'firewalls' => [
+                'default' => [
+                    'remember_me' => ['token_provider' => 'custom_token_provider'],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $handler = $container->getDefinition('security.authenticator.remember_me_handler.default');
+        $this->assertNull($handler->getArgument(6));
+    }
+
+    public function testRememberMeSignaturePropertiesAreBoundToTokensWhenConfigured()
+    {
+        $container = $this->getRawContainer();
+
+        $container->register('custom_token_provider', \stdClass::class);
+        $container->loadFromExtension('security', [
+            'firewalls' => [
+                'default' => [
+                    'remember_me' => [
+                        'token_provider' => 'custom_token_provider',
+                        'signature_properties' => ['email', 'password'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $handler = $container->getDefinition('security.authenticator.remember_me_handler.default');
+        $this->assertSame(['email', 'password'], $handler->getArgument(6));
+    }
+
+    public function testRememberMeSignaturePropertiesCannotBeUsedWithACustomHandler()
+    {
+        $container = $this->getRawContainer();
+
+        $container->register('custom_remember_me', \stdClass::class);
+        $container->loadFromExtension('security', [
+            'firewalls' => [
+                'default' => [
+                    'remember_me' => [
+                        'service' => 'custom_remember_me',
+                        'signature_properties' => ['password'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('You cannot use both "service" and "signature_properties" in "security.firewalls.default.remember_me" because the custom handler signs the cookies itself and the option would have no effect.');
+        $container->compile();
+    }
+
+    public function testCustomRememberMeHandlerWithATokenProviderReportsTheTokenProviderConflict()
+    {
+        $container = $this->getRawContainer();
+
+        $container->register('custom_remember_me', \stdClass::class);
+        $container->register('custom_token_provider', \stdClass::class);
+        $container->loadFromExtension('security', [
+            'firewalls' => [
+                'default' => [
+                    'remember_me' => [
+                        'service' => 'custom_remember_me',
+                        'token_provider' => 'custom_token_provider',
+                        'signature_properties' => ['password'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('You cannot use both "service" and "token_provider" in "security.firewalls.default.remember_me".');
+        $container->compile();
+    }
+
+    public function testRememberMeSignaturePropertiesCannotBeEmpty()
+    {
+        $container = $this->getRawContainer();
+
+        $container->loadFromExtension('security', [
+            'firewalls' => [
+                'default' => [
+                    'remember_me' => ['signature_properties' => []],
+                ],
+            ],
+        ]);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('The path "security.firewalls.default.remember_me.signature_properties" should have at least 1 element(s) defined.');
+        $container->compile();
+    }
+
     public static function sessionConfigurationProvider(): array
     {
         return [
@@ -1188,6 +1453,156 @@ class SecurityExtensionTest extends TestCase
         $securityHelperAuthenticatorLocator = $container->getDefinition($container->getDefinition('security.helper')->getArgument(1)['main']);
         $this->assertArrayHasKey(TestAuthenticator::class, $authenticatorMap = $securityHelperAuthenticatorLocator->getArgument(0), 'When programmatically authenticating a user, authenticators’ name must be their original ID.');
         $this->assertSame(TestAuthenticator::class, (string) $authenticatorMap[TestAuthenticator::class]->getValues()[0], 'When programmatically authenticating a user, original authenticators must be used.');
+    }
+
+    public function testOidcLoginAcceptsEnvironmentVariables()
+    {
+        // "provider_uri" carries a validator, so declaring it ->cannotBeEmpty() would make
+        // the Config component reject environment variables on it altogether. The scheme of
+        // the resolved value is checked at runtime by OidcDiscovery instead.
+        $container = $this->getRawContainer();
+        // the pass that validates configuration against env placeholders is an
+        // optimization pass, which getRawContainer() replaces: put it back, otherwise
+        // the env vars are simply skipped and this test guards nothing
+        $container->getCompilerPassConfig()->setOptimizationPasses([
+            new ValidateEnvPlaceholdersPass(),
+            new ResolveChildDefinitionsPass(),
+        ]);
+        $container->loadFromExtension('security', [
+            'providers' => ['oidc' => ['oidc' => null]],
+            'firewalls' => [
+                'main' => [
+                    'oidc_login' => [
+                        'provider_uri' => '%env(OIDC_PROVIDER_URI)%',
+                        'client_id' => '%env(OIDC_CLIENT_ID)%',
+                        'client_secret' => '%env(OIDC_CLIENT_SECRET)%',
+                    ],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $this->assertTrue($container->hasDefinition('security.authenticator.oidc_login.main'));
+    }
+
+    public function testOidcLoginUsesTheFirewallUserProvider()
+    {
+        $container = $this->getRawContainer();
+        $container->loadFromExtension('security', [
+            'providers' => [
+                'oidc' => ['oidc' => null],
+                'in_memory' => ['memory' => null],
+            ],
+            'firewalls' => [
+                'main' => [
+                    'provider' => 'oidc',
+                    'oidc_login' => [
+                        'provider_uri' => 'https://provider.example.com',
+                        'client_id' => 'my-client-id',
+                        'client_secret' => 'my-client-secret',
+                    ],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $authenticator = $container->getDefinition('security.authenticator.oidc_login.main');
+        $this->assertSame('security.user.provider.concrete.oidc', (string) $authenticator->getArgument(1));
+    }
+
+    public function testOidcLoginVerifiesTheIdTokenSignature()
+    {
+        $container = $this->getRawContainer();
+        $container->loadFromExtension('security', [
+            'providers' => ['oidc' => ['oidc' => null]],
+            'firewalls' => [
+                'main' => [
+                    'oidc_login' => [
+                        'provider_uri' => 'https://provider.example.com',
+                        'client_id' => 'my-client-id',
+                        'client_secret' => 'my-client-secret',
+                    ],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $verifier = $container->getDefinition('security.authenticator.oidc_login.signature_verifier.main');
+        $this->assertSame(OidcSignatureVerifier::class, $verifier->getClass());
+        $this->assertSame(['RS256'], $verifier->getArgument(3));
+        $this->assertSame('security.authenticator.oidc_login.signature_verifier.main', (string) $container->getDefinition('security.authenticator.oidc_login.main')->getArgument(10));
+    }
+
+    public function testOidcLoginCanSkipTheIdTokenSignatureVerification()
+    {
+        $container = $this->getRawContainer();
+        $container->loadFromExtension('security', [
+            'providers' => ['oidc' => ['oidc' => null]],
+            'firewalls' => [
+                'main' => [
+                    'oidc_login' => [
+                        'provider_uri' => 'https://provider.example.com',
+                        'client_id' => 'my-client-id',
+                        'client_secret' => 'my-client-secret',
+                        'id_token_signature' => ['required' => false],
+                    ],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $this->assertFalse($container->hasDefinition('security.authenticator.oidc_login.signature_verifier.main'));
+        $this->assertNull($container->getDefinition('security.authenticator.oidc_login.main')->getArgument(10));
+    }
+
+    public function testOidcLoginSupportsAPublicClient()
+    {
+        $container = $this->getRawContainer();
+        $container->loadFromExtension('security', [
+            'providers' => ['oidc' => ['oidc' => null]],
+            'firewalls' => [
+                'main' => [
+                    'oidc_login' => [
+                        'provider_uri' => 'https://provider.example.com',
+                        'client_id' => 'my-client-id',
+                        'token_endpoint_auth_method' => 'none',
+                    ],
+                ],
+            ],
+        ]);
+
+        $container->compile();
+
+        $client = $container->getDefinition('security.authenticator.oidc_login.client.main');
+        $this->assertSame(OidcPublicClient::class, $client->getClass());
+        $this->assertCount(3, $client->getArguments());
+    }
+
+    public function testOidcLoginCallbackRouteLoaderIsAlwaysRegistered()
+    {
+        // the "security.yaml" routing recipe imports this loader unconditionally, so it
+        // must exist even in an application no firewall of which uses the OIDC authenticator
+        $container = $this->getRawContainer();
+        $container->loadFromExtension('security', [
+            'providers' => ['default' => ['memory' => null]],
+            'firewalls' => ['main' => ['form_login' => null]],
+        ]);
+
+        $container->compile();
+
+        $this->assertTrue($container->hasDefinition('security.authenticator.oidc_login.route_loader'));
+        $this->assertSame([], $container->getParameter('security.oidc_login.callback_uris'));
+        $this->assertSame([], $container->getParameter('security.oidc_login.start_paths'));
+
+        $loader = $container->getDefinition('security.authenticator.oidc_login.route_loader');
+        $this->assertSame(OidcLoginRouteLoader::class, $loader->getClass());
+        $this->assertArrayHasKey('routing.route_loader', $loader->getTags());
+        // it declares no route as long as no firewall configures the OIDC authenticator
+        $this->assertCount(0, (new OidcLoginRouteLoader($container->getParameter('security.oidc_login.callback_uris'), 'security.oidc_login.callback_uris', $container->getParameter('security.oidc_login.start_paths'), 'security.oidc_login.start_paths'))());
     }
 
     protected function getRawContainer()

@@ -59,14 +59,27 @@ final class EntityValueResolver implements ValueResolverInterface
             return [];
         }
 
+        if (!$options->mapping && !$options->id && !\is_array($request->attributes->get($name = $argument->getName()))) {
+            foreach ($request->attributes->get('_route_mapping') ?? [] as $parameter => $attribute) {
+                if ($name === $attribute) {
+                    $options->mapping = [$name => $parameter];
+                    break;
+                }
+            }
+        }
+
         $message = '';
-        if (null !== $options->expr) {
+        if ($options->expr instanceof \Closure) {
+            if (null === $object = $this->findViaClosure($manager, $options, $request)) {
+                $message = ' The closure returned null.';
+            }
+        } elseif (null !== $options->expr) {
             $variables = array_merge($request->attributes->all(), ['request' => $request]);
             if (null === $object = $this->findViaExpression($this->expressionLanguage, $manager, $options, $variables)) {
                 $message = \sprintf(' The expression "%s" returned null.', $options->expr);
             }
-        // find by identifier?
-        } elseif (false === $object = $this->findById($manager, $options, $this->getIdentifier($request, $options, $argument))) {
+        // find by identifier? an array argument maps to a list, so the single-entity identifier lookup does not apply
+        } elseif ('array' === $argument->getType() || false === $object = $this->findById($manager, $options, $this->getIdentifier($request, $options, $argument))) {
             // find by criteria
             if (!$criteria = $this->getCriteria($request, $options, $manager, $argument)) {
                 if (!class_exists(NearMissValueResolverException::class)) {
@@ -75,7 +88,12 @@ final class EntityValueResolver implements ValueResolverInterface
 
                 throw new NearMissValueResolverException(\sprintf('Cannot find mapping for "%s": declare one using either the #[MapEntity] attribute or mapped route parameters.', $options->class));
             }
-            $object = $this->findOneByCriteria($manager, $options, $criteria);
+
+            if ('array' === $argument->getType()) {
+                $object = $this->findByCriteria($manager, $options, $criteria);
+            } else {
+                $object = $this->findOneByCriteria($manager, $options, $criteria);
+            }
         }
 
         if (null === $object && !$argument->isNullable()) {
@@ -110,14 +128,6 @@ final class EntityValueResolver implements ValueResolverInterface
         if ($request->attributes->has($name)) {
             if (\is_array($id = $request->attributes->get($name))) {
                 return false;
-            }
-
-            foreach ($request->attributes->get('_route_mapping') ?? [] as $parameter => $attribute) {
-                if ($name === $attribute) {
-                    $options->mapping = [$name => $parameter];
-
-                    return false;
-                }
             }
 
             return $id ?? ($options->stripNull ? false : null);

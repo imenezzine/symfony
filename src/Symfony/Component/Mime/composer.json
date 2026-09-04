@@ -28,12 +28,15 @@
         "symfony/process": "^7.4|^8.0",
         "symfony/property-access": "^7.4|^8.0",
         "symfony/property-info": "^7.4|^8.0",
-        "symfony/serializer": "^7.4|^8.0"
+        "symfony/serializer": "^7.4.17|^8.1.5"
     },
     "conflict": {
         "egulias/email-validator": "~3.0.0",
         "phpdocumentor/reflection-docblock": "<5.2|>=7",
         "phpdocumentor/type-resolver": "<1.5.1"
+    },
+    "suggest": {
+        "symfony/process": "For PGP/MIME signing and encryption support"
     },
     "autoload": {
         "psr-4": { "Symfony\\Component\\Mime\\": "" },

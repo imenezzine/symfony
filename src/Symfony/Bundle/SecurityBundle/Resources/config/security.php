@@ -14,11 +14,13 @@ namespace Symfony\Component\DependencyInjection\Loader\Configurator;
 use Symfony\Bundle\SecurityBundle\CacheWarmer\ExpressionCacheWarmer;
 use Symfony\Bundle\SecurityBundle\EventListener\FirewallListener;
 use Symfony\Bundle\SecurityBundle\Routing\LogoutRouteLoader;
+use Symfony\Bundle\SecurityBundle\Routing\OidcLoginRouteLoader;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Bundle\SecurityBundle\Security\FirewallConfig;
 use Symfony\Bundle\SecurityBundle\Security\FirewallContext;
 use Symfony\Bundle\SecurityBundle\Security\FirewallMap;
 use Symfony\Bundle\SecurityBundle\Security\LazyFirewallContext;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\ExpressionLanguage\ExpressionLanguage as BaseExpressionLanguage;
 use Symfony\Component\Ldap\Security\LdapUserProvider;
@@ -31,6 +33,7 @@ use Symfony\Component\Security\Core\Authorization\AccessDecisionManagerInterface
 use Symfony\Component\Security\Core\Authorization\AuthorizationChecker;
 use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
 use Symfony\Component\Security\Core\Authorization\ExpressionLanguage;
+use Symfony\Component\Security\Core\Authorization\GuestAuthorizationCheckerInterface;
 use Symfony\Component\Security\Core\Authorization\UserAuthorizationCheckerInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\AuthenticatedVoter;
 use Symfony\Component\Security\Core\Authorization\Voter\ClosureVoter;
@@ -43,7 +46,9 @@ use Symfony\Component\Security\Core\User\ChainUserProvider;
 use Symfony\Component\Security\Core\User\InMemoryUserChecker;
 use Symfony\Component\Security\Core\User\InMemoryUserProvider;
 use Symfony\Component\Security\Core\User\MissingUserProvider;
+use Symfony\Component\Security\Core\User\OidcUserProvider;
 use Symfony\Component\Security\Core\Validator\Constraints\UserPasswordValidator;
+use Symfony\Component\Security\Csrf\DelegatingCsrfTokenManager;
 use Symfony\Component\Security\Http\Authentication\AuthenticationUtils;
 use Symfony\Component\Security\Http\Controller\SecurityTokenValueResolver;
 use Symfony\Component\Security\Http\Controller\UserValueResolver;
@@ -59,6 +64,10 @@ use Symfony\Component\Security\Http\Session\SessionAuthenticationStrategyInterfa
 return static function (ContainerConfigurator $container) {
     $container->parameters()
         ->set('security.role_hierarchy.roles', [])
+        // the OIDC login route loader is wired on these parameters, which the
+        // "oidc_login" firewall factory fills in; they stay empty when no firewall uses one
+        ->set('security.oidc_login.callback_uris', [])
+        ->set('security.oidc_login.start_paths', [])
     ;
 
     $container->services()
@@ -69,6 +78,7 @@ return static function (ContainerConfigurator $container) {
             ])
         ->alias(AuthorizationCheckerInterface::class, 'security.authorization_checker')
         ->alias(UserAuthorizationCheckerInterface::class, 'security.authorization_checker')
+        ->alias(GuestAuthorizationCheckerInterface::class, 'security.authorization_checker')
 
         ->set('security.token_storage', UsageTrackingTokenStorage::class)
             ->args([
@@ -130,6 +140,17 @@ return static function (ContainerConfigurator $container) {
         ->set('security.user_checker_locator', ServiceLocator::class)
             ->args([[]])
 
+        ->set('security.delegating_csrf_token_manager', DelegatingCsrfTokenManager::class)
+            // outside SameOriginCsrfTokenManager (0), so that the manager a firewall configures for a token id wins
+            ->decorate('security.csrf.token_manager', null, -10, ContainerInterface::IGNORE_ON_INVALID_REFERENCE)
+            ->args([
+                service('.inner'),
+                service('security.csrf_token_manager_locator'),
+            ])
+
+        ->set('security.csrf_token_manager_locator', ServiceLocator::class)
+            ->args([[]])
+
         ->set('security.expression_language', ExpressionLanguage::class)
             ->args([service('cache.security_expression_language')->nullOnInvalid()])
 
@@ -178,6 +199,8 @@ return static function (ContainerConfigurator $container) {
             service('request_stack'),
             service('security.firewall.map'),
             service('security.token_storage'),
+            service('router')->nullOnInvalid(),
+            service('security.csrf.token_manager')->nullOnInvalid(),
         ])
 
         // Firewall related services
@@ -249,6 +272,15 @@ return static function (ContainerConfigurator $container) {
             ])
             ->tag('routing.route_loader')
 
+        ->set('security.authenticator.oidc_login.route_loader', OidcLoginRouteLoader::class)
+            ->args([
+                '%security.oidc_login.callback_uris%',
+                'security.oidc_login.callback_uris',
+                '%security.oidc_login.start_paths%',
+                'security.oidc_login.start_paths',
+            ])
+            ->tag('routing.route_loader')
+
         // Provisioning
         ->set('security.user.provider.missing', MissingUserProvider::class)
             ->abstract()
@@ -257,6 +289,9 @@ return static function (ContainerConfigurator $container) {
             ])
 
         ->set('security.user.provider.in_memory', InMemoryUserProvider::class)
+            ->abstract()
+
+        ->set('security.user.provider.oidc', OidcUserProvider::class)
             ->abstract()
 
         ->set('security.user.provider.ldap', LdapUserProvider::class)

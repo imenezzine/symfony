@@ -14,6 +14,7 @@ namespace Symfony\Component\Messenger\Bridge\Amqp\Tests\Transport;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Bridge\Amqp\Tests\Fixtures\DummyMessage;
+use Symfony\Component\Messenger\Bridge\Amqp\Transport\AmqpReceivedStamp;
 use Symfony\Component\Messenger\Bridge\Amqp\Transport\AmqpTransport;
 use Symfony\Component\Messenger\Bridge\Amqp\Transport\Connection;
 use Symfony\Component\Messenger\Envelope;
@@ -42,13 +43,26 @@ class AmqpTransportTest extends TestCase
         $amqpEnvelope = $this->createStub(\AMQPEnvelope::class);
         $amqpEnvelope->method('getBody')->willReturn('body');
         $amqpEnvelope->method('getHeaders')->willReturn(['my' => 'header']);
+        $amqpEnvelope->method('getRoutingKey')->willReturn('routing_key');
 
-        $serializer->expects($this->once())->method('decode')->with(['body' => 'body', 'headers' => ['my' => 'header']])->willReturn(new Envelope($decodedMessage));
+        $serializer->expects($this->once())->method('decode')->with(['body' => 'body', 'headers' => ['my' => 'header'], 'extra' => ['routing_key' => 'routing_key']])->willReturn(new Envelope($decodedMessage));
         $connection->method('getQueueNames')->willReturn(['queueName']);
         $connection->expects($this->once())->method('get')->with('queueName')->willReturn($amqpEnvelope);
 
         $envelopes = iterator_to_array($transport->get());
         $this->assertSame($decodedMessage, $envelopes[0]->getMessage());
+    }
+
+    public function testKeepalive()
+    {
+        $transport = $this->getTransport(
+            null,
+            $connection = $this->createMock(Connection::class),
+        );
+
+        $connection->expects($this->once())->method('keepalive');
+
+        $transport->keepalive(new Envelope(new DummyMessage('foo'), [new AmqpReceivedStamp($this->createStub(\AMQPEnvelope::class), 'queueName')]));
     }
 
     private function getTransport(?SerializerInterface $serializer = null, ?Connection $connection = null): AmqpTransport

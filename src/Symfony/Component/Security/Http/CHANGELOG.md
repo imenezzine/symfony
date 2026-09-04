@@ -5,6 +5,26 @@ CHANGELOG
 ---
 
  * Add `allowed_time_drift` option to `OidcTokenHandler` to configure time tolerance for token validation (`iat`, `nbf`, `exp` claims)
+ * Throw a 403 `Symfony\Component\Security\Http\Exception\InvalidCsrfTokenException` instead of the `Security\Core` one when the `#[IsCsrfTokenValid]` attribute fails, so the failure is no longer handled as an authentication failure
+ * Add the deauthentication reason and the responsible user providers to `TokenDeauthenticatedEvent`
+ * Add `LogoutUrlGenerator::getLogoutForm()` to build a form that logs the user out with a POST
+ * Throw the status-code-specific `HttpException` (e.g. `NotFoundHttpException`, `AccessDeniedHttpException`) instead of a generic one when `#[IsGranted]`'s `statusCode` option is set
+ * Add `$httpUtils`, `$path`, `$csrfTokenManager`, `$csrfParameter` and `$csrfTokenId` arguments to `SwitchUserListener` to restrict user switching to a dedicated route protected by a CSRF token
+ * Add `$urlGenerator` and `$csrfTokenManager` arguments to `ImpersonateUrlGenerator` so that the generated URLs follow the `path` and CSRF configuration of the firewall
+ * Add `ImpersonateUrlGenerator::generateImpersonationForm()` and `generateExitForm()` to build a form that switches the user with a POST
+ * Add `$targetUri` argument to `ImpersonateUrlGenerator::generateImpersonationPath()` and `generateImpersonationUrl()`
+ * Configure the decorated handler of `CustomAuthenticationSuccessHandler` and `CustomAuthenticationFailureHandler` when they are called instead of when they are built, so that a single handler can be shared by several authenticators
+ * Add argument `$parameters` to `LoginLinkHandlerInterface::createLoginLink()` to add extra query parameters covered by the link signature
+ * Expose the verified extra parameters via the `_login_link_parameters` request attribute when consuming a login link
+ * Add `OidcLoginAuthenticator` for the OpenID Connect Authorization Code Flow (interactive login via OIDC provider)
+ * Add `OidcClient` and `OidcDiscovery` protocol classes
+ * Cache the discovery document of the `oidc` access token handler for one hour, where it was fetched again on every refresh of the JWKS
+ * Add `OidcSignatureVerifier` to verify the ID token signature of the OIDC login authenticator against the provider JWKS, which it now does by default
+ * Add `OidcPublicClient` to run the OIDC login flow as a public client, which holds no client secret and relies on PKCE, and support `client_secret_basic` in `OidcConfidentialClient`
+ * Add the `pkce_enabled`, `pkce_method` and `max_age` options and the `$authorizationParams` argument to `OidcLoginAuthenticator`, which checks the ID token `auth_time` claim when `max_age` is used
+ * Add the `user_data_source` and `user_identifier_claim` options to `OidcLoginAuthenticator` to pick where the user claims are read from and the claim the user identifier is read from
+ * Add `OidcEndSessionListener` for RP-Initiated Logout via the OIDC `end_session_endpoint`
+ * Add `UnsupportedReasons`, held by the `SecurityRequestAttributes::UNSUPPORTED_REASONS` request attribute while the profiler is enabled, so that `supports()` can tell why an authenticator did not support a request
 
 8.1
 ---

@@ -9,6 +9,10 @@
  * file that was distributed with this source code.
  */
 
+if (!file_exists(__DIR__.'/src')) {
+    exit(0);
+}
+
 $ruleset = new TwigCsFixer\Ruleset\Ruleset();
 $ruleset->addStandard(new TwigCsFixer\Standard\TwigCsFixer());
 

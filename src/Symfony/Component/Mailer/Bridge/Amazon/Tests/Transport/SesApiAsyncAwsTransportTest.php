@@ -21,7 +21,9 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\Mailer\Bridge\Amazon\Transport\SesApiAsyncAwsTransport;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\RawMessage;
@@ -158,6 +160,102 @@ class SesApiAsyncAwsTransportTest extends TestCase
 
         $mail->getHeaders()->addTextHeader('X-Ascii-Header', 'foobar');
         $mail->getHeaders()->addTextHeader('X-NonAscii-Header', 'éééééééé');
+
+        $transport->send($mail);
+    }
+
+    public function testSendWithAttachment()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $content = json_decode($options['body'], true);
+            $raw = base64_decode($content['Content']['Raw']['Data']);
+
+            $this->assertStringContainsString('Content-Disposition: attachment; name=foo.txt', $raw);
+            $this->assertStringNotContainsString('X-Metadata-tagName1', $raw);
+            $this->assertStringNotContainsString('X-Metadata-tagName2', $raw);
+            $this->assertSame([['Name' => 'tagName1', 'Value' => 'tag Value1'], ['Name' => 'tagName2', 'Value' => 'tag Value2']], $content['EmailTags']);
+
+            return new MockResponse('{"MessageId": "foobar"}', ['http_code' => 200]);
+        });
+
+        $transport = new SesApiAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), $client));
+
+        $mail = new Email();
+        $mail->subject('Hello!')
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->text('Hello There!')
+            ->attach('some attachment', 'foo.txt');
+
+        $mail->getHeaders()->add(new MetadataHeader('tagName1', 'tag Value1'));
+        $mail->getHeaders()->add(new MetadataHeader('tagName2', 'tag Value2'));
+
+        $message = $transport->send($mail);
+
+        $this->assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testSendRemoteTemplate()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $this->assertSame('POST', $method);
+            $this->assertSame('https://email.us-east-1.amazonaws.com/v2/email/outbound-emails', $url);
+
+            $content = json_decode($options['body'], true);
+
+            $this->assertSame('welcome', $content['Content']['Template']['TemplateName']);
+            $this->assertSame('{"firstName":"Fabien"}', $content['Content']['Template']['TemplateData']);
+            $this->assertSame([['Name' => 'X-Custom-Header', 'Value' => 'foobar']], $content['Content']['Template']['Headers']);
+            $this->assertArrayNotHasKey('Simple', $content['Content']);
+
+            $json = '{"MessageId": "foobar"}';
+
+            return new MockResponse($json, [
+                'http_code' => 200,
+            ]);
+        });
+
+        $transport = new SesApiAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), $client));
+
+        $mail = (new RemoteTemplateEmail())
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->template('welcome', ['firstName' => 'Fabien']);
+        $mail->getHeaders()->addTextHeader('X-Custom-Header', 'foobar');
+
+        $message = $transport->send($mail);
+
+        $this->assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testRemoteTemplateRejectsSubject()
+    {
+        $transport = new SesApiAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), new MockHttpClient()));
+
+        $mail = (new RemoteTemplateEmail())
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->subject('Hello!')
+            ->template('welcome');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Amazon SES does not support overriding the subject of a template; define the subject in the template itself.');
+
+        $transport->send($mail);
+    }
+
+    public function testRemoteTemplateRejectsAttachments()
+    {
+        $transport = new SesApiAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), new MockHttpClient()));
+
+        $mail = (new RemoteTemplateEmail())
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->template('welcome')
+            ->attach('some attachment', 'attachment.txt');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The Amazon SES API does not support attachments when using a remote template.');
 
         $transport->send($mail);
     }

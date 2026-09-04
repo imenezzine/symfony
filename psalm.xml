@@ -20,17 +20,32 @@
             <directory name="src/Symfony/*/*/*/*/Tests" />
             <directory name="src/Symfony/Component/Intl/Resources/data/" />
             <directory name="src/Symfony/Component/Emoji/Resources/data/" />
+            <!-- these templates are include()'d in HtmlErrorRenderer's scope, so they can't be analyzed standalone -->
+            <directory name="src/Symfony/Component/ErrorHandler/Resources/views/" />
             <directory name="vendor" />
         </ignoreFiles>
     </projectFiles>
 
     <issueHandlers>
+        <MissingImmutableAnnotation>
+            <errorLevel type="suppress">
+                <!--
+                    DatePoint is immutable, but the class cannot be annotated as
+                    such because its constructor reads the clock.
+                -->
+                <file name="src/Symfony/Component/Clock/DatePoint.php" />
+            </errorLevel>
+        </MissingImmutableAnnotation>
         <UndefinedClass>
             <errorLevel type="suppress">
                 <!-- These classes have been added in PHP 8.4 -->
                 <referencedClass name="BcMath\Number"/>
                 <!-- These classes have been added in PHP 8.5 -->
                 <referencedClass name="CurlSharePersistentHandle"/>
+                <!-- These classes come from optional extensions -->
+                <referencedClass name="Couchbase\Collection"/>
+                <referencedClass name="Relay\Cluster"/>
+                <referencedClass name="Relay\Relay"/>
             </errorLevel>
         </UndefinedClass>
         <UnusedClass>

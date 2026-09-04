@@ -1,6 +1,12 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Add `SlackPlainTextInputBlock` to add a plain-text input to a Slack message
+ * Add the `ssl` DSN option to send requests over plain HTTP
+
 7.4
 ---
 

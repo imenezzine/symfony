@@ -228,4 +228,107 @@ class KeyParserTest extends TestCase
         $result = $this->parser->parse("\x1b[122::119;5u");
         $this->assertSame('ctrl+z', $result['key']);
     }
+
+    public function testShiftedDigitsAndSymbolsDoNotMatchTheUnshiftedKey()
+    {
+        $this->assertFalse($this->parser->matches('1', 'shift+1'));
+        $this->assertFalse($this->parser->matches('-', 'shift+-'));
+        $this->assertFalse($this->parser->matches('/', 'shift+/'));
+    }
+
+    public function testShiftedLettersStillMatchTheUppercaseByte()
+    {
+        $this->assertTrue($this->parser->matches('A', 'shift+a'));
+        $this->assertFalse($this->parser->matches('a', 'shift+a'));
+    }
+
+    public function testUnnameableModifierIsNotReportedAsAnUnmodifiedKey()
+    {
+        $this->parser->setKittyProtocolActive(true);
+
+        // Modifier value 9 means the super bit is set, which has no key id.
+        $this->assertNull($this->parser->parse("\x1b[97;9u"));
+        $this->assertFalse($this->parser->matches("\x1b[97;9u", 'a'));
+    }
+
+    public function testLockModifiersAreStillIgnored()
+    {
+        $this->parser->setKittyProtocolActive(true);
+
+        // Caps Lock (64) and Num Lock (128) are reported but carry no key id.
+        $result = $this->parser->parse("\x1b[97;65u");
+        $this->assertSame('a', $result['key']);
+        $this->assertSame([], $result['modifiers']);
+    }
+
+    public function testPlusKeyIsReportedWithoutModifiers()
+    {
+        $result = $this->parser->parse('+');
+
+        $this->assertSame('+', $result['key']);
+        $this->assertSame([], $result['modifiers']);
+    }
+
+    public function testModifiedPlusKeyKeepsThePlusAsTheKey()
+    {
+        $this->parser->setKittyProtocolActive(true);
+
+        $result = $this->parser->parse("\x1b[43;5u");
+        $this->assertSame('ctrl++', $result['key']);
+        $this->assertSame(['ctrl'], $result['modifiers']);
+
+        $result = $this->parser->parse("\x1b[43;4u");
+        $this->assertSame('shift+alt++', $result['key']);
+        $this->assertSame(['shift', 'alt'], $result['modifiers']);
+    }
+
+    public function testModifiedPlusKeyCanBeBound()
+    {
+        $this->parser->setKittyProtocolActive(true);
+
+        $this->assertTrue($this->parser->matches("\x1b[43;5u", 'ctrl++'));
+        $this->assertFalse($this->parser->matches("\x1b[43;5u", 'ctrl+a'));
+        $this->assertFalse($this->parser->matches("\x1b[97;5u", 'ctrl++'));
+    }
+
+    public function testCtrlAltLetterMatchesBothEncodingsWithoutTheKittyFlag()
+    {
+        // A CSI u sequence is parsed whether or not the flag is set, so both
+        // encodings have to match, as they do for alt and ctrl on their own.
+        $this->assertSame('ctrl+alt+a', $this->parser->parse("\x1b[97;7u")['key']);
+
+        $this->assertTrue($this->parser->matches("\x1b\x01", 'ctrl+alt+a'));
+        $this->assertTrue($this->parser->matches("\x1b[97;7u", 'ctrl+alt+a'));
+        $this->assertFalse($this->parser->matches("\x1b[98;7u", 'ctrl+alt+a'));
+        $this->assertFalse($this->parser->matches("\x1b[97;5u", 'ctrl+alt+a'));
+    }
+
+    /**
+     * xterm's modifyOtherKeys form reports every modifier through the same
+     * `CSI 27 ; mods ; keycode ~` shape, not just shift and alt.
+     */
+    #[DataProvider('modifyOtherKeysEnterProvider')]
+    public function testModifyOtherKeysEnter(string $sequence, string $keyId)
+    {
+        $this->assertTrue($this->parser->matches($sequence, $keyId));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function modifyOtherKeysEnterProvider(): iterable
+    {
+        yield 'enter' => ["\x1b[27;1;13~", 'enter'];
+        yield 'shift+enter' => ["\x1b[27;2;13~", 'shift+enter'];
+        yield 'alt+enter' => ["\x1b[27;3;13~", 'alt+enter'];
+        yield 'ctrl+enter' => ["\x1b[27;5;13~", 'ctrl+enter'];
+        yield 'ctrl+shift+enter' => ["\x1b[27;6;13~", 'ctrl+shift+enter'];
+        yield 'ctrl+alt+enter' => ["\x1b[27;7;13~", 'ctrl+alt+enter'];
+    }
+
+    public function testModifyOtherKeysEnterDoesNotMatchAnotherModifier()
+    {
+        $this->assertFalse($this->parser->matches("\x1b[27;5;13~", 'shift+enter'));
+        $this->assertFalse($this->parser->matches("\x1b[27;5;9~", 'ctrl+enter'));
+    }
 }

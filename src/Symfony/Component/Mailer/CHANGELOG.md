@@ -4,7 +4,20 @@ CHANGELOG
 8.2
 ---
 
+ * Add a `rate_limiter` option to mailer transports
+ * Add DSN param `timeout` to configure the connect/read/write timeout of SMTP transports
+ * Add `RemoteTemplateEmail`, `RemoteTemplate` and `RemoteTemplateTransportInterface` to send emails rendered by the mail provider from a template hosted on its side
  * Reorder EsmtpTransport authenticators to prefer PLAIN over obsolete LOGIN
+ * Add `InMemorySmimeCertificateRepository` to provide recipient S/MIME certificates from a static map
+ * Add a configurable behavior to `SmimeEncryptedMessageListener` when a recipient has no certificate (`send_unencrypted`, `fail`, `encrypt`, `skip`), overridable per message via the `X-SMime-Encrypt` header
+ * Deprecate sending an S/MIME message unencrypted when a recipient has no certificate (the `send_unencrypted` behavior); it will throw in 9.0, use `fail`, `encrypt` or `skip` instead
+ * Add a `$encryptForSender` argument to `SmimeEncryptedMessageListener` to also encrypt for the sender, so it can read the messages it sent
+ * Add `PRIORITY` constants to `DkimSignedMessageListener`, `SmimeSignedMessageListener` and `SmimeEncryptedMessageListener` and order encryption after signing so signed-and-encrypted messages compose deterministically
+ * Add `PgpMimeSignedMessageListener` and `PgpMimeEncryptedMessageListener`
+ * Add `InMemoryPgpPublicKeyRepository` to provide recipient PGP public keys from a static map
+ * Add a configurable behavior to `PgpMimeEncryptedMessageListener` when a recipient has no key (`fail`, `encrypt`, `skip`), overridable per message via the `X-Pgp-Encrypt` header
+ * Add `TrackingHeader` for per-message open/click tracking and map it to provider-specific settings in the AhaSend, Azure, Brevo, Infobip, Mailchimp/Mandrill, MailerSend, Mailgun, Mailjet, Postmark and Sendgrid transports
+ * Deprecate reading a value that is not a boolean with `Dsn::getBooleanOption()`; it will throw in 9.0
 
 8.0
 ---

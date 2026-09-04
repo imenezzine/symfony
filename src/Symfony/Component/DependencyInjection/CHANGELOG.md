@@ -6,6 +6,12 @@ CHANGELOG
 
  * Allow computing tag attributes per tagged service when using `#[AutoconfigureTag]`, `#[Autoconfigure]` or `_instanceof`: pass a `\Closure` receiving the concrete class-string (requires PHP 8.5), or a `[class-string, method]` callable resolved against each concrete class (works on PHP 8.4)
  * Call `#[Required]` methods in the order defined by the attribute's `$priority` argument
+ * Add support for injecting a service as a lazy proxy on a per-argument basis, using the `!lazy_proxy` YAML tag, the `@~` reference prefix or the `lazy_proxy()` function in the PHP-DSL
+ * Write a `CACHEDIR.TAG` file in the cache and build directories so backup tools can skip them
+ * Add a `factory` argument to the `#[Autoconfigure]` attribute, and support the `factory` key under `_instanceof`
+ * Add `Preloader::ignore()` to exclude classes or namespace prefixes from preloading
+ * Allow computing resource tag attributes per tagged class when using `#[AutoconfigureResourceTag]`, `#[Autoconfigure]` or `_instanceof`, like for regular tags
+ * Add `#[AutowireClassMap]` attribute, `TaggedClassMapArgument`, the `!tagged_class_map` YAML tag and the `tagged_class_map()` PHP-DSL function to inject a map of classes found by resource tag name
 
 8.1
 ---

@@ -39,6 +39,43 @@ class AddressTest extends TestCase
         new Address('fab   pot@symfony.com');
     }
 
+    public function testConstructorWithUnquotedAtSignInLocalPart()
+    {
+        $this->expectException(RfcComplianceException::class);
+        $this->expectExceptionMessage('Email "em@il@example.test" does not comply with addr-spec of RFC 5322.');
+        new Address('em@il@example.test');
+    }
+
+    public function testConstructorWithQuotedAtSignInLocalPart()
+    {
+        $a = new Address('"em@il"@example.test');
+        $this->assertSame('"em@il"@example.test', $a->getAddress());
+    }
+
+    public function testConstructorWithAtSignInDomainLiteral()
+    {
+        $a = new Address('user@[em@il]');
+        $this->assertSame('user@[em@il]', $a->getAddress());
+    }
+
+    public function testConstructorWithUnquotedAtSignInLocalPartAndDomainLiteral()
+    {
+        $this->expectException(RfcComplianceException::class);
+        new Address('em@il@[example]');
+    }
+
+    public function testConstructorWithQuotedAtSignInLocalPartAndDomainLiteral()
+    {
+        $a = new Address('"em@il"@[em@il]');
+        $this->assertSame('"em@il"@[em@il]', $a->getAddress());
+    }
+
+    public function testConstructorWithACommentAfterADomainLiteral()
+    {
+        $a = new Address('user@[em@il] (comment)');
+        $this->assertSame('user@[em@il] (comment)', $a->getAddress());
+    }
+
     #[DataProvider('provideAddressesWithControlCharacters')]
     public function testConstructorRejectsControlCharactersInAddress(string $address)
     {
@@ -55,6 +92,31 @@ class AddressTest extends TestCase
         yield 'HTAB' => ["foo\t@example.com"];
         yield 'DEL (0x7F)' => ["foo\x7F@example.com"];
         yield 'control char in domain' => ["foo@example\x01.com"];
+    }
+
+    #[DataProvider('provideNamesWithControlCharacters')]
+    public function testConstructorStripsControlCharactersFromName(string $name)
+    {
+        $a = new Address('fabien@symfony.com', $name);
+        $this->assertSame('ab', $a->getName());
+        $this->assertSame('"ab" <fabien@symfony.com>', $a->toString());
+    }
+
+    public function testConstructorKeepsTheOnlyControlCharacterLegalInAPhrase()
+    {
+        $a = new Address('fabien@symfony.com', "Jean\tDupont");
+        $this->assertSame("Jean\tDupont", $a->getName());
+    }
+
+    public static function provideNamesWithControlCharacters(): iterable
+    {
+        yield 'NUL byte' => ["a\x00b"];
+        yield 'SOH (0x01)' => ["a\x01b"];
+        yield 'LF' => ["a\nb"];
+        yield 'CR' => ["a\rb"];
+        yield 'VT (0x0B)' => ["a\x0Bb"];
+        yield 'US (0x1F)' => ["a\x1Fb"];
+        yield 'DEL (0x7F)' => ["a\x7Fb"];
     }
 
     public function testCreate()
@@ -183,5 +245,20 @@ class AddressTest extends TestCase
     {
         $address = new Address('fabien@symfony.com', 'Fabien, "Potencier');
         $this->assertSame('"Fabien, \"Potencier" <fabien@symfony.com>', $address->toString());
+    }
+
+    public function testEncodeNameIfNameContainsBackslashes()
+    {
+        $address = new Address('fabien@symfony.com', 'Fabien \ "Potencier');
+        $this->assertSame('"Fabien \\\\ \"Potencier" <fabien@symfony.com>', $address->toString());
+
+        $address = new Address('fabien@symfony.com', 'Fabien\\');
+        $this->assertSame('"Fabien\\\\" <fabien@symfony.com>', $address->toString());
+    }
+
+    public function testEncodeNameIfNameIsNotValidUtf8()
+    {
+        $address = new Address('fabien@symfony.com', "Fabien \xB1 \\ Potencier");
+        $this->assertSame("\"Fabien \xB1 \\\\ Potencier\" <fabien@symfony.com>", $address->toString());
     }
 }

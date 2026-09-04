@@ -13,12 +13,14 @@ namespace Symfony\Bundle\FrameworkBundle\Tests\Console\Descriptor;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\IgnoreDeprecations;
+use PHPUnit\Framework\Attributes\RequiresMethod;
 use PHPUnit\Framework\TestCase;
 use Symfony\Bundle\FrameworkBundle\Tests\Fixtures\FooUnitEnum;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\DependencyInjection\Alias;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
@@ -120,6 +122,18 @@ abstract class AbstractDescriptorTestCase extends TestCase
     public static function getDescribeContainerDefinitionTestData(): array
     {
         return static::getDescriptionTestData(ObjectsProvider::getContainerDefinitions());
+    }
+
+    #[DataProvider('getDescribeContainerDefinitionWithTaggedClassMapTestData')]
+    #[RequiresMethod(TaggedClassMapArgument::class, 'getTag')]
+    public function testDescribeContainerDefinitionWithTaggedClassMap(Definition $definition, $expectedDescription, $file)
+    {
+        $this->assertDescription($expectedDescription, $definition);
+    }
+
+    public static function getDescribeContainerDefinitionWithTaggedClassMapTestData(): array
+    {
+        return static::getDescriptionTestData(ObjectsProvider::getContainerDefinitionsWithTaggedClassMap());
     }
 
     #[DataProvider('getDescribeContainerDefinitionWithArgumentsShownTestData')]
@@ -281,11 +295,11 @@ abstract class AbstractDescriptorTestCase extends TestCase
         return $output;
     }
 
-    private function assertDescription($expectedDescription, $describedObject, array $options = [])
+    protected function assertDescription($expectedDescription, $describedObject, array $options = [])
     {
         $options['is_debug'] = false;
         $options['raw_output'] = true;
-        $options['raw_text'] = true;
+        $options['raw_text'] ??= true;
         $options['method'] ??= null;
         $output = new BufferedOutput(BufferedOutput::VERBOSITY_NORMAL, true);
 
@@ -366,6 +380,27 @@ abstract class AbstractDescriptorTestCase extends TestCase
         $variations = ['priority_tag' => ['tag' => 'tag1']];
         $data = [];
         foreach (ObjectsProvider::getContainerBuildersWithPriorityTags() as $name => $object) {
+            foreach ($variations as $suffix => $options) {
+                $file = \sprintf('%s_%s.%s', trim($name, '.'), $suffix, static::getFormat());
+                $description = file_get_contents(__DIR__.'/../../Fixtures/Descriptor/'.$file);
+                $data[] = [$object, $description, $options];
+            }
+        }
+
+        return $data;
+    }
+
+    #[DataProvider('getDescribeContainerBuilderWithTaggedItemPriorityTagsTestData')]
+    public function testDescribeContainerBuilderWithTaggedItemPriorityTags(ContainerBuilder $builder, $expectedDescription, array $options)
+    {
+        $this->assertDescription($expectedDescription, $builder, $options);
+    }
+
+    public static function getDescribeContainerBuilderWithTaggedItemPriorityTagsTestData(): array
+    {
+        $variations = ['priority_tag' => ['tag' => 'tag1']];
+        $data = [];
+        foreach (ObjectsProvider::getContainerBuildersWithTaggedItemPriorityTags() as $name => $object) {
             foreach ($variations as $suffix => $options) {
                 $file = \sprintf('%s_%s.%s', trim($name, '.'), $suffix, static::getFormat());
                 $description = file_get_contents(__DIR__.'/../../Fixtures/Descriptor/'.$file);

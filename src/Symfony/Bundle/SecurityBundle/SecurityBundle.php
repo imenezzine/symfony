@@ -17,10 +17,12 @@ use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\AddSessionDomainC
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\CleanRememberMeVerifierPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\MakeFirewallsEventDispatcherTraceablePass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RegisterCsrfFeaturesPass;
+use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RegisterDebugRoleHierarchyPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RegisterEntryPointPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RegisterGlobalSecurityEventListenersPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RegisterLdapLocatorPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RegisterTokenUsageTrackingPass;
+use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\RemoveSecurityDataCollectorListenerPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\ReplaceDecoratedRememberMeHandlerPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Compiler\SortFirewallListenersPass;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\AccessToken\CasTokenHandlerFactory;
@@ -38,11 +40,13 @@ use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\JsonLogin
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\JsonLoginLdapFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\LoginLinkFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\LoginThrottlingFactory;
+use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\OidcLoginFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\RememberMeFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\RemoteUserFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\X509Factory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\UserProvider\InMemoryFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\UserProvider\LdapFactory;
+use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\UserProvider\OidcFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\SecurityExtension;
 use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -76,6 +80,7 @@ class SecurityBundle extends Bundle
         $extension->addAuthenticatorFactory(new CustomAuthenticatorFactory());
         $extension->addAuthenticatorFactory(new LoginThrottlingFactory());
         $extension->addAuthenticatorFactory(new LoginLinkFactory());
+        $extension->addAuthenticatorFactory(new OidcLoginFactory());
         $extension->addAuthenticatorFactory(new AccessTokenFactory([
             new ServiceTokenHandlerFactory(),
             new OidcUserInfoTokenHandlerFactory(),
@@ -86,6 +91,7 @@ class SecurityBundle extends Bundle
 
         $extension->addUserProviderFactory(new InMemoryFactory());
         $extension->addUserProviderFactory(new LdapFactory());
+        $extension->addUserProviderFactory(new OidcFactory());
         $container->addCompilerPass(new AddExpressionLanguageProvidersPass());
         $container->addCompilerPass(new AddSecurityVotersPass());
         $container->addCompilerPass(new AddSessionDomainConstraintPass());
@@ -93,12 +99,14 @@ class SecurityBundle extends Bundle
         $container->addCompilerPass(new RegisterCsrfFeaturesPass());
         $container->addCompilerPass(new RegisterTokenUsageTrackingPass(), PassConfig::TYPE_BEFORE_OPTIMIZATION, 200);
         $container->addCompilerPass(new RegisterLdapLocatorPass());
+        $container->addCompilerPass(new RemoveSecurityDataCollectorListenerPass());
         $container->addCompilerPass(new RegisterEntryPointPass());
         // must be registered after RegisterListenersPass (in the FrameworkBundle)
         $container->addCompilerPass(new RegisterGlobalSecurityEventListenersPass(), PassConfig::TYPE_BEFORE_REMOVING, -200);
         // execute after ResolveChildDefinitionsPass optimization pass, to ensure class names are set
         $container->addCompilerPass(new SortFirewallListenersPass(), PassConfig::TYPE_BEFORE_REMOVING);
         $container->addCompilerPass(new ReplaceDecoratedRememberMeHandlerPass(), PassConfig::TYPE_OPTIMIZE);
+        $container->addCompilerPass(new RegisterDebugRoleHierarchyPass(), PassConfig::TYPE_OPTIMIZE);
 
         $container->addCompilerPass(new AddEventAliasesPass(array_merge(
             AuthenticationEvents::ALIASES,

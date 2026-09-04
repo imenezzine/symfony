@@ -19,12 +19,14 @@ use Symfony\Component\Console\Completion\Suggestion;
 use Symfony\Component\Console\Exception\ExceptionInterface;
 use Symfony\Component\Console\Exception\InvalidArgumentException;
 use Symfony\Component\Console\Exception\LogicException;
+use Symfony\Component\Console\Helper\FormatterHelper;
 use Symfony\Component\Console\Helper\HelperInterface;
 use Symfony\Component\Console\Helper\HelperSet;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -233,13 +235,24 @@ class Command implements SignalableCommandInterface
         // add the application arguments and options
         $this->mergeApplicationDefinition();
 
+        $inputDefinition = null;
+
         // bind the input against the command specific arguments/options
         try {
-            $input->bind($this->getDefinition());
+            $inputDefinition = $this->getDefinition();
+            $input->bind($inputDefinition);
         } catch (ExceptionInterface $e) {
             if (!$this->ignoreValidationErrors) {
                 throw $e;
             }
+        }
+
+        // The command name argument is often omitted when a command is executed directly with its run() method,
+        // and it may hold an abbreviation or an alias when the command was resolved from one (e.g. Application::find()).
+        // Normalize it to the command's actual name so it can be relied on afterwards, since it's required by the
+        // application, and so argument resolution during interact() below can already rely on it.
+        if ($input->hasArgument('command') && null !== $name = $this->getName()) {
+            $input->setArgument('command', $name);
         }
 
         $this->initialize($input, $output);
@@ -268,14 +281,11 @@ class Command implements SignalableCommandInterface
             }
         }
 
-        // The command name argument is often omitted when a command is executed directly with its run() method.
-        // It would fail the validation if we didn't make sure the command argument is present,
-        // since it's required by the application.
-        if ($input->hasArgument('command') && null === $input->getArgument('command')) {
-            $input->setArgument('command', $this->getName());
-        }
-
         $input->validate();
+
+        if ($inputDefinition) {
+            $this->writeDeprecationMessages($inputDefinition, $input, $output);
+        }
 
         if ($this->code) {
             return ($this->code)($input, $output);
@@ -403,8 +413,8 @@ class Command implements SignalableCommandInterface
     /**
      * Adds an argument.
      *
-     * @param                                                                               $mode            The argument mode: InputArgument::REQUIRED or InputArgument::OPTIONAL
-     * @param                                                                               $default         The default value (for InputArgument::OPTIONAL mode only)
+     * @param int-mask-of<InputArgument::*>|null                                            $mode            The argument mode: InputArgument::REQUIRED or InputArgument::OPTIONAL
+     * @param mixed                                                                         $default         The default value (for InputArgument::OPTIONAL mode only)
      * @param array|\Closure(CompletionInput,CompletionSuggestions):list<string|Suggestion> $suggestedValues The values used for input completion
      *
      * @return $this
@@ -422,9 +432,9 @@ class Command implements SignalableCommandInterface
     /**
      * Adds an option.
      *
-     * @param                                                                               $shortcut        The shortcuts, can be null, a string of shortcuts delimited by | or an array of shortcuts
-     * @param                                                                               $mode            The option mode: One of the InputOption::VALUE_* constants
-     * @param                                                                               $default         The default value (must be null for InputOption::VALUE_NONE)
+     * @param string|string[]|null                                                          $shortcut        The shortcuts, can be null, a string of shortcuts delimited by | or an array of shortcuts
+     * @param int-mask-of<InputOption::*>|null                                              $mode            The option mode: One of the InputOption::VALUE_* constants
+     * @param mixed                                                                         $default         The default value (must be null for InputOption::VALUE_NONE)
      * @param array|\Closure(CompletionInput,CompletionSuggestions):list<string|Suggestion> $suggestedValues The values used for input completion
      *
      * @return $this
@@ -658,6 +668,36 @@ class Command implements SignalableCommandInterface
     public function handleSignal(int $signal, int|false $previousExitCode = 0): int|false
     {
         return $this->code?->handleSignal($signal, $previousExitCode) ?? false;
+    }
+
+    private function writeDeprecationMessages(InputDefinition $definition, InputInterface $input, OutputInterface $output): void
+    {
+        $messages = [];
+
+        foreach ($definition->getOptions() as $option) {
+            if (!$option->isDeprecated()) {
+                continue;
+            }
+
+            $names = ['--'.$option->getName()];
+            if (null !== $option->getShortcut()) {
+                $names[] = '-'.$option->getShortcut();
+            }
+
+            if ($input->hasParameterOption($names, true)) {
+                $messages[] = \sprintf('The option "%s" is deprecated.', implode('|', $names));
+            }
+        }
+
+        if (!$messages) {
+            return;
+        }
+
+        if ($output instanceof ConsoleOutputInterface) {
+            $output = $output->getErrorOutput();
+        }
+
+        $output->writeln(new FormatterHelper()->formatBlock($messages, 'fg=black;bg=yellow', true));
     }
 
     /**

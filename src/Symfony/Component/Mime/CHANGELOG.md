@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Support `binary` as a `Content-Transfer-Encoding`
+ * Add PGP/MIME signing and encryption support with the `PgpSigner` and `PgpEncrypter` classes
+ * Add `AbstractPart::setContentTypeParameter()`
+ * Add the `Group` class to put a group of mailboxes in a mailbox list header (RFC 5322 and RFC 6854)
+ * Add `MailboxListHeader::getAddressList()` and `MailboxListHeader::createAddressList()`
+ * Make `Email::ensureBodyValid()` protected to allow subclasses adjusting the body validation
+
 8.0
 ---
 

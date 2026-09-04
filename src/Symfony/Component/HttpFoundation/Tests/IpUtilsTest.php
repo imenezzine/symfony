@@ -55,6 +55,11 @@ class IpUtilsTest extends TestCase
             [false, '1.2.3.4', '256.256.256/0'], // invalid CIDR notation
             [false, 'an_invalid_ip', '192.168.1.0/24'],
             [false, '', '1.2.3.4/1'],
+            [false, '10.5.5.5', '10.0.0.0/8.5'], // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/8e0'], // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/ 8'],  // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/+8'],  // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/-1'],  // negative netmask
         ];
     }
 
@@ -254,8 +259,19 @@ class IpUtilsTest extends TestCase
             ['2001:0002::1',       true],
             ['64:ff9b::7f00:1',    true],
             ['64:ff9b:1::7f00:1',  true],
+            ['192.0.0.1',          true],
+            ['192.0.0.8',          true],
+            ['192.88.99.1',        true],
+            ['224.0.0.1',          true],
+            ['239.255.255.250',    true],
+            ['233.1.1.1',          true],
+            ['100::1',             true],
+            ['ff02::1',            true],
+            ['ff05::1',            true],
+            ['ff0e::1',            true],
 
             // public
+            ['100:0:0:1::1',            false],
             ['104.26.14.6',             false],
             ['2606:4700:20::681a:e06',  false],
         ];

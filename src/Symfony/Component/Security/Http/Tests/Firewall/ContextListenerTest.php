@@ -36,8 +36,10 @@ use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Security\Core\Exception\UnsupportedUserException;
 use Symfony\Component\Security\Core\Exception\UserNotFoundException;
 use Symfony\Component\Security\Core\User\InMemoryUser;
+use Symfony\Component\Security\Core\User\InMemoryUserProvider;
 use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Core\User\UserProviderInterface;
+use Symfony\Component\Security\Http\Event\TokenDeauthenticatedEvent;
 use Symfony\Component\Security\Http\Firewall\ContextListener;
 use Symfony\Component\Security\Http\Tests\Fixtures\CustomUser;
 use Symfony\Component\Security\Http\Tests\Fixtures\LazyDoctrinePersistenceUser;
@@ -294,6 +296,42 @@ class ContextListenerTest extends TestCase
         $this->assertNull($tokenStorage->getToken());
     }
 
+    public function testDeauthenticatedEventCarriesTheReasonAndProviderWhenTheUserChanged()
+    {
+        $event = $this->dispatchTokenDeauthenticatedEvent([new NotSupportingUserProvider(true), new SupportingUserProvider(new InMemoryUser('foobar', 'baz'))]);
+
+        $this->assertSame('the user has changed', $event->getReason());
+        $this->assertSame([SupportingUserProvider::class], $event->getProviderClasses());
+    }
+
+    public function testDeauthenticatedEventAggregatesEveryProviderThatSawAChange()
+    {
+        $event = $this->dispatchTokenDeauthenticatedEvent([
+            new SupportingUserProvider(new InMemoryUser('foobar', 'baz')),
+            new SupportingUserProvider(new InMemoryUser('foobar', 'qux')),
+        ]);
+
+        $this->assertSame('the user has changed', $event->getReason());
+        $this->assertSame([SupportingUserProvider::class, SupportingUserProvider::class], $event->getProviderClasses());
+    }
+
+    public function testDeauthenticatedEventCarriesTheReasonAndProvidersWhenTheUserWasNotFound()
+    {
+        $event = $this->dispatchTokenDeauthenticatedEvent([new SupportingUserProvider(), new SupportingUserProvider()]);
+
+        $this->assertSame('the user could not be found by any user provider', $event->getReason());
+        $this->assertSame([SupportingUserProvider::class, SupportingUserProvider::class], $event->getProviderClasses());
+    }
+
+    public function testUserChangedTakesPrecedenceOverUserNotFoundInTheDeauthenticatedEvent()
+    {
+        $event = $this->dispatchTokenDeauthenticatedEvent([new SupportingUserProvider(), new SupportingUserProvider(new InMemoryUser('foobar', 'baz'))]);
+
+        // only the provider that detected the change is reported, not the one that did not find the user
+        $this->assertSame('the user has changed', $event->getReason());
+        $this->assertSame([SupportingUserProvider::class], $event->getProviderClasses());
+    }
+
     public function testTokenIsNotDeauthenticatedOnUserChangeIfNotAnInstanceOfAbstractToken()
     {
         $tokenStorage = new TokenStorage();
@@ -337,19 +375,21 @@ class ContextListenerTest extends TestCase
         $request->setSession($session);
         $request->cookies->set('MOCKSESSID', true);
 
-        $provider = new class($impersonated) implements UserProviderInterface {
-            public function __construct(private CustomUser $refreshedUser)
-            {
+        $provider = new class($impersonated, $impersonator) implements UserProviderInterface {
+            public function __construct(
+                private CustomUser $impersonated,
+                private CustomUser $impersonator,
+            ) {
             }
 
             public function loadUserByIdentifier(string $identifier): UserInterface
             {
-                return $this->refreshedUser;
+                return $this->impersonator->getUserIdentifier() === $identifier ? $this->impersonator : $this->impersonated;
             }
 
             public function refreshUser(UserInterface $user): UserInterface
             {
-                return $this->refreshedUser;
+                return $this->loadUserByIdentifier($user->getUserIdentifier());
             }
 
             public function supportsClass(string $class): bool
@@ -364,6 +404,57 @@ class ContextListenerTest extends TestCase
 
         $this->assertInstanceOf(SwitchUserToken::class, $tokenStorage->getToken());
         $this->assertSame($impersonated, $tokenStorage->getToken()->getUser());
+    }
+
+    public function testImpersonatorIsRefreshed()
+    {
+        $tokenStorage = new TokenStorage();
+        $userProvider = new RefreshTrackingUserProvider([
+            'admin' => ['password' => 'admin-pass', 'roles' => ['ROLE_ADMIN']],
+            'user' => ['password' => 'user-pass', 'roles' => ['ROLE_USER']],
+        ]);
+
+        $originalToken = new UsernamePasswordToken(new InMemoryUser('admin', 'admin-pass', ['ROLE_ADMIN']), 'context_key', ['ROLE_ADMIN']);
+        $token = new SwitchUserToken(new InMemoryUser('user', 'user-pass', ['ROLE_USER']), 'context_key', ['ROLE_USER', 'ROLE_PREVIOUS_ADMIN'], $originalToken);
+
+        $session = new Session(new MockArraySessionStorage());
+        $session->set('_security_context_key', serialize($token));
+
+        $request = new Request();
+        $request->setSession($session);
+        $request->cookies->set('MOCKSESSID', true);
+
+        $listener = new ContextListener($tokenStorage, [$userProvider], 'context_key');
+        $listener->authenticate(new RequestEvent($this->createStub(HttpKernelInterface::class), $request, HttpKernelInterface::MAIN_REQUEST));
+
+        $this->assertSame(['admin', 'user'], $userProvider->refreshedIdentifiers);
+        $this->assertInstanceOf(SwitchUserToken::class, $tokenStorage->getToken());
+        $this->assertSame('user', $tokenStorage->getToken()->getUserIdentifier());
+        $this->assertSame('admin', $tokenStorage->getToken()->getOriginalToken()->getUserIdentifier());
+    }
+
+    public function testTokenIsDeauthenticatedWhenImpersonatorHasChanged()
+    {
+        $tokenStorage = new TokenStorage();
+        $userProvider = new InMemoryUserProvider([
+            'admin' => ['password' => 'admin-pass', 'roles' => ['ROLE_ADMIN'], 'enabled' => false],
+            'user' => ['password' => 'user-pass', 'roles' => ['ROLE_USER']],
+        ]);
+
+        $originalToken = new UsernamePasswordToken(new InMemoryUser('admin', 'admin-pass', ['ROLE_ADMIN']), 'context_key', ['ROLE_ADMIN']);
+        $token = new SwitchUserToken(new InMemoryUser('user', 'user-pass', ['ROLE_USER']), 'context_key', ['ROLE_USER', 'ROLE_PREVIOUS_ADMIN'], $originalToken);
+
+        $session = new Session(new MockArraySessionStorage());
+        $session->set('_security_context_key', serialize($token));
+
+        $request = new Request();
+        $request->setSession($session);
+        $request->cookies->set('MOCKSESSID', true);
+
+        $listener = new ContextListener($tokenStorage, [$userProvider], 'context_key');
+        $listener->authenticate(new RequestEvent($this->createStub(HttpKernelInterface::class), $request, HttpKernelInterface::MAIN_REQUEST));
+
+        $this->assertNull($tokenStorage->getToken());
     }
 
     public function testTryAllUserProvidersUntilASupportingUserProviderIsFound()
@@ -532,6 +623,29 @@ class ContextListenerTest extends TestCase
         return $session;
     }
 
+    private function dispatchTokenDeauthenticatedEvent(array $userProviders): TokenDeauthenticatedEvent
+    {
+        $session = new Session(new MockArraySessionStorage());
+        $session->set('_security_context_key', serialize(new UsernamePasswordToken(new InMemoryUser('foo', 'bar'), 'context_key', ['ROLE_USER'])));
+
+        $request = new Request();
+        $request->setSession($session);
+        $request->cookies->set('MOCKSESSID', true);
+
+        $deauthenticatedEvent = null;
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addListener(TokenDeauthenticatedEvent::class, static function (TokenDeauthenticatedEvent $event) use (&$deauthenticatedEvent) {
+            $deauthenticatedEvent = $event;
+        });
+
+        $listener = new ContextListener(new TokenStorage(), $userProviders, 'context_key', null, $dispatcher);
+        $listener->authenticate(new RequestEvent($this->createStub(HttpKernelInterface::class), $request, HttpKernelInterface::MAIN_REQUEST));
+
+        $this->assertInstanceOf(TokenDeauthenticatedEvent::class, $deauthenticatedEvent);
+
+        return $deauthenticatedEvent;
+    }
+
     private function handleEventWithPreviousSession($userProviders, ?UserInterface $user = null)
     {
         $tokenUser = $user ?? new InMemoryUser('foo', 'bar');
@@ -636,6 +750,18 @@ class SupportingUserProvider implements UserProviderInterface
     public function supportsClass($class): bool
     {
         return InMemoryUser::class === $class;
+    }
+}
+
+class RefreshTrackingUserProvider extends InMemoryUserProvider
+{
+    public array $refreshedIdentifiers = [];
+
+    public function refreshUser(UserInterface $user): UserInterface
+    {
+        $this->refreshedIdentifiers[] = $user->getUserIdentifier();
+
+        return parent::refreshUser($user);
     }
 }
 

@@ -25,6 +25,62 @@ class UrlSanitizerTest extends TestCase
 
     public static function provideSanitize(): iterable
     {
+        // Schemes are case-insensitive
+        yield [
+            'input' => 'HTTPS://trusted.com/link',
+            'allowedSchemes' => ['https'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => 'https://trusted.com/link',
+        ];
+
+        yield [
+            'input' => 'HTTP://trusted.com/link',
+            'allowedSchemes' => ['http', 'https'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => true,
+            'allowRelative' => false,
+            'expected' => 'https://trusted.com/link',
+        ];
+
+        yield [
+            'input' => 'MAILTO:john@trusted.com?body=line1%0D%0Aline2',
+            'allowedSchemes' => ['mailto'],
+            'allowedHosts' => null,
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => 'mailto:john@trusted.com?body=line1%0D%0Aline2',
+        ];
+
+        // Hosts are case-insensitive
+        yield [
+            'input' => 'https://Trusted.COM/link',
+            'allowedSchemes' => ['https'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => 'https://Trusted.COM/link',
+        ];
+
+        yield [
+            'input' => 'https://trusted.com/link',
+            'allowedSchemes' => ['https'],
+            'allowedHosts' => ['Trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => 'https://trusted.com/link',
+        ];
+
+        yield [
+            'input' => 'https://Untrusted.COM/link',
+            'allowedSchemes' => ['https'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => null,
+        ];
+
         // Simple accepted cases
         yield [
             'input' => '',
@@ -336,6 +392,61 @@ class UrlSanitizerTest extends TestCase
             'allowRelative' => false,
             'expected' => null,
         ];
+
+        // view-source URLs wrap another URL, which must pass the same checks
+        yield [
+            'input' => 'view-source:https://trusted.com/index.html',
+            'allowedSchemes' => ['https', 'view-source'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => 'view-source:https://trusted.com/index.html',
+        ];
+
+        yield [
+            'input' => 'view-source:https://untrusted.com/index.html',
+            'allowedSchemes' => ['https', 'view-source'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => null,
+        ];
+
+        yield [
+            'input' => 'view-source:https://untrusted.com/index.html',
+            'allowedSchemes' => ['https', 'view-source'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => true,
+            'expected' => null,
+        ];
+
+        yield [
+            'input' => 'view-source:http://trusted.com/index.html',
+            'allowedSchemes' => ['http', 'https', 'view-source'],
+            'allowedHosts' => null,
+            'forceHttps' => true,
+            'allowRelative' => false,
+            'expected' => 'view-source:https://trusted.com/index.html',
+        ];
+
+        yield [
+            'input' => 'view-source:javascript:alert(1)',
+            'allowedSchemes' => ['https', 'view-source'],
+            'allowedHosts' => null,
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => null,
+        ];
+
+        yield [
+            'input' => 'view-source:view-source:https://trusted.com/index.html',
+            'allowedSchemes' => ['https', 'view-source'],
+            'allowedHosts' => ['trusted.com'],
+            'forceHttps' => false,
+            'allowRelative' => false,
+            'expected' => null,
+        ];
     }
 
     #[DataProvider('provideParse')]
@@ -361,6 +472,7 @@ class UrlSanitizerTest extends TestCase
 
             // Simple tests
             'https://trusted.com/link.php' => ['scheme' => 'https', 'host' => 'trusted.com'],
+            'HTTPS://trusted.com/link.php' => ['scheme' => 'https', 'host' => 'trusted.com'],
             'https://trusted.com/link.php?query=1#foo' => ['scheme' => 'https', 'host' => 'trusted.com'],
             'https://subdomain.trusted.com/link' => ['scheme' => 'https', 'host' => 'subdomain.trusted.com'],
             '//trusted.com/link.php' => ['scheme' => null, 'host' => 'trusted.com'],
@@ -878,6 +990,41 @@ class UrlSanitizerTest extends TestCase
             'http://example.com/foo%C2%A0bar' => null,
             'http://example.com/%E2%80%A8bar' => null,
             'http://example.com/%E3%80%80bar' => null,
+
+            // Percent-encoded line breaks and tabs are legitimate in the query and
+            // fragment of hostless schemes (RFC 6068 requires %0D%0A in a mailto body)
+            'mailto:infobot@example.com?body=send%20current-issue%0D%0Asend%20index' => ['scheme' => 'mailto', 'host' => null],
+            'mailto:x@example.com?body=line1%0d%0aline2' => ['scheme' => 'mailto', 'host' => null],
+            'mailto:x@example.com?body=col1%09col2' => ['scheme' => 'mailto', 'host' => null],
+            'mailto:x@example.com#line1%0D%0Aline2' => ['scheme' => 'mailto', 'host' => null],
+            'sms:+15105550101?body=line1%0D%0Aline2' => ['scheme' => 'sms', 'host' => null],
+            'mailto:x%0D%0Ay@example.com' => null,
+            'mailto:x@example.com?subject=%E2%80%AE' => null,
+            'mailto:x@example.com#%E2%81%A6' => null,
+            'mailto:x@example.com?subject=a%C2%A0b' => null,
+            'mailto:x@example.com?subject=a%E2%80%A8b' => null,
+            'mailto:x@example.com?subject=a%0Bb' => null,
+            'mailto:x@example.com?subject=a%0Cb' => null,
+            'mailto:x@example.com?body=line1%0D%0Aline2%E2%80%AE' => null,
+            "mailto:x@example.com?body=line1\nline2" => null,
+            "mailto:x@example.com?body=col1\tcol2" => null,
+            'http://example.com/?q=line1%0D%0Aline2' => null,
+            'http://example.com/?q=col1%09col2' => null,
+            'http://example.com/#line1%0Aline2' => null,
+            'http://example.com/?q=a%C2%A0b' => null,
+
+            // A stray byte next to a denied character must not disable the check
+            'http://example.com/?q=%E2%80%AD%80' => null,
+            'http://example.com/#%E2%80%AE%80' => null,
+            'http://example.com/%E2%81%A6%80/x' => null,
+            'http://%E2%80%AE%80@example.com/' => null,
+            'http://example.com/?q=%C2%A0%80' => null,
+            'mailto:x@example.com?subject=%E2%80%AE%80' => null,
+            "http://example.com/foo\u{202E}bar\x80" => null,
+
+            // Percent-encoded bytes that are not UTF-8 are accepted when no character is denied
+            'http://example.com/%80' => ['scheme' => 'http', 'host' => 'example.com'],
+            'http://example.com/?name=Fran%E7ois' => ['scheme' => 'http', 'host' => 'example.com'],
         ];
 
         foreach ($urls as $url => $expected) {

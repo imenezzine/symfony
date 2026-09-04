@@ -5,6 +5,7 @@ includes:
 parameters:
     level: 5
     reportUnmatchedIgnoredErrors: false
+    treatPhpDocTypesAsCertain: false
     tmpDir: .github/sa-tools/phpstan-cache
     paths:
         - src
@@ -15,6 +16,8 @@ parameters:
         - src/Symfony/*/*/*/*/Tests/*
         - src/Symfony/Component/Intl/Resources/data/*
         - src/Symfony/Component/Emoji/Resources/data/*
+        # these templates are include()'d in HtmlErrorRenderer's scope, so they can't be analyzed standalone
+        - src/Symfony/Component/ErrorHandler/Resources/views/*
     ignoreErrors:
         # Added in PHP 8.4
         - '#^Class BcMath\\Number not found\.$#'
@@ -30,3 +33,27 @@ parameters:
         -
             message: '#^Instanceof between .+ and .+ will always evaluate to true\.$#'
             path: src/Symfony/Component/JsonStreamer/Transformer/*ValueObjectTransformer.php
+        # private helpers are called from the .html.php templates, which run in the renderer's scope via include()
+        -
+            message: '#^Method Symfony\\Component\\ErrorHandler\\ErrorRenderer\\HtmlErrorRenderer\:\:\w+\(\) is unused\.$#'
+            path: src/Symfony/Component/ErrorHandler/ErrorRenderer/HtmlErrorRenderer.php
+        # the $groups argument is declared on the final AttributeMetadata, and left commented
+        # out on the interface so implementers are not forced to add it
+        -
+            message: '#^Method Symfony\\Component\\Serializer\\Mapping\\AttributeMetadataInterface\:\:(get|set)Serialized(Name|Path)\(\) invoked with [12] parameters?, [01] required\.$#'
+            path: src/Symfony/Component/Serializer/*.php
+        # the $fetchSize argument is a commented-out argument of ReceiverInterface::get(), documented
+        # with @param on implementations so DebugClassLoader does not report them
+        -
+            message: '#^PHPDoc tag @param references unknown parameter\: \$fetchSize$#'
+            path: src/Symfony/Component/Messenger/*
+        # the $regexp argument is a commented-out argument of the case conversion methods, documented
+        # with @param so that DebugClassLoader reports the implementations that do not declare it
+        -
+            message: '#^PHPDoc tag @param references unknown parameter\: \$regexp$#'
+            path: src/Symfony/Component/String/*
+        # $emptyDefaults mirrors the same hook on CurlHttpClient, NativeHttpClient and AmpHttpClient,
+        # which HttpClientTrait reads through isset() so decorators without the property stay unaffected
+        -
+            message: '#^Static property Symfony\\Component\\HttpClient\\RecorderHttpClient\:\:\$emptyDefaults \(array\) in isset\(\) is not nullable\.$#'
+            path: src/Symfony/Component/HttpClient/HttpClientTrait.php

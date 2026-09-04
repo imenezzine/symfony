@@ -52,6 +52,55 @@ class ConfigurationTest extends TestCase
         $this->assertEquals(self::getBundleDefaultConfig(), $config);
     }
 
+    public function testRateLimiterBuilderIsNotReadAsALimiterName()
+    {
+        $processor = new Processor();
+        $config = $processor->processConfiguration(new Configuration(true), [[
+            // no "limiters" key: the shorthand below would otherwise read "builder" as a limiter name
+            'rate_limiter' => [
+                'builder' => ['cache_pool' => 'my.pool'],
+            ],
+        ]]);
+
+        $this->assertSame([], $config['rate_limiter']['limiters']);
+        $this->assertSame('my.pool', $config['rate_limiter']['builder']['cache_pool']);
+    }
+
+    public function testRateLimiterBuilderCanBeConfiguredAlongsideLimiters()
+    {
+        $processor = new Processor();
+        $config = $processor->processConfiguration(new Configuration(true), [[
+            'rate_limiter' => [
+                'limiters' => ['foo' => ['policy' => 'fixed_window', 'limit' => 5, 'interval' => '1 minute']],
+                'builder' => ['cache_pool' => 'my.pool'],
+            ],
+        ]]);
+
+        $this->assertSame(['foo'], array_keys($config['rate_limiter']['limiters']));
+        $this->assertSame('my.pool', $config['rate_limiter']['builder']['cache_pool']);
+    }
+
+    public function testTranslatorProviderDomainsCanBeKeyed()
+    {
+        $processor = new Processor();
+        $config = $processor->processConfiguration(new Configuration(true), [[
+            'translator' => [
+                'providers' => [
+                    'loco' => [
+                        'dsn' => 'loco://API_KEY@default',
+                        // as an XML configuration is converted
+                        'domains' => [
+                            ['key' => 'foo', 'value' => 'bar'],
+                            ['key' => '', 'value' => '*'],
+                        ],
+                    ],
+                ],
+            ],
+        ]]);
+
+        $this->assertSame(['foo' => 'bar', '' => '*'], $config['translator']['providers']['loco']['domains']);
+    }
+
     public function getTestValidSessionName()
     {
         return [
@@ -60,6 +109,176 @@ class ConfigurationTest extends TestCase
             ['a&b'],
             [',_-!@#$%^*(){}:<>/?'],
         ];
+    }
+
+    #[DataProvider('provideEquivalentProfilerExclusions')]
+    public function testProfilerExcludedHttpCodesAreNormalized(array $excludedHttpCodes)
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => $excludedHttpCodes],
+        ]]);
+
+        $this->assertSame([
+            404 => [],
+            400 => ['^/foo', '^/bar'],
+        ], $config['profiler']['excluded_http_codes']);
+    }
+
+    public static function provideEquivalentProfilerExclusions(): iterable
+    {
+        yield 'mapping' => [[404 => null, 400 => ['^/foo', '^/bar']]];
+        yield 'mapping with an explicit empty list' => [[404 => [], 400 => ['^/foo', '^/bar']]];
+        yield 'mapping with true' => [[404 => true, 400 => ['^/foo', '^/bar']]];
+        yield 'mixed forms' => [[404, 400 => ['^/foo', '^/bar']]];
+    }
+
+    public function testProfilerExcludedHttpCodesAcceptsABareStatusCode()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => 404],
+        ]]);
+
+        $this->assertSame([404 => []], $config['profiler']['excluded_http_codes']);
+    }
+
+    public function testProfilerExcludedHttpCodesAcceptsASinglePathAsAString()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => [404 => '^/foo']],
+        ]]);
+
+        $this->assertSame([404 => ['^/foo']], $config['profiler']['excluded_http_codes']);
+    }
+
+    public function testProfilerExcludedHttpCodesSkipsCodesDisabledWithFalse()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => [404 => false, 400 => null]],
+        ]]);
+
+        $this->assertSame([400 => []], $config['profiler']['excluded_http_codes']);
+    }
+
+    public function testProfilerExcludedHttpCodesAreOverriddenAcrossFiles()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [
+            ['profiler' => ['excluded_http_codes' => [404]]],
+            ['profiler' => ['excluded_http_codes' => [404 => ['^/api']]]],
+        ]);
+
+        $this->assertSame([404 => ['^/api']], $config['profiler']['excluded_http_codes']);
+    }
+
+    public function testProfilerExcludedPathsAcceptsABareRegularExpression()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_paths' => '^/\.well-known/'],
+        ]]);
+
+        $this->assertSame(['^/\.well-known/'], $config['profiler']['excluded_paths']);
+    }
+
+    #[DataProvider('provideOutOfRangeHttpCodes')]
+    public function testProfilerExcludedHttpCodesRejectsCodesOutOfRange(int $code, string $message)
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage($message);
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => [$code]],
+        ]]);
+    }
+
+    public static function provideOutOfRangeHttpCodes(): iterable
+    {
+        yield 'below the lower bound' => [99, 'only accepts HTTP status codes between 100 and 599, "99" given'];
+        yield 'above the upper bound' => [600, 'only accepts HTTP status codes between 100 and 599, "600" given'];
+        yield 'negative' => [-1, 'only accepts HTTP status codes between 100 and 599, "-1" given'];
+    }
+
+    public function testProfilerExcludedPathsRejectsEmptyPatterns()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_paths' => ['']],
+        ]]);
+    }
+
+    public function testProfilerExcludedHttpCodesRejectsEmptyPathPatterns()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => [404 => ['']]],
+        ]]);
+    }
+
+    public function testProfilerExcludedPathsRejectsInvalidRegularExpressions()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Invalid regular expression in the "excluded_paths" option');
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_paths' => ['^/foo(']],
+        ]]);
+    }
+
+    public function testProfilerExcludedHttpCodesRejectsInvalidRegularExpressions()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Invalid regular expression in the "excluded_http_codes" option');
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'profiler' => ['excluded_http_codes' => [404 => ['^/foo(']]],
+        ]]);
+    }
+
+    public function testCacheAppAndDefaultProviderCannotBeCombined()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('The "framework.cache.app" and "framework.cache.default_provider" options cannot be used together, the adapter is deduced from the DSN.');
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'cache' => ['app' => 'cache.adapter.redis', 'default_provider' => 'redis://localhost'],
+        ]]);
+    }
+
+    public function testCacheAppAndDefaultProviderCannotBeCombinedAcrossFiles()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+
+        (new Processor())->processConfiguration(new Configuration(true), [
+            ['cache' => ['app' => 'cache.adapter.redis']],
+            ['cache' => ['default_provider' => 'redis://localhost']],
+        ]);
+    }
+
+    public function testCacheAppSetToItsDefaultValueStillConflictsWithDefaultProvider()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'cache' => ['app' => 'cache.adapter.filesystem', 'default_provider' => 'redis://localhost'],
+        ]]);
+    }
+
+    public function testCacheDefaultProviderAloneIsAllowed()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'cache' => ['default_provider' => 'redis://localhost'],
+        ]]);
+
+        $this->assertSame('redis://localhost', $config['cache']['default_provider']);
+    }
+
+    public function testCacheAppAloneIsAllowed()
+    {
+        $config = (new Processor())->processConfiguration(new Configuration(true), [[
+            'cache' => ['app' => 'cache.adapter.redis'],
+        ]]);
+
+        $this->assertSame('cache.adapter.redis', $config['cache']['app']);
     }
 
     #[DataProvider('getTestInvalidSessionName')]
@@ -130,8 +349,11 @@ class ConfigurationTest extends TestCase
             'extensions' => [],
             'importmap_path' => '%kernel.project_dir%/importmap.php',
             'importmap_polyfill' => 'es-module-shims',
+            'importmap_entries' => 'all',
             'vendor_dir' => '%kernel.project_dir%/assets/vendor',
+            'minimum_release_age' => 0,
             'importmap_script_attributes' => [],
+            'importmap_integrity_algorithms' => [],
             'exclude_dotfiles' => true,
             'precompress' => [
                 'enabled' => false,
@@ -163,6 +385,20 @@ class ConfigurationTest extends TestCase
         if ($isValid) {
             $this->assertEquals($expected, $config['asset_mapper']['importmap_polyfill']);
         }
+    }
+
+    public function testAssetMapperImportmapIntegrityAlgorithms()
+    {
+        $processor = new Processor();
+        $configuration = new Configuration(true);
+
+        $config = $processor->processConfiguration($configuration, [[
+            'asset_mapper' => [
+                'importmap_integrity_algorithms' => ['sha384'],
+            ],
+        ]]);
+
+        $this->assertSame(['sha384'], $config['asset_mapper']['importmap_integrity_algorithms']);
     }
 
     public static function provideImportmapPolyfillTests()
@@ -307,6 +543,54 @@ class ConfigurationTest extends TestCase
         yield [['enabled' => false, 'resource' => [['name' => 'foo', 'value' => 'flock'], ['name' => 'foo', 'value' => 'semaphore']]], ['enabled' => false, 'resources' => ['foo' => ['flock', 'semaphore']]]];
         yield [['enabled' => false, 'resource' => [['name' => 'foo', 'value' => 'flock'], ['name' => 'bar', 'value' => 'semaphore']]], ['enabled' => false, 'resources' => ['foo' => ['flock'], 'bar' => ['semaphore']]]];
         yield [['enabled' => false, 'resource' => [['name' => 'foo', 'value' => 'flock'], ['name' => 'foo', 'value' => 'semaphore'], ['name' => 'bar', 'value' => 'semaphore']]], ['enabled' => false, 'resources' => ['foo' => ['flock', 'semaphore'], 'bar' => ['semaphore']]]];
+
+        // service id and advisory locks
+
+        $advisory = ['service_id' => 'my_connection', 'advisory' => true];
+        $tableBased = ['service_id' => 'my_connection', 'advisory' => false];
+
+        yield [['service_id' => 'my_connection'], ['enabled' => true, 'resources' => ['default' => [$tableBased]]]];
+        yield [$advisory, ['enabled' => true, 'resources' => ['default' => [$advisory]]]];
+        yield [['advisory' => true, 'service_id' => 'my_connection'], ['enabled' => true, 'resources' => ['default' => [$advisory]]]];
+        yield [[$advisory], ['enabled' => true, 'resources' => ['default' => [$advisory]]]];
+        yield [['flock', $advisory], ['enabled' => true, 'resources' => ['default' => ['flock', $advisory]]]];
+        yield [['foo' => $advisory], ['enabled' => true, 'resources' => ['foo' => [$advisory]]]];
+        yield [['foo' => [$advisory]], ['enabled' => true, 'resources' => ['foo' => [$advisory]]]];
+        yield [['foo' => ['flock', $advisory], 'bar' => 'semaphore'], ['enabled' => true, 'resources' => ['foo' => ['flock', $advisory], 'bar' => ['semaphore']]]];
+        yield [['resources' => $advisory], ['enabled' => true, 'resources' => ['default' => [$advisory]]]];
+        yield [['resources' => ['foo' => $advisory]], ['enabled' => true, 'resources' => ['foo' => [$advisory]]]];
+        yield [['resources' => ['foo' => ['flock', $advisory]]], ['enabled' => true, 'resources' => ['foo' => ['flock', $advisory]]]];
+        yield [['enabled' => false, 'foo' => $advisory], ['enabled' => false, 'resources' => ['foo' => [$advisory]]]];
+    }
+
+    #[DataProvider('provideInvalidLockConfigurationTests')]
+    public function testInvalidLockConfiguration(array $lockConfig, string $expectedMessage)
+    {
+        $processor = new Processor();
+        $configuration = new Configuration(true);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage($expectedMessage);
+
+        $processor->processConfiguration($configuration, [['lock' => $lockConfig]]);
+    }
+
+    public static function provideInvalidLockConfigurationTests(): iterable
+    {
+        yield [
+            ['foo' => ['advisory' => true]],
+            'Invalid configuration for path "framework.lock.resources.foo.0": A lock store must be a string or an array with a "service_id" string and an optional "advisory" boolean, got {"service_id":null,"advisory":true}.',
+        ];
+
+        yield [
+            ['foo' => ['service_id' => 'my_connection', 'advisory' => 'yes']],
+            'Invalid configuration for path "framework.lock.resources.foo.0": A lock store must be a string or an array with a "service_id" string and an optional "advisory" boolean, got {"service_id":"my_connection","advisory":"yes"}.',
+        ];
+
+        yield [
+            ['foo' => ['service_id' => 'my_connection', 'store' => 'postgresql_advisory']],
+            'Invalid configuration for path "framework.lock.resources.foo.0": A lock store must be a string or an array with a "service_id" string and an optional "advisory" boolean, got {"service_id":"my_connection","advisory":false,"store":"postgresql_advisory"}.',
+        ];
     }
 
     public function testLockMergeConfigs()
@@ -399,6 +683,56 @@ class ConfigurationTest extends TestCase
                 ],
             ],
         ]);
+    }
+
+    public function testMessengerClaimCheckConfiguration()
+    {
+        $processor = new Processor();
+        $config = $processor->processConfiguration(new Configuration(true), [[
+            'messenger' => [
+                'transports' => [
+                    'async' => [
+                        'dsn' => 'in-memory:///',
+                        'claim_check' => [
+                            'cache_pool' => 'app.claim_check_pool',
+                            'max_size' => 200000,
+                        ],
+                    ],
+                ],
+            ],
+        ]]);
+
+        $this->assertSame([
+            'cache_pool' => 'app.claim_check_pool',
+            'max_size' => 200000,
+        ], $config['messenger']['transports']['async']['claim_check']);
+    }
+
+    public function testMessengerClaimCheckCachePoolRequiresDefaultLifetime()
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('The cache pool "app.claim_check_pool" used by Messenger transport "async" for claim checks must define a "default_lifetime".');
+
+        (new Processor())->processConfiguration(new Configuration(true), [[
+            'cache' => [
+                'pools' => [
+                    'app.claim_check_pool' => [
+                        'adapter' => 'cache.adapter.pdo',
+                    ],
+                ],
+            ],
+            'messenger' => [
+                'transports' => [
+                    'async' => [
+                        'dsn' => 'in-memory:///',
+                        'claim_check' => [
+                            'cache_pool' => 'app.claim_check_pool',
+                            'max_size' => 200000,
+                        ],
+                    ],
+                ],
+            ],
+        ]]);
     }
 
     public function testBusMiddlewareDontMerge()
@@ -828,6 +1162,8 @@ class ConfigurationTest extends TestCase
                 'enabled' => false,
                 'only_exceptions' => false,
                 'only_main_requests' => false,
+                'excluded_paths' => [],
+                'excluded_http_codes' => [],
                 'dsn' => 'file:%kernel.cache_dir%/profiler',
                 'collect' => true,
                 'collect_parameter' => null,
@@ -933,8 +1269,11 @@ class ConfigurationTest extends TestCase
                 'extensions' => [],
                 'importmap_path' => '%kernel.project_dir%/importmap.php',
                 'importmap_polyfill' => 'es-module-shims',
+                'importmap_entries' => 'all',
                 'vendor_dir' => '%kernel.project_dir%/assets/vendor',
+                'minimum_release_age' => 0,
                 'importmap_script_attributes' => [],
+                'importmap_integrity_algorithms' => [],
                 'exclude_dotfiles' => true,
                 'precompress' => [
                     'enabled' => false,
@@ -952,6 +1291,7 @@ class ConfigurationTest extends TestCase
                 'default_memcached_provider' => 'memcached://localhost',
                 'default_doctrine_dbal_provider' => 'database_connection',
                 'default_pdo_provider' => ContainerBuilder::willBeAvailable('doctrine/dbal', Connection::class, ['symfony/framework-bundle']) && class_exists(DoctrineAdapter::class) ? 'database_connection' : null,
+                'default_mongodb_provider' => 'mongodb://localhost/app',
                 'prefix_seed' => '_%kernel.project_dir%.%kernel.container_class%',
             ],
             'workflows' => [
@@ -992,12 +1332,14 @@ class ConfigurationTest extends TestCase
                 ],
                 'default_bus' => null,
                 'buses' => ['messenger.bus.default' => ['default_middleware' => ['enabled' => true, 'allow_no_handlers' => false, 'allow_no_senders' => true], 'middleware' => []]],
+                'reject_redelivered_messages' => true,
                 'stop_worker_on_signals' => [],
             ],
             'disallow_search_engine_index' => true,
             'http_client' => [
                 'enabled' => !class_exists(FullStack::class) && class_exists(HttpClient::class),
                 'scoped_clients' => [],
+                'recorder' => ['enabled' => false, 'matcher' => null, 'redactor' => null, 'redact' => ['headers' => [], 'query' => [], 'body' => []]],
             ],
             'mailer' => [
                 'dsn' => null,
@@ -1005,6 +1347,10 @@ class ConfigurationTest extends TestCase
                 'enabled' => !class_exists(FullStack::class) && class_exists(Mailer::class),
                 'message_bus' => null,
                 'headers' => [],
+                'tracking' => [
+                    'opens' => null,
+                    'clicks' => null,
+                ],
                 'dkim_signer' => [
                     'enabled' => false,
                     'options' => [],
@@ -1024,7 +1370,29 @@ class ConfigurationTest extends TestCase
                 'smime_encrypter' => [
                     'enabled' => false,
                     'repository' => '',
+                    'certificates' => [],
+                    'on_missing_certificate' => 'send_unencrypted',
+                    'encrypt_for_sender' => false,
                     'cipher' => null,
+                ],
+                'pgp_signer' => [
+                    'enabled' => false,
+                    'secret_key' => '',
+                    'public_key' => null,
+                    'passphrase' => null,
+                    'binary' => 'gpg',
+                    'digest_algorithm' => 'SHA512',
+                ],
+                'pgp_encrypter' => [
+                    'enabled' => false,
+                    'repository' => '',
+                    'keys' => [],
+                    'binary' => 'gpg',
+                    'cipher_algorithm' => 'AES256',
+                    'timeout' => 60.0,
+                    'hide_recipients' => false,
+                    'on_missing_key' => 'fail',
+                    'encrypt_for_sender' => false,
                 ],
             ],
             'notifier' => [
@@ -1052,6 +1420,11 @@ class ConfigurationTest extends TestCase
             'rate_limiter' => [
                 'enabled' => !class_exists(FullStack::class) && class_exists(TokenBucketLimiter::class),
                 'limiters' => [],
+                'builder' => [
+                    'lock_factory' => 'auto',
+                    'cache_pool' => 'cache.rate_limiter',
+                    'storage_service' => null,
+                ],
             ],
             'uid' => [
                 'enabled' => !class_exists(FullStack::class) && class_exists(UuidFactory::class),
@@ -1072,10 +1445,19 @@ class ConfigurationTest extends TestCase
                 'enabled' => !class_exists(FullStack::class) && class_exists(WebhookController::class),
                 'routing' => [],
                 'message_bus' => 'messenger.default_bus',
+                'http_client' => 'http_client',
+                'no_private_network' => [
+                    'enabled' => false,
+                    'subnets' => null,
+                    'allow_list' => [],
+                ],
                 'event_header_name' => 'Webhook-Event',
                 'id_header_name' => 'Webhook-Id',
+                'timestamp_header_name' => 'Webhook-Timestamp',
                 'signature_header_name' => 'Webhook-Signature',
                 'signing_algorithm' => 'sha256',
+                'signature_format' => 'legacy',
+                'timestamp_tolerance' => 300,
             ],
             'remote-event' => [
                 'enabled' => !class_exists(FullStack::class) && class_exists(RemoteEvent::class),
@@ -1127,6 +1509,18 @@ class ConfigurationTest extends TestCase
         $processor = new Processor();
         $processor->processConfiguration(new Configuration(true), [[
             'ide' => 'phpstorm',
+        ]]);
+    }
+
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testHincludeDefaultTemplateDeprecation()
+    {
+        $this->expectUserDeprecationMessage('Since symfony/framework-bundle 8.2: Setting the "framework.fragments.hinclude_default_template" configuration option is deprecated. It will be removed in version 9.0.');
+
+        $processor = new Processor();
+        $processor->processConfiguration(new Configuration(true), [[
+            'fragments' => ['hinclude_default_template' => 'default.html.twig'],
         ]]);
     }
 }

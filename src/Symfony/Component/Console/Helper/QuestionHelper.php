@@ -114,9 +114,9 @@ class QuestionHelper extends Helper
     private function doAsk($inputStream, OutputInterface $output, Question $question): mixed
     {
         if ($question instanceof FileQuestion) {
-            $this->writePrompt($output, $question);
+            $files = (new FileInputHelper())->readFileInput($inputStream, $output, $question, fn () => $this->writePrompt($output, $question));
 
-            return (new FileInputHelper())->readFileInput($inputStream, $output, $question);
+            return $question->isMultiple() ? $files : ($files[0] ?? null);
         }
 
         $this->writePrompt($output, $question);
@@ -311,6 +311,18 @@ class QuestionHelper extends Helper
                 // Did we read an escape sequence?
                 $c .= fread($inputStream, 2);
 
+                // A CSI sequence ends with a byte in the 0x40-0x7E range, preceded by any number of
+                // parameter and intermediate bytes; consume them all so that none leaks into the answer
+                if ('[' === ($c[1] ?? '')) {
+                    while (($o = \ord($c[\strlen($c) - 1])) >= 0x20 && $o <= 0x3F) {
+                        if (!$next = fread($inputStream, 1)) {
+                            break;
+                        }
+
+                        $c .= $next;
+                    }
+                }
+
                 // A = Up Arrow. B = Down Arrow
                 if (isset($c[2]) && ('A' === $c[2] || 'B' === $c[2])) {
                     if ('A' === $c[2] && -1 === $ofs) {
@@ -492,7 +504,14 @@ class QuestionHelper extends Helper
                 $value = $interviewer();
 
                 if ($constraints = $question->getConstraints()) {
-                    $this->validateConstraints($value, $constraints);
+                    if ($question instanceof FileQuestion && $question->isMultiple()) {
+                        // Validate each collected file individually rather than the whole list.
+                        foreach ($value as $file) {
+                            $this->validateConstraints($file, $constraints);
+                        }
+                    } else {
+                        $this->validateConstraints($value, $constraints);
+                    }
                 }
 
                 if ($validator = $question->getValidator()) {

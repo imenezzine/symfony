@@ -16,6 +16,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestMatcher\MethodRequestMatcher;
 use Symfony\Component\HttpFoundation\RequestMatcherInterface;
 use Symfony\Component\Mailer\Bridge\Mailchimp\RemoteEvent\MailchimpPayloadConverter;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\RemoteEvent\Exception\ParseException;
 use Symfony\Component\RemoteEvent\RemoteEvent;
 use Symfony\Component\Webhook\Client\AbstractRequestParser;
@@ -37,14 +38,18 @@ final class MailchimpRequestParser extends AbstractRequestParser
 
     protected function doParse(Request $request, #[\SensitiveParameter] string $secret): RemoteEvent|array|null
     {
+        if (!$secret) {
+            throw new InvalidArgumentException('A non-empty secret is required.');
+        }
+
         $content = $request->request->all();
-        if (!isset($content['mandrill_events'])) {
+        if (!\is_string($content['mandrill_events'] ?? null)) {
             throw new RejectWebhookException(400, 'Payload malformed.');
         }
 
         // Mailchimp sends an empty array to verify the webhook URL is reachable.
         if ([] === $events = json_decode($content['mandrill_events'], true)) {
-            $this->validateSignature($content, $secret, $request->getUri(), $request->headers->get('X-Mandrill-Signature'));
+            $this->validateSignature($content, $secret, $this->getWebhookUrl($request), $request->headers->get('X-Mandrill-Signature'));
 
             return null;
         }
@@ -53,7 +58,7 @@ final class MailchimpRequestParser extends AbstractRequestParser
             throw new RejectWebhookException(400, 'Payload malformed.');
         }
 
-        $this->validateSignature($content, $secret, $request->getUri(), $request->headers->get('X-Mandrill-Signature'));
+        $this->validateSignature($content, $secret, $this->getWebhookUrl($request), $request->headers->get('X-Mandrill-Signature'));
 
         try {
             return array_map($this->converter->convert(...), $events);
@@ -63,11 +68,24 @@ final class MailchimpRequestParser extends AbstractRequestParser
     }
 
     /**
+     * Mandrill signs the webhook URL as configured, so the query string must be used as sent, not normalized.
+     */
+    private function getWebhookUrl(Request $request): string
+    {
+        $url = $request->getSchemeAndHttpHost().$request->getBaseUrl().$request->getPathInfo();
+        if ('' !== ($queryString = $request->server->get('QUERY_STRING', '')) && null !== $queryString) {
+            $url .= '?'.$queryString;
+        }
+
+        return $url;
+    }
+
+    /**
      * @see https://mailchimp.com/developer/transactional/guides/track-respond-activity-webhooks/#authenticating-webhook-requests
      */
-    private function validateSignature(array $content, string $secret, string $webhookUrl, ?string $mandrillHeaderSignature): void
+    private function validateSignature(array $content, #[\SensitiveParameter] string $secret, string $webhookUrl, ?string $mandrillHeaderSignature): void
     {
-        if (null === $mandrillHeaderSignature || false === isset($content['mandrill_events'])) {
+        if (null === $mandrillHeaderSignature || !isset($content['mandrill_events'])) {
             throw new RejectWebhookException(400, 'Signature is wrong.');
         }
         // First add url to signedData.

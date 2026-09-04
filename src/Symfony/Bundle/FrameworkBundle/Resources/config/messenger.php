@@ -14,8 +14,10 @@ namespace Symfony\Component\DependencyInjection\Loader\Configurator;
 use Symfony\Component\DependencyInjection\Parameter;
 use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Messenger\Bridge\AmazonSqs\Transport\AmazonSqsTransportFactory;
+use Symfony\Component\Messenger\Bridge\AmpSql\Transport\AmpSqlTransportFactory;
 use Symfony\Component\Messenger\Bridge\Amqp\Transport\AmqpTransportFactory;
 use Symfony\Component\Messenger\Bridge\Beanstalkd\Transport\BeanstalkdTransportFactory;
+use Symfony\Component\Messenger\Bridge\MongoDb\Transport\MongoDbTransportFactory;
 use Symfony\Component\Messenger\Bridge\Redis\Transport\RedisTransportFactory;
 use Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener;
 use Symfony\Component\Messenger\EventListener\DispatchPcntlSignalListener;
@@ -34,6 +36,7 @@ use Symfony\Component\Messenger\Middleware\DeduplicateMiddleware;
 use Symfony\Component\Messenger\Middleware\DispatchAfterCurrentBusMiddleware;
 use Symfony\Component\Messenger\Middleware\FailedMessageProcessingMiddleware;
 use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
+use Symfony\Component\Messenger\Middleware\LoggingMiddleware;
 use Symfony\Component\Messenger\Middleware\RejectRedeliveredMessageMiddleware;
 use Symfony\Component\Messenger\Middleware\RouterContextMiddleware;
 use Symfony\Component\Messenger\Middleware\SendMessageMiddleware;
@@ -110,6 +113,7 @@ return static function (ContainerConfigurator $container) {
                 abstract_arg('bus handler resolver'),
                 false,
                 service('clock')->nullOnInvalid(),
+                service('event_dispatcher'),
             ])
             ->tag('monolog.logger', ['channel' => 'messenger'])
             ->call('setLogger', [service('logger')->ignoreOnInvalid()])
@@ -155,6 +159,13 @@ return static function (ContainerConfigurator $container) {
                 service('router'),
             ])
 
+        ->set('messenger.middleware.logging', LoggingMiddleware::class)
+            ->args([
+                service('logger'),
+                service('clock'),
+            ])
+            ->tag('monolog.logger', ['channel' => 'messenger'])
+
         // Discovery
         ->set('messenger.receiver_locator', ServiceLocator::class)
             ->args([
@@ -169,6 +180,8 @@ return static function (ContainerConfigurator $container) {
             ])
 
         ->set('messenger.transport.amqp.factory', AmqpTransportFactory::class)
+
+        ->set('messenger.transport.amp_sql.factory', AmpSqlTransportFactory::class)
 
         ->set('messenger.transport.redis.factory', RedisTransportFactory::class)
 
@@ -192,6 +205,8 @@ return static function (ContainerConfigurator $container) {
             ->tag('monolog.logger', ['channel' => 'messenger'])
 
         ->set('messenger.transport.beanstalkd.factory', BeanstalkdTransportFactory::class)
+
+        ->set('messenger.transport.mongodb.factory', MongoDbTransportFactory::class)
 
         // retry
         ->set('messenger.retry_strategy_locator', ServiceLocator::class)
@@ -267,6 +282,7 @@ return static function (ContainerConfigurator $container) {
             ->tag('kernel.event_subscriber')
 
         ->set('messenger.routable_message_bus', RoutableMessageBus::class)
+            ->public()
             ->args([
                 abstract_arg('message bus locator'),
                 service('messenger.default_bus'),

@@ -21,7 +21,7 @@ final class DeferredBatchMessage
     public bool $acked;
 
     public function __construct(
-        public readonly string $transportName,
+        public readonly mixed $context,
         public readonly Envelope $envelope,
         bool &$acked,
         public readonly float $queuedAt,

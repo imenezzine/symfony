@@ -32,6 +32,7 @@ use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Console\Tester\ConsoleAssertionsTrait;
 use Symfony\Component\Console\Tests\Fixtures\InvokableExtendingCommandTestCommand;
 use Symfony\Component\Console\Tests\Fixtures\InvokableTestCommand;
+use Symfony\Component\Console\Tests\Fixtures\InvokableWithAskArrayCommand;
 use Symfony\Component\Console\Tests\Fixtures\InvokableWithInputTestCommand;
 use Symfony\Component\Console\Tests\Fixtures\InvokableWithInteractiveAttributesTestCommand;
 use Symfony\Component\Console\Tests\Fixtures\InvokableWithInteractiveChoiceAttributeTestCommand;
@@ -521,6 +522,16 @@ class CommandTesterTest extends TestCase
         ];
     }
 
+    public function testInvokableWithFalsyAnswerInArrayQuestion()
+    {
+        $tester = new CommandTester(new InvokableWithAskArrayCommand());
+        $tester->setInputs(['v1', '0', 'v2', '']);
+        $tester->execute([], ['interactive' => true]);
+        $tester->assertCommandIsSuccessful();
+
+        self::assertStringContainsString('Values: v1,0,v2', $tester->getDisplay());
+    }
+
     public function testInvokableWithInteractiveQuestionParameter()
     {
         $tester = new CommandTester(new InvokableWithInteractiveAttributesTestCommand());
@@ -698,6 +709,44 @@ class CommandTesterTest extends TestCase
         $this->assertCommandIsSuccessful($result);
         $this->assertSame(0, $result->statusCode);
         $this->assertSame("bar\n", $result->getDisplay());
+    }
+
+    public function testItCanTestACommandWritingAGenerator()
+    {
+        $command = new Command('foo');
+        $command->setCode(static function (InputInterface $input, OutputInterface $output) {
+            $output->writeln((static function () {
+                yield 'bar';
+                yield 'baz';
+            })());
+
+            return 0;
+        });
+
+        $result = (new CommandTester($command))->run();
+
+        $this->assertSame("bar\nbaz\n", $result->getOutput(true));
+        $this->assertSame("bar\nbaz\n", $result->getDisplay());
+    }
+
+    public function testItDoesNotConsumeAGeneratorDiscardedByVerbosity()
+    {
+        $consumed = false;
+        $command = new Command('foo');
+        $command->setCode(static function (OutputInterface $output) use (&$consumed): int {
+            $output->writeln((static function () use (&$consumed) {
+                $consumed = true;
+
+                yield 'bar';
+            })(), OutputInterface::VERBOSITY_VERBOSE);
+
+            return 0;
+        });
+
+        $result = (new CommandTester($command))->run();
+
+        $this->assertFalse($consumed);
+        $this->assertSame('', $result->getDisplay());
     }
 
     public function testItProvidesUserInputs()

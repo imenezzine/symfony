@@ -21,11 +21,15 @@ use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Event\MessageEvent;
 use Symfony\Component\Mailer\EventListener\MessageListener;
 use Symfony\Component\Mailer\Exception\LogicException;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mailer\Transport\NullTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\RawMessage;
+use Symfony\Component\RateLimiter\Exception\RateLimitExceededException;
+use Symfony\Component\RateLimiter\RateLimiterFactory;
+use Symfony\Component\RateLimiter\Storage\InMemoryStorage;
 use Twig\Environment;
 use Twig\Loader\ArrayLoader;
 
@@ -57,6 +61,42 @@ class AbstractTransportTest extends TestCase
         $this->assertEqualsWithDelta(0, time() - $start, 1);
     }
 
+    public function testRateLimiting()
+    {
+        $transport = new class extends AbstractTransport {
+            public int $sent = 0;
+
+            protected function doSend(SentMessage $message): void
+            {
+                ++$this->sent;
+            }
+
+            public function __toString(): string
+            {
+                return 'fake://';
+            }
+        };
+        $transport->setRateLimiterFactory(new RateLimiterFactory([
+            'id' => 'mailer',
+            'policy' => 'fixed_window',
+            'limit' => 2,
+            'interval' => '1 hour',
+        ], new InMemoryStorage()));
+
+        $message = new RawMessage('');
+        $envelope = new Envelope(new Address('fabien@example.com'), [new Address('helene@example.com')]);
+
+        $this->assertNotNull($transport->send($message, $envelope));
+        $this->assertNotNull($transport->send($message, $envelope));
+
+        try {
+            $transport->send($message, $envelope);
+            $this->fail('The third message should not have been sent.');
+        } catch (RateLimitExceededException) {
+            $this->assertSame(2, $transport->sent);
+        }
+    }
+
     public function testSendingRawMessages()
     {
         $this->expectException(LogicException::class);
@@ -80,6 +120,42 @@ class AbstractTransportTest extends TestCase
 
         $sentMessage = $transport->send((new TemplatedEmail())->to('me@example.com')->from('me@example.com')->htmlTemplate('tpl'));
         $this->assertMatchesRegularExpression('/Some message/', $sentMessage->getMessage()->toString());
+    }
+
+    public function testSendingRemoteTemplateEmailWithUnsupportedTransport()
+    {
+        $transport = new class(new EventDispatcher()) extends AbstractTransport {
+            protected function doSend(SentMessage $message): void
+            {
+            }
+
+            public function __toString(): string
+            {
+                return 'fake://';
+            }
+        };
+
+        $email = (new RemoteTemplateEmail())
+            ->from('fabien@example.com')
+            ->to('helene@example.com')
+            ->template('welcome', ['firstName' => 'Fabien']);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('does not support sending emails rendered from a remote template');
+
+        $transport->send($email);
+    }
+
+    public function testSendingRemoteTemplateEmailWithSupportedTransport()
+    {
+        $transport = new NullTransport(new EventDispatcher());
+
+        $email = (new RemoteTemplateEmail())
+            ->from('fabien@example.com')
+            ->to('helene@example.com')
+            ->template('welcome', ['firstName' => 'Fabien']);
+
+        $this->assertNotNull($transport->send($email));
     }
 
     public function testRejectMessage()

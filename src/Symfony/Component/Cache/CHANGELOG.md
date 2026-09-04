@@ -1,6 +1,15 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Add `AbstractAdapter::createAdapter()` to create the adapter matching a connection
+ * Add `MongoDbAdapter` and `MongoDbTagAwareAdapter`
+ * Support the `mongodb:` and `mongodb+srv:` DSN in `AbstractAdapter::createConnection()`
+ * Implement `PruneableInterface` on `RedisTagAwareAdapter` to garbage-collect its tag Sets
+ * Add `PdoTagAwareAdapter`
+
 8.0
 ---
 

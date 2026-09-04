@@ -27,6 +27,7 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NearMissValueResolverException;
 use Symfony\Component\HttpKernel\Exception\UnsupportedMediaTypeHttpException;
 use Symfony\Component\HttpKernel\KernelEvents;
+use Symfony\Component\Serializer\Encoder\DecoderInterface;
 use Symfony\Component\Serializer\Exception\InvalidArgumentException as SerializerInvalidArgumentException;
 use Symfony\Component\Serializer\Exception\NotEncodableValueException;
 use Symfony\Component\Serializer\Exception\PartialDenormalizationException;
@@ -37,6 +38,7 @@ use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Validator\Constraints as Assert;
 use Symfony\Component\Validator\Constraints\GroupSequence;
 use Symfony\Component\Validator\ConstraintViolation;
+use Symfony\Component\Validator\ConstraintViolationInterface;
 use Symfony\Component\Validator\ConstraintViolationList;
 use Symfony\Component\Validator\Exception\ValidationFailedException;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
@@ -175,7 +177,7 @@ class RequestPayloadValueResolver implements ValueResolverInterface, EventSubscr
                 }
 
                 if (\count($violations)) {
-                    throw HttpException::fromStatusCode($validationFailedCode, implode("\n", array_map(static fn ($e) => $e->getMessage(), iterator_to_array($violations))), new ValidationFailedException($payload, $violations));
+                    throw HttpException::fromStatusCode($validationFailedCode, implode("\n", array_map(static fn (ConstraintViolationInterface $e) => ('' !== $path = $e->getPropertyPath()) ? \sprintf('%s: %s', $path, $e->getMessage()) : $e->getMessage(), iterator_to_array($violations))), new ValidationFailedException($payload, $violations));
                 }
             } else {
                 try {
@@ -218,6 +220,21 @@ class RequestPayloadValueResolver implements ValueResolverInterface, EventSubscr
 
     private function mapQueryString(Request $request, ArgumentMetadata $argument, MapQueryString $attribute): ?object
     {
+        // a named parameter holding a JSON document, e.g. ?filter={"page":1}
+        if (null !== $attribute->key && \is_string($data = $request->query->all()[$attribute->key] ?? null)) {
+            if ('' === $data && !$attribute->mapWhenEmpty) {
+                return null;
+            }
+
+            try {
+                return $this->serializer->deserialize($data, $argument->getType(), 'json', self::CONTEXT_DESERIALIZE + $attribute->serializationContext);
+            } catch (NotEncodableValueException $e) {
+                throw new BadRequestHttpException(\sprintf('Query parameter "%s" contains invalid "json" data.', $attribute->key), $e);
+            } catch (UnexpectedPropertyException $e) {
+                throw new BadRequestHttpException(\sprintf('Query parameter "%s" contains invalid "%s" property.', $attribute->key, $e->property), $e);
+            }
+        }
+
         if (!($data = $request->query->all($attribute->key)) && ($argument->isNullable() || $argument->hasDefaultValue()) && !$attribute->mapWhenEmpty) {
             return null;
         }
@@ -241,6 +258,10 @@ class RequestPayloadValueResolver implements ValueResolverInterface, EventSubscr
 
         if ($attribute->acceptFormat && !\in_array($format, (array) $attribute->acceptFormat, true)) {
             throw new UnsupportedMediaTypeHttpException(\sprintf('Unsupported format, expects "%s", but "%s" given.', implode('", "', (array) $attribute->acceptFormat), $format));
+        }
+
+        if (!$this->serializer instanceof DecoderInterface || !$this->serializer->supportsDecoding($format)) {
+            $format = Request::getStructuredSuffixFormat($request->headers->get('CONTENT_TYPE')) ?? $format;
         }
 
         $type = match (true) {

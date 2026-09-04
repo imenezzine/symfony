@@ -11,9 +11,11 @@
 
 namespace Symfony\Bridge\Doctrine\Tests\Console\ArgumentResolver;
 
+use Doctrine\DBAL\Types\ConversionException;
 use Doctrine\Persistence\ManagerRegistry;
 use Doctrine\Persistence\ObjectManager;
 use Doctrine\Persistence\ObjectRepository;
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Symfony\Bridge\Doctrine\ArgumentResolver\Console\EntityValueResolver;
 use Symfony\Bridge\Doctrine\Attribute\MapEntity;
@@ -24,6 +26,7 @@ use Symfony\Component\Console\Exception\RuntimeException;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
+use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\ExpressionLanguage\ExpressionLanguage;
 
@@ -290,6 +293,97 @@ class EntityValueResolverTest extends TestCase
         $this->assertSame([], iterator_to_array($resolver->resolve('entity', $input, $member)));
     }
 
+    #[TestWith([[12]])]
+    #[TestWith([['foo']])]
+    #[TestWith([[1, 2, 3, 4]])]
+    #[TestWith([['foo', 'bar', 'baz']])]
+    public function testResolveWithFindBy(array $commandArg)
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry);
+
+        $input = new ArrayInput(['entity' => $commandArg], new InputDefinition([
+            new InputArgument('entity'),
+        ]));
+
+        $expectedResult = array_fill(0, \count($commandArg), new \stdClass());
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->once())
+            ->method('findBy')
+            ->with(['entity' => $commandArg], null, null, null)
+            ->willReturn($expectedResult);
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with(\stdClass::class)
+            ->willReturn($repository);
+
+        $member = $this->createMember('entity', 'array', new MapEntity(class: \stdClass::class, mapping: ['entity']));
+
+        $this->assertSame([$expectedResult], iterator_to_array($resolver->resolve('entity', $input, $member)));
+    }
+
+    public function testResolveWithClosure()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry, null, new MapEntity(expr: static fn (InputInterface $input, ObjectRepository $repository) => $repository->findOneBy(['id' => $input->getArgument('entity')])));
+
+        $input = new ArrayInput(['entity' => 1], new InputDefinition([
+            new InputArgument('entity'),
+        ]));
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->never())
+            ->method('find');
+        $repository->expects($this->once())
+            ->method('findOneBy')
+            ->with(['id' => 1])
+            ->willReturn($object = new \stdClass());
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with(\stdClass::class)
+            ->willReturn($repository);
+
+        $member = $this->createMember('entity', \stdClass::class);
+
+        $this->assertSame([$object], iterator_to_array($resolver->resolve('entity', $input, $member)));
+    }
+
+    public function testResolveWithClosureFailureThrowsException()
+    {
+        $manager = $this->createMock(ObjectManager::class);
+        $registry = $this->createRegistry($manager);
+        $resolver = new EntityValueResolver($registry, null, new MapEntity(expr: static function (InputInterface $input, ObjectRepository $repository) {
+            $repository->findOneBy(['id' => $input->getArgument('entity')]);
+
+            throw new ConversionException();
+        }));
+
+        $input = new ArrayInput(['entity' => 1], new InputDefinition([
+            new InputArgument('entity'),
+        ]));
+
+        $repository = $this->createMock(ObjectRepository::class);
+        $repository->expects($this->once())
+            ->method('findOneBy')
+            ->with(['id' => 1]);
+
+        $manager->expects($this->once())
+            ->method('getRepository')
+            ->with(\stdClass::class)
+            ->willReturn($repository);
+
+        $member = $this->createMember('entity', \stdClass::class);
+
+        $this->expectException(RuntimeException::class);
+
+        iterator_to_array($resolver->resolve('entity', $input, $member));
+    }
+
     public function testResolveByIdFromOption()
     {
         $manager = $this->createMock(ObjectManager::class);
@@ -414,6 +508,9 @@ class EntityValueResolverTest extends TestCase
     {
         $parts = [];
 
+        if (null !== $entity->class) {
+            $parts[] = \sprintf('class: %s', var_export($entity->class, true));
+        }
         if (null !== $entity->id) {
             $parts[] = \sprintf('id: %s', var_export($entity->id, true));
         }

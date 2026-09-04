@@ -278,6 +278,37 @@ class TimeTypeTest extends BaseTypeTestCase
         $this->assertEquals('03:04', $form->getViewData());
     }
 
+    public function testSubmitArrayToSingleTextWidgetWhenAllowed()
+    {
+        $form = $this->factory->create(static::TESTED_TYPE, null, [
+            'model_timezone' => 'UTC',
+            'view_timezone' => 'UTC',
+            'widget' => 'single_text',
+            'allow_array_submission' => true,
+        ]);
+
+        $form->submit(['03:04']);
+
+        $this->assertFalse($form->isSynchronized());
+        $this->assertSame('Submitted data was expected to be text or number, array given.', $form->getTransformationFailure()->getMessage());
+    }
+
+    public function testSubmitArrayToSingleTextWidgetWithReferenceDateWhenAllowed()
+    {
+        $form = $this->factory->create(static::TESTED_TYPE, null, [
+            'model_timezone' => 'UTC',
+            'view_timezone' => 'UTC',
+            'widget' => 'single_text',
+            'reference_date' => new \DateTimeImmutable('2023-06-15', new \DateTimeZone('UTC')),
+            'allow_array_submission' => true,
+        ]);
+
+        $form->submit(['03:04']);
+
+        $this->assertFalse($form->isSynchronized());
+        $this->assertSame('Submitted data was expected to be text or number, array given.', $form->getTransformationFailure()->getMessage());
+    }
+
     public function testSubmitStringSingleTextWithoutMinutes()
     {
         $form = $this->factory->create(static::TESTED_TYPE, null, [
@@ -1197,6 +1228,49 @@ class TimeTypeTest extends BaseTypeTestCase
             'input' => 'datetime_immutable',
             'model_timezone' => 'Europe/Berlin',
         ]);
+    }
+
+    #[DataProvider('provideUtcEquivalentTimezones')]
+    public function testUtcEquivalentTimezoneIsAccepted(string $input, \DateTimeInterface $date, string $modelTimezone)
+    {
+        $form = $this->factory->create(static::TESTED_TYPE, $date, [
+            'widget' => 'choice',
+            'input' => $input,
+            'model_timezone' => $modelTimezone,
+        ]);
+
+        $this->assertEquals($date, $form->getData());
+    }
+
+    public static function provideUtcEquivalentTimezones()
+    {
+        return [
+            'DateTime in +00:00 with UTC model timezone' => ['datetime', new \DateTime('2024-10-28 15:00:00', new \DateTimeZone('+00:00')), 'UTC'],
+            'DateTimeImmutable in +00:00 with UTC model timezone' => ['datetime_immutable', new \DateTimeImmutable('2024-10-28 15:00:00', new \DateTimeZone('+00:00')), 'UTC'],
+            'DateTime in Z with UTC model timezone' => ['datetime', new \DateTime('2024-10-28T15:00:00Z'), 'UTC'],
+            'DateTime in GMT with UTC model timezone' => ['datetime', new \DateTime('2024-10-28 15:00:00', new \DateTimeZone('GMT')), 'UTC'],
+            'DateTime in Etc/UTC with UTC model timezone' => ['datetime', new \DateTime('2024-10-28 15:00:00', new \DateTimeZone('Etc/UTC')), 'UTC'],
+            'DateTime in UTC with +00:00 model timezone' => ['datetime', new \DateTime('2024-10-28 15:00:00', new \DateTimeZone('UTC')), '+00:00'],
+        ];
+    }
+
+    #[DataProvider('provideZeroOffsetRegionalTimezones')]
+    public function testZeroOffsetRegionalTimezoneIsRejected(string $timezone)
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage(\sprintf('Using a "DateTime" instance with a timezone ("%s") not matching the configured model timezone "UTC" is not supported.', $timezone));
+
+        $this->factory->create(static::TESTED_TYPE, new \DateTime('2024-10-28 15:00:00', new \DateTimeZone($timezone)), [
+            'model_timezone' => 'UTC',
+        ]);
+    }
+
+    public static function provideZeroOffsetRegionalTimezones()
+    {
+        return [
+            'Europe/London on a winter date' => ['Europe/London'],
+            'Africa/Abidjan' => ['Africa/Abidjan'],
+        ];
     }
 
     protected function getTestOptions(): array

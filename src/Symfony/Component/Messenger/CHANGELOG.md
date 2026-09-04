@@ -4,7 +4,19 @@ CHANGELOG
 8.2
 ---
 
+ * Add claim check support with `ClaimCheckSerializer` and PSR-6 cache pools
+ * Add routing and failure transport information and a `--message` option to the `debug:messenger` command
+ * Add `HandlerStartingEvent`, `HandlerSuccessEvent` and `HandlerFailureEvent`, dispatched around each handler call
  * Add `$serializedTypeNameAliases` parameter to `#[AsMessage]` to accept alternate serialized type names when decoding
+ * Add `--failed-after` and `--failed-before` options to the `messenger:failed:retry`, `messenger:failed:remove` and `messenger:failed:show` commands, and a `--class-filter` option to `messenger:failed:retry`
+ * `RedispatchMessage` now dispatches to the senders configured for the message (routing config or `#[AsMessage]`) when `$transportNames` is empty, instead of sending to no sender at all
+ * Add a `--concurrency` option to the `messenger:consume` command to process messages in parallel
+ * Add a `--redispatch` option to the `messenger:failed:retry` command to send messages back to their transport instead of handling them in the command
+ * Allow prioritizing receivers so that `messenger:consume --all` consumes receivers in a predefined order
+ * Add an optional `extra` key to the encoded envelope passed to `SerializerInterface::decode()`, holding metadata added by the receiving transport
+ * Add an optional `LoggingMiddleware` logging the processing time and memory usage of each message
+ * Add the `messenger:show` command to list and inspect pending messages of a transport
+ * Make the `messenger:consume` and `messenger:failed:retry` commands exit immediately when a second `SIGINT` is received
 
 8.1
 ---

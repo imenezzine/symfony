@@ -14,6 +14,7 @@ namespace Symfony\Component\Form\Tests\Extension\DataCollector;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Form\CallbackTransformer;
+use Symfony\Component\Form\DataClassType;
 use Symfony\Component\Form\Exception\TransformationFailedException;
 use Symfony\Component\Form\Extension\Core\DataMapper\DataMapper;
 use Symfony\Component\Form\Extension\Core\Type\HiddenType;
@@ -263,7 +264,7 @@ class FormDataExtractorTest extends TestCase
                 'norm' => 'Foobar',
             ],
             'errors' => [
-                ['message' => 'Invalid!', 'origin' => spl_object_hash($form), 'trace' => []],
+                ['message' => 'Invalid!', 'origin' => spl_object_id($form), 'trace' => []],
             ],
             'synchronized' => true,
         ], $this->dataExtractor->extractSubmittedData($form));
@@ -284,7 +285,7 @@ class FormDataExtractorTest extends TestCase
                 'norm' => 'Foobar',
             ],
             'errors' => [
-                ['message' => 'Invalid!', 'origin' => spl_object_hash($form), 'trace' => []],
+                ['message' => 'Invalid!', 'origin' => spl_object_id($form), 'trace' => []],
             ],
             'synchronized' => true,
         ], $this->dataExtractor->extractSubmittedData($form));
@@ -299,7 +300,7 @@ class FormDataExtractorTest extends TestCase
 
         $form->submit('Foobar');
         $form->addError(new FormError('Invalid!', null, [], null, $violation));
-        $origin = spl_object_hash($form);
+        $origin = spl_object_id($form);
 
         if (class_exists(WordCount::class)) {
             $expectedFormat = <<<"EODUMP"
@@ -310,7 +311,7 @@ class FormDataExtractorTest extends TestCase
                   "errors" => array:1 [
                     0 => array:3 [
                       "message" => "Invalid!"
-                      "origin" => "$origin"
+                      "origin" => $origin
                       "trace" => array:2 [
                         0 => Symfony\Component\Validator\ConstraintViolation {
                           -message: "Foo"
@@ -340,7 +341,7 @@ class FormDataExtractorTest extends TestCase
                   "errors" => array:1 [
                     0 => array:3 [
                       "message" => "Invalid!"
-                      "origin" => "$origin"
+                      "origin" => $origin
                       "trace" => array:2 [
                         0 => Symfony\Component\Validator\ConstraintViolation {
                           -message: "Foo"
@@ -413,6 +414,22 @@ class FormDataExtractorTest extends TestCase
                 'name' => 'bar',
             ],
         ], $this->dataExtractor->extractViewVariables($view));
+    }
+
+    public function testTypeClassOfDataClassType()
+    {
+        $form = $this->createBuilder('name')
+            ->setType(new ResolvedFormType(new DataClassType('App\\SomeData', 'App\\ParentType', 'some_data', [], [])))
+            ->getForm();
+
+        $this->assertSame([
+            'id' => 'name',
+            'name' => 'name',
+            'type_class' => 'App\\SomeData',
+            'synchronized' => true,
+            'passed_options' => [],
+            'resolved_options' => [],
+        ], $this->dataExtractor->extractConfiguration($form));
     }
 
     private function createBuilder(string $name, array $options = []): FormBuilder

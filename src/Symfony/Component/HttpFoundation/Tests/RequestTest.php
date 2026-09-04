@@ -39,7 +39,10 @@ class RequestTest extends TestCase
         Request::setTrustedHosts([]);
         Request::setAllowedHttpMethodOverride(null);
         Request::setFactory(null);
-        \Closure::bind(static fn () => self::$formats = null, null, Request::class)();
+        \Closure::bind(static function () {
+            self::$formats = null;
+            self::$trustedHosts = [];
+        }, null, Request::class)();
     }
 
     public function testInitialize()
@@ -619,6 +622,28 @@ b'])]
             ['tlv', ['application/device-config+tlv']],
             ['pdf', ['application/pdf']],
             ['csv', ['text/csv']],
+        ];
+    }
+
+    #[DataProvider('getStructuredSuffixFormatProvider')]
+    public function testGetStructuredSuffixFormat(?string $expectedFormat, ?string $mimeType)
+    {
+        $this->assertSame($expectedFormat, Request::getStructuredSuffixFormat($mimeType));
+    }
+
+    public static function getStructuredSuffixFormatProvider()
+    {
+        return [
+            'registered alias resolves to its suffix format' => ['json', 'application/vnd.api+json'],
+            'unregistered media type resolves to its suffix format' => ['json', 'application/vnd.acme.error+json'],
+            'xml suffix' => ['xml', 'application/hal+xml'],
+            'last suffix wins' => ['xml', 'application/foo+bar+xml'],
+            'parameters are ignored' => ['json', 'application/vnd.api+json; charset=utf-8'],
+            'no suffix' => [null, 'application/json'],
+            'unknown suffix' => [null, 'application/foo+bar'],
+            'non-application type' => [null, 'image/svg+xml'],
+            'empty mime type' => [null, ''],
+            'null mime type' => [null, null],
         ];
     }
 
@@ -2248,6 +2273,45 @@ b'])]
         $this->assertSame('localhost', $request->getHost());
     }
 
+    public function testSetTrustedHostsKeepsPatternsIndependent()
+    {
+        Request::setTrustedHosts(['^(a)\.example\.com$', '^(b)\.\1\.example\.com$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'b.b.example.com');
+        $this->assertSame('b.b.example.com', $request->getHost());
+    }
+
+    public function testTrustedHostsAreNotAccumulated()
+    {
+        Request::setTrustedHosts(['^[a-z]+\.example\.com$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'a.example.com');
+        $this->assertSame('a.example.com', $request->getHost());
+        $request->headers->set('host', 'b.example.com');
+        $this->assertSame('b.example.com', $request->getHost());
+
+        $this->assertSame([], (new \ReflectionProperty(Request::class, 'trustedHosts'))->getValue());
+    }
+
+    public function testTrustedHostsAreNotMatchedLoosely()
+    {
+        Request::setTrustedHosts(['^123$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', '123');
+        $this->assertSame('123', $request->getHost());
+
+        $request = Request::create('/');
+        $request->headers->set('host', '0123');
+
+        $this->expectException(SuspiciousOperationException::class);
+        $this->expectExceptionMessage('Untrusted Host "0123".');
+
+        $request->getHost();
+    }
+
     public function testFactory()
     {
         Request::setFactory(static fn (array $query = [], array $request = [], array $attributes = [], array $cookies = [], array $files = [], array $server = [], $content = null) => new NewRequest());
@@ -3042,6 +3106,21 @@ b'])]
         $this->expectUserDeprecationMessage('Since symfony/http-foundation 8.1: Directly setting property "query" of "Symfony\Component\HttpFoundation\Tests\NewRequest" is deprecated; pass query parameters as a constructor argument or call "initialize()" instead.');
 
         $request->query = new InputBag(['k' => 'v']);
+    }
+
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testPopulatingTrustedHostsIsDeprecated()
+    {
+        Request::setTrustedHosts(['^trusted\.com$']);
+        \Closure::bind(static fn () => self::$trustedHosts = ['untrusted.com'], null, Request::class)();
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'trusted.com');
+
+        $this->expectUserDeprecationMessage('Since symfony/http-foundation 8.2: Populating the "Symfony\Component\HttpFoundation\Request::$trustedHosts" property is deprecated; it has no effect anymore.');
+
+        $this->assertSame('trusted.com', $request->getHost());
     }
 }
 

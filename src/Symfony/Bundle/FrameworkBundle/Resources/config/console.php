@@ -38,6 +38,7 @@ use Symfony\Bundle\FrameworkBundle\Command\SecretsSetCommand;
 use Symfony\Bundle\FrameworkBundle\Command\TranslationDebugCommand;
 use Symfony\Bundle\FrameworkBundle\Command\TranslationExtractCommand;
 use Symfony\Bundle\FrameworkBundle\Command\YamlLintCommand;
+use Symfony\Bundle\FrameworkBundle\Command\YamlLintSchemaResolver;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Bundle\FrameworkBundle\EventListener\SuggestMissingPackageSubscriber;
 use Symfony\Component\Console\EventListener\ValidateQuestionInputListener;
@@ -50,6 +51,7 @@ use Symfony\Component\Messenger\Command\FailedMessagesRemoveCommand;
 use Symfony\Component\Messenger\Command\FailedMessagesRetryCommand;
 use Symfony\Component\Messenger\Command\FailedMessagesShowCommand;
 use Symfony\Component\Messenger\Command\SetupTransportsCommand;
+use Symfony\Component\Messenger\Command\ShowMessagesCommand;
 use Symfony\Component\Messenger\Command\StatsCommand;
 use Symfony\Component\Messenger\Command\StopWorkersCommand;
 use Symfony\Component\Scheduler\Command\DebugCommand as SchedulerDebugCommand;
@@ -58,8 +60,11 @@ use Symfony\Component\Translation\Command\TranslationLintCommand;
 use Symfony\Component\Translation\Command\TranslationPullCommand;
 use Symfony\Component\Translation\Command\TranslationPushCommand;
 use Symfony\Component\Translation\Command\XliffLintCommand;
+use Symfony\Component\Translation\Command\XliffUpdateSourcesCommand;
 use Symfony\Component\Validator\Command\DebugCommand as ValidatorDebugCommand;
 use Symfony\Component\Workflow\Command\WorkflowDumpCommand;
+use Symfony\Component\Yaml\Schema\FileHeaderSchemaResolver;
+use Symfony\Component\Yaml\Schema\SchemaValidator;
 use Symfony\WebpackEncoreBundle\Asset\EntrypointLookupInterface;
 
 return static function (ContainerConfigurator $container) {
@@ -165,6 +170,7 @@ return static function (ContainerConfigurator $container) {
                 [], // Bus names
                 service('messenger.rate_limiter_locator')->nullOnInvalid(),
                 null,
+                param('kernel.project_dir').'/bin/console',
             ])
             ->tag('console.command')
             ->tag('monolog.logger', ['channel' => 'messenger'])
@@ -221,6 +227,14 @@ return static function (ContainerConfigurator $container) {
             ->args([
                 service('messenger.receiver_locator'),
                 abstract_arg('Receivers names'),
+            ])
+            ->tag('console.command')
+
+        ->set('console.command.messenger_show', ShowMessagesCommand::class)
+            ->args([
+                service('messenger.receiver_locator'),
+                abstract_arg('Receivers names'),
+                service('.messenger.transport.native_php_serializer')->nullOnInvalid(),
             ])
             ->tag('console.command')
 
@@ -313,7 +327,23 @@ return static function (ContainerConfigurator $container) {
         ->set('console.command.xliff_lint', XliffLintCommand::class)
             ->tag('console.command')
 
+        ->set('console.command.translation_xliff_update_sources', XliffUpdateSourcesCommand::class)
+            ->args([
+                service('translation.writer'),
+                service('translation.reader'),
+                param('kernel.default_locale'),
+                [], // Translator paths
+                param('kernel.enabled_locales'),
+            ])
+            ->tag('console.command')
+
         ->set('console.command.yaml_lint', YamlLintCommand::class)
+            ->args([
+                inline_service(YamlLintSchemaResolver::class)
+                    ->args([null, inline_service(FileHeaderSchemaResolver::class)]),
+                inline_service(SchemaValidator::class),
+                param('kernel.project_dir'),
+            ])
             ->tag('console.command')
 
         ->set('console.command.translation_lint', TranslationLintCommand::class)

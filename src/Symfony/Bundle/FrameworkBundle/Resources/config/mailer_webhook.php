@@ -13,6 +13,8 @@ namespace Symfony\Component\DependencyInjection\Loader\Configurator;
 
 use Symfony\Component\Mailer\Bridge\AhaSend\RemoteEvent\AhaSendPayloadConverter;
 use Symfony\Component\Mailer\Bridge\AhaSend\Webhook\AhaSendRequestParser;
+use Symfony\Component\Mailer\Bridge\Azure\RemoteEvent\AzurePayloadConverter;
+use Symfony\Component\Mailer\Bridge\Azure\Webhook\AzureRequestParser;
 use Symfony\Component\Mailer\Bridge\Brevo\RemoteEvent\BrevoPayloadConverter;
 use Symfony\Component\Mailer\Bridge\Brevo\Webhook\BrevoRequestParser;
 use Symfony\Component\Mailer\Bridge\Mailchimp\RemoteEvent\MailchimpPayloadConverter;
@@ -31,13 +33,22 @@ use Symfony\Component\Mailer\Bridge\Postmark\RemoteEvent\PostmarkPayloadConverte
 use Symfony\Component\Mailer\Bridge\Postmark\Webhook\PostmarkRequestParser;
 use Symfony\Component\Mailer\Bridge\Resend\RemoteEvent\ResendPayloadConverter;
 use Symfony\Component\Mailer\Bridge\Resend\Webhook\ResendRequestParser;
+use Symfony\Component\Mailer\Bridge\Scaleway\RemoteEvent\ScalewayPayloadConverter;
+use Symfony\Component\Mailer\Bridge\Scaleway\Webhook\ScalewayRequestParser;
 use Symfony\Component\Mailer\Bridge\Sendgrid\RemoteEvent\SendgridPayloadConverter;
 use Symfony\Component\Mailer\Bridge\Sendgrid\Webhook\SendgridRequestParser;
 use Symfony\Component\Mailer\Bridge\Sweego\RemoteEvent\SweegoPayloadConverter;
 use Symfony\Component\Mailer\Bridge\Sweego\Webhook\SweegoRequestParser;
+use Symfony\Component\Mailer\Bridge\TurboSmtp\RemoteEvent\TurboSmtpPayloadConverter;
+use Symfony\Component\Mailer\Bridge\TurboSmtp\Webhook\TurboSmtpRequestParser;
 
 return static function (ContainerConfigurator $container) {
     $container->services()
+        ->set('mailer.payload_converter.azure', AzurePayloadConverter::class)
+        ->set('mailer.webhook.request_parser.azure', AzureRequestParser::class)
+            ->args([service('mailer.payload_converter.azure')])
+        ->alias(AzureRequestParser::class, 'mailer.webhook.request_parser.azure')
+
         ->set('mailer.payload_converter.brevo', BrevoPayloadConverter::class)
         ->set('mailer.webhook.request_parser.brevo', BrevoRequestParser::class)
             ->args([service('mailer.payload_converter.brevo')])
@@ -78,6 +89,15 @@ return static function (ContainerConfigurator $container) {
             ->args([service('mailer.payload_converter.resend')])
         ->alias(ResendRequestParser::class, 'mailer.webhook.request_parser.resend')
 
+        ->set('mailer.payload_converter.scaleway', ScalewayPayloadConverter::class)
+        ->set('mailer.webhook.request_parser.scaleway', ScalewayRequestParser::class)
+            ->args([
+                service('mailer.payload_converter.scaleway'),
+                service('http_client')->nullOnInvalid(),
+                service('cache.app')->nullOnInvalid(),
+            ])
+        ->alias(ScalewayRequestParser::class, 'mailer.webhook.request_parser.scaleway')
+
         ->set('mailer.payload_converter.sendgrid', SendgridPayloadConverter::class)
         ->set('mailer.webhook.request_parser.sendgrid', SendgridRequestParser::class)
             ->args([service('mailer.payload_converter.sendgrid')])
@@ -97,5 +117,10 @@ return static function (ContainerConfigurator $container) {
         ->set('mailer.webhook.request_parser.mailchimp', MailchimpRequestParser::class)
             ->args([service('mailer.payload_converter.mailchimp')])
         ->alias(MailchimpRequestParser::class, 'mailer.webhook.request_parser.mailchimp')
+
+        ->set('mailer.payload_converter.turbosmtp', TurboSmtpPayloadConverter::class)
+        ->set('mailer.webhook.request_parser.turbosmtp', TurboSmtpRequestParser::class)
+            ->args([service('mailer.payload_converter.turbosmtp')])
+        ->alias(TurboSmtpRequestParser::class, 'mailer.webhook.request_parser.turbosmtp')
     ;
 };

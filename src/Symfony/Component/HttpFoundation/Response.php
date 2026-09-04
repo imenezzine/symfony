@@ -581,6 +581,27 @@ class Response
     }
 
     /**
+     * Returns the cache directives addressed to one cache, as defined by RFC 9213.
+     *
+     * The cache identifying itself as the given target reads them instead of
+     * "Cache-Control", so it can be told to keep the response much longer than
+     * the browser is:
+     *
+     *     $response->setMaxAge(0)->setPrivate();
+     *     $response->cacheControl('CDN')->setMaxAge(3600);
+     *
+     * @param string $target The cache the directives are addressed to, e.g. "CDN"
+     *
+     * @throws \InvalidArgumentException When the target is not a valid token
+     *
+     * @final
+     */
+    public function cacheControl(string $target): TargetedCacheControl
+    {
+        return new TargetedCacheControl($this->headers, $target);
+    }
+
+    /**
      * Marks the response as "private".
      *
      * It makes the response ineligible for serving other clients.
@@ -960,7 +981,7 @@ class Response
                 $etag = '"'.$etag.'"';
             }
 
-            $this->headers->set('ETag', (true === $weak ? 'W/' : '').$etag);
+            $this->headers->set('ETag', ($weak ? 'W/' : '').$etag);
         }
 
         return $this;
@@ -1313,7 +1334,7 @@ class Response
      */
     protected function ensureIEOverSSLCompatibility(Request $request): void
     {
-        if (false !== stripos($this->headers->get('Content-Disposition') ?? '', 'attachment') && 1 == preg_match('/MSIE (.*?);/i', $request->server->get('HTTP_USER_AGENT') ?? '', $match) && true === $request->isSecure()) {
+        if (false !== stripos($this->headers->get('Content-Disposition') ?? '', 'attachment') && 1 == preg_match('/MSIE (.*?);/i', $request->server->get('HTTP_USER_AGENT') ?? '', $match) && $request->isSecure()) {
             if ((int) preg_replace('/(MSIE )(.*?);/', '$2', $match[0]) < 9) {
                 $this->headers->remove('Cache-Control');
             }

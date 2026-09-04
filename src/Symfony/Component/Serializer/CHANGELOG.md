@@ -4,9 +4,20 @@ CHANGELOG
 8.2
 ---
 
+ * Add the `force_collection` context option to `XmlEncoder` to always decode the given tags as a collection
+ * Add `AbstractNormalizer::SKIP_INVALID_ATTRIBUTES` to denormalize the attributes whose value cannot be used as if they were absent from the input
+ * Add `AbstractNormalizer::IGNORED_GROUPS` to exclude the attributes belonging to the given groups
  * Allow passing an associative array to `CsvEncoder::HEADERS_KEY` to map and reorder columns when encoding
  * Use the discriminator property of an object to pick its type when several types map to the same class; the first declared type is used when the property is unset or unknown
  * Trigger a deprecation when denormalizing an array that is not a list into a `list`-typed property
+ * Add the `XmlEncoder::BOOLEAN_REPR` context option to choose the strings representing booleans when encoding, e.g. `['true', 'false']`
+ * Add support for denormalizing arrays of union types, e.g. `array<Foo|Bar>`
+ * Add support for configuring serialized names and paths per group, with repeatable `#[SerializedName]` and `#[SerializedPath]` attributes, a `serialized` key in YAML and a `<serialized>` element in XML
+ * Enable using `#[WithAccessors]` from the PropertyInfo component with the serializer
+ * Add `AbstractNormalizer::ENABLE_DEFAULT_GROUPS` context option to opt into implicit `Default` and class-short-name groups for attributes without explicit `#[Groups]`, mirroring Validator group conventions
+ * Add `DiscriminatorMapType` to extend discriminator maps from mapped child classes
+ * Make the `mapping` argument of `DiscriminatorMap` optional and validate it together with `defaultType` at metadata loading time
+ * Add `LoaderChainAwareInterface` so that loaders in a `LoaderChain` can defer work until all loaders have run; `LoaderChain` then validates discriminator maps declared in any format
 
 8.1
 ---

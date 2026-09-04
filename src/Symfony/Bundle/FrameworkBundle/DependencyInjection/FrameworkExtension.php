@@ -34,6 +34,7 @@ use Symfony\Component\Asset\PackageInterface;
 use Symfony\Component\AssetMapper\AssetMapper;
 use Symfony\Component\AssetMapper\Compiler\AssetCompilerInterface;
 use Symfony\Component\BrowserKit\AbstractBrowser;
+use Symfony\Component\Cache\Adapter\AbstractAdapter;
 use Symfony\Component\Cache\Adapter\AdapterInterface;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\Cache\Adapter\ChainAdapter;
@@ -69,6 +70,7 @@ use Symfony\Component\ExpressionLanguage\ExpressionLanguage;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Finder\Finder;
 use Symfony\Component\Finder\Glob;
+use Symfony\Component\Form\Attribute\AsFormType;
 use Symfony\Component\Form\Extension\Validator\ValidatorExtension;
 use Symfony\Component\Form\Extension\Validator\ViolationMapper\ViolationMapperInterface;
 use Symfony\Component\Form\Form;
@@ -82,6 +84,7 @@ use Symfony\Component\HtmlSanitizer\HtmlSanitizerInterface;
 use Symfony\Component\HttpClient\CachingHttpClient;
 use Symfony\Component\HttpClient\Exception\ChunkCacheItemNotFoundException;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\NoPrivateNetworkHttpClient;
 use Symfony\Component\HttpClient\Retry\GenericRetryStrategy;
 use Symfony\Component\HttpClient\RetryableHttpClient;
 use Symfony\Component\HttpClient\ScopingHttpClient;
@@ -96,6 +99,7 @@ use Symfony\Component\HttpKernel\Controller\ArgumentResolver\RequestHeaderValueR
 use Symfony\Component\HttpKernel\Controller\ValueResolverInterface;
 use Symfony\Component\HttpKernel\DataCollector\DataCollectorInterface;
 use Symfony\Component\HttpKernel\EventListener\ControllerAttributesListener;
+use Symfony\Component\HttpKernel\EventListener\ProfilerListener;
 use Symfony\Component\HttpKernel\Log\DebugLoggerConfigurator;
 use Symfony\Component\JsonPath\Attribute\AsJsonPathFunction;
 use Symfony\Component\JsonPath\JsonPathCrawler;
@@ -112,20 +116,29 @@ use Symfony\Component\Lock\Serializer\LockKeyNormalizer;
 use Symfony\Component\Lock\Store\StoreFactory;
 use Symfony\Component\Mailer\Bridge as MailerBridge;
 use Symfony\Component\Mailer\Command\MailerTestCommand;
+use Symfony\Component\Mailer\EventListener\InMemoryPgpPublicKeyRepository;
+use Symfony\Component\Mailer\EventListener\InMemorySmimeCertificateRepository;
+use Symfony\Component\Mailer\EventListener\PgpMimeEncryptedMessageListener;
+use Symfony\Component\Mailer\EventListener\PgpMimeSignedMessageListener;
+use Symfony\Component\Mailer\Header\TrackingHeader;
 use Symfony\Component\Mailer\Mailer;
 use Symfony\Component\Mercure\HubRegistry;
 use Symfony\Component\Messenger\Attribute\AsMessage;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\Bridge as MessengerBridge;
+use Symfony\Component\Messenger\Command\ShowMessagesCommand;
 use Symfony\Component\Messenger\EventListener\ReleaseDeduplicationLockOnFailureListener;
 use Symfony\Component\Messenger\Handler\BatchHandlerInterface;
 use Symfony\Component\Messenger\MessageBus;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Middleware\DecodeFailedMessageMiddleware;
 use Symfony\Component\Messenger\Middleware\RouterContextMiddleware;
+use Symfony\Component\Messenger\Transport\Serialization\ClaimCheckSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface as MessengerTransportFactoryInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
+use Symfony\Component\Mime\Crypto\PgpEncrypter;
+use Symfony\Component\Mime\Crypto\PgpSigner;
 use Symfony\Component\Mime\Header\Headers;
 use Symfony\Component\Mime\MimeTypeGuesserInterface;
 use Symfony\Component\Mime\MimeTypes;
@@ -144,6 +157,7 @@ use Symfony\Component\ObjectMapper\Metadata\ReverseClassObjectMapperMetadataFact
 use Symfony\Component\ObjectMapper\ObjectMapperInterface;
 use Symfony\Component\ObjectMapper\TransformCallableInterface;
 use Symfony\Component\Process\Messenger\RunProcessMessageHandler;
+use Symfony\Component\Process\Process;
 use Symfony\Component\PropertyAccess\PropertyAccessor;
 use Symfony\Component\PropertyInfo\Extractor\ConstructorArgumentTypeExtractorInterface;
 use Symfony\Component\PropertyInfo\Extractor\PhpDocExtractor;
@@ -156,6 +170,7 @@ use Symfony\Component\PropertyInfo\PropertyListExtractorInterface;
 use Symfony\Component\PropertyInfo\PropertyTypeExtractorInterface;
 use Symfony\Component\RateLimiter\CompoundRateLimiterFactory;
 use Symfony\Component\RateLimiter\LimiterInterface;
+use Symfony\Component\RateLimiter\RateLimiterBuilder;
 use Symfony\Component\RateLimiter\RateLimiterFactoryInterface;
 use Symfony\Component\RateLimiter\Storage\CacheStorage;
 use Symfony\Component\RemoteEvent\Attribute\AsRemoteEventConsumer;
@@ -190,6 +205,7 @@ use Symfony\Component\String\Slugger\SluggerInterface;
 use Symfony\Component\Translation\Bridge as TranslationBridge;
 use Symfony\Component\Translation\Command\TranslationLintCommand as BaseTranslationLintCommand;
 use Symfony\Component\Translation\Command\XliffLintCommand as BaseXliffLintCommand;
+use Symfony\Component\Translation\Command\XliffUpdateSourcesCommand;
 use Symfony\Component\Translation\LocaleSwitcher;
 use Symfony\Component\Translation\PseudoLocalizationTranslator;
 use Symfony\Component\Translation\TranslatableMessage;
@@ -210,11 +226,13 @@ use Symfony\Component\Validator\Mapping\Loader\PropertyInfoLoader;
 use Symfony\Component\Validator\ObjectInitializerInterface;
 use Symfony\Component\Validator\Validation;
 use Symfony\Component\Webhook\Controller\WebhookController;
+use Symfony\Component\Webhook\Server\SignatureFormat;
 use Symfony\Component\WebLink\HttpHeaderSerializer;
 use Symfony\Component\Workflow;
 use Symfony\Component\Workflow\Arc;
 use Symfony\Component\Workflow\WorkflowInterface;
 use Symfony\Component\Yaml\Command\LintCommand as BaseYamlLintCommand;
+use Symfony\Component\Yaml\Schema\SchemaResolverInterface;
 use Symfony\Component\Yaml\Yaml;
 use Symfony\Contracts\Cache\CacheInterface;
 use Symfony\Contracts\Cache\CallbackInterface;
@@ -285,10 +303,18 @@ class FrameworkExtension extends Extension
             }
             if (!class_exists(BaseYamlLintCommand::class)) {
                 $container->removeDefinition('console.command.yaml_lint');
+            } elseif (!ContainerBuilder::willBeAvailable('symfony/yaml', SchemaResolverInterface::class, ['symfony/framework-bundle'])) {
+                $container->getDefinition('console.command.yaml_lint')->setArguments([]);
+            } elseif ($container->hasParameter('.kernel.config_dir')) {
+                $container->getDefinition('console.command.yaml_lint')->getArgument(0)->replaceArgument(0, $container->getParameter('.kernel.config_dir'));
             }
 
             if (!class_exists(BaseTranslationLintCommand::class)) {
                 $container->removeDefinition('console.command.translation_lint');
+            }
+
+            if (!class_exists(XliffUpdateSourcesCommand::class)) {
+                $container->removeDefinition('console.command.translation_xliff_update_sources');
             }
 
             if (!class_exists(RunCommandMessageHandler::class)) {
@@ -406,6 +432,7 @@ class FrameworkExtension extends Extension
         }
 
         if ($this->readConfigEnabled('mailer', $container, $config['mailer'])) {
+            $this->readConfigEnabled('rate_limiter', $container, $config['rate_limiter']);
             $this->registerMailerConfiguration($config['mailer'], $container, $loader, $this->readConfigEnabled('webhook', $container, $config['webhook']));
 
             if (!$this->hasConsole() || !class_exists(MailerTestCommand::class)) {
@@ -575,6 +602,7 @@ class FrameworkExtension extends Extension
         } else {
             $container->removeDefinition('console.command.messenger_consume_messages');
             $container->removeDefinition('console.command.messenger_stats');
+            $container->removeDefinition('console.command.messenger_show');
             $container->removeDefinition('console.command.messenger_debug');
             $container->removeDefinition('console.command.messenger_stop_workers');
             $container->removeDefinition('console.command.messenger_setup_transports');
@@ -591,6 +619,31 @@ class FrameworkExtension extends Extension
 
         // profiler depends on form, validation, translation, messenger, mailer, http-client, notifier, serializer being registered. console is optional
         $this->registerProfilerConfiguration($config['profiler'], $container, $loader);
+
+        // These listeners keep every message, attachments included, for the
+        // lifetime of the process. Only the profiler and the test assertions
+        // consume them, so drop them when neither is around, and let them skip
+        // messages nobody will collect otherwise. Test mode keeps collecting
+        // unconditionally because the assertions read the listeners directly.
+        if (!($config['test'] ?? false)) {
+            $loggerListeners = [
+                'mailer' => 'mailer.message_logger_listener',
+                'notifier' => 'notifier.notification_logger_listener',
+            ];
+
+            foreach ($loggerListeners as $extension => $id) {
+                if (!$this->isInitializedConfigEnabled($extension)) {
+                    continue;
+                }
+
+                if ($this->isInitializedConfigEnabled('profiler')) {
+                    $container->getDefinition($id)
+                        ->setArgument(0, new Reference('profiler.is_disabled_state_checker', ContainerInterface::NULL_ON_INVALID_REFERENCE));
+                } else {
+                    $container->removeDefinition($id);
+                }
+            }
+        }
 
         if ($this->readConfigEnabled('webhook', $container, $config['webhook'])) {
             $this->registerWebhookConfiguration($config['webhook'], $container, $loader, $this->readConfigEnabled('serializer', $container, $config['serializer']));
@@ -770,20 +823,20 @@ class FrameworkExtension extends Extension
         $container->registerForAutoconfiguration(Constraint::class)
             ->addTag('container.excluded', ['source' => 'because it\'s a validation constraint']);
         $container->registerAttributeForAutoconfiguration(AsMessage::class, static function (ChildDefinition $definition, AsMessage $attribute): void {
-            $definition->addTag('container.excluded', ['source' => 'because it\'s a messenger message']);
-            $definition->addTag('messenger.message', [
-                'serializedTypeName' => $attribute->serializedTypeName,
+            $definition->addResourceTag('messenger.message', [
+                'transport' => $attribute->transport,
+                'serializedTypeName' => $attribute->serializedTypeName ?? null,
                 'serializedTypeNameAliases' => $attribute->serializedTypeNameAliases ?? [],
             ]);
         });
         $container->registerAttributeForAutoconfiguration(Entity::class, static function (ChildDefinition $definition) {
-            $definition->addTag('container.excluded', ['source' => 'because it\'s a Doctrine entity']);
+            $definition->addTag('container.excluded', ['source' => 'because it\'s a Doctrine entity'])->addTag('doctrine.orm.entity');
         });
         $container->registerAttributeForAutoconfiguration(Embeddable::class, static function (ChildDefinition $definition) {
             $definition->addTag('container.excluded', ['source' => 'because it\'s a Doctrine embeddable']);
         });
         $container->registerAttributeForAutoconfiguration(MappedSuperclass::class, static function (ChildDefinition $definition) {
-            $definition->addTag('container.excluded', ['source' => 'because it\'s a Doctrine mapped superclass']);
+            $definition->addTag('container.excluded', ['source' => 'because it\'s a Doctrine mapped superclass'])->addTag('doctrine.orm.entity');
         });
 
         $container->registerAttributeForAutoconfiguration(JsonStreamable::class, static function (ChildDefinition $definition, JsonStreamable $attribute) {
@@ -838,6 +891,10 @@ class FrameworkExtension extends Extension
         } else {
             $container->setParameter('form.type_extension.csrf.enabled', false);
         }
+
+        $container->registerAttributeForAutoconfiguration(AsFormType::class, static function (ChildDefinition $definition) {
+            $definition->addResourceTag('form.data_class');
+        });
 
         if (!ContainerBuilder::willBeAvailable('symfony/translation', Translator::class, ['symfony/framework-bundle', 'symfony/form'])) {
             $container->removeDefinition('form.type_extension.upload.validator');
@@ -907,7 +964,11 @@ class FrameworkExtension extends Extension
             return;
         }
 
+        $container->getDefinition('fragment.renderer.hinclude')
+            ->replaceArgument(2, $config['hinclude_default_template']);
+
         $container->setParameter('fragment.renderer.hinclude.global_template', $config['hinclude_default_template']);
+        $container->deprecateParameter('fragment.renderer.hinclude.global_template', 'symfony/framework-bundle', '8.2', 'The "%s" parameter is deprecated. It will be removed in version 9.0.');
 
         $loader->load('fragment_listener.php');
         $container->setParameter('fragment.path', $config['path']);
@@ -979,8 +1040,14 @@ class FrameworkExtension extends Extension
             ->addArgument($config['collect'])
             ->addTag('kernel.reset', ['method' => 'reset']);
 
+        if (($config['excluded_paths'] || $config['excluded_http_codes']) && 8 > (new \ReflectionMethod(ProfilerListener::class, '__construct'))->getNumberOfParameters()) {
+            throw new LogicException('Excluding requests from the profiler cannot be enabled as this version of the HttpKernel component does not support it. Try upgrading "symfony/http-kernel".');
+        }
+
         $container->getDefinition('profiler_listener')
-            ->addArgument($config['collect_parameter']);
+            ->addArgument($config['collect_parameter'])
+            ->addArgument($config['excluded_paths'])
+            ->addArgument($config['excluded_http_codes']);
 
         if (!$container->getParameter('kernel.debug') || !$this->hasConsole() || !$container->has('debug.stopwatch')) {
             $container->removeDefinition('console_profiler_listener');
@@ -1415,6 +1482,9 @@ class FrameworkExtension extends Extension
 
         if (!$assetEnabled) {
             $container->removeDefinition('asset_mapper.asset_package');
+        } else {
+            $container->getDefinition('asset_mapper.asset_package')
+                ->replaceArgument(3, $config['server'] ? $config['public_prefix'] : null);
         }
 
         if (!$httpClientEnabled) {
@@ -1475,6 +1545,12 @@ class FrameworkExtension extends Extension
         ;
 
         $container
+            ->getDefinition('asset_mapper.importmap.generator')
+            ->replaceArgument(3, $config['importmap_integrity_algorithms'])
+            ->setArgument(4, $config['importmap_entries'])
+        ;
+
+        $container
             ->getDefinition('asset_mapper.importmap.config_reader')
             ->replaceArgument(0, $config['importmap_path'])
         ;
@@ -1483,6 +1559,10 @@ class FrameworkExtension extends Extension
             ->getDefinition('asset_mapper.importmap.renderer')
             ->replaceArgument(3, $config['importmap_polyfill'])
             ->replaceArgument(4, $config['importmap_script_attributes'])
+        ;
+        $container
+            ->getDefinition('asset_mapper.importmap.update_checker')
+            ->replaceArgument(3, $config['minimum_release_age'])
         ;
 
         $compressors = [];
@@ -1553,6 +1633,7 @@ class FrameworkExtension extends Extension
             $container->removeDefinition('console.command.translation_pull');
             $container->removeDefinition('console.command.translation_push');
             $container->removeDefinition('console.command.translation_lint');
+            $container->removeDefinition('console.command.translation_xliff_update_sources');
 
             return;
         }
@@ -1630,6 +1711,10 @@ class FrameworkExtension extends Extension
             $container->getDefinition('console.command.translation_extract')->replaceArgument(6, $transPaths);
         }
 
+        if ($container->hasDefinition('console.command.translation_xliff_update_sources')) {
+            $container->getDefinition('console.command.translation_xliff_update_sources')->replaceArgument(3, array_merge($config['paths'], [$config['default_path']]));
+        }
+
         if (null === $defaultDir) {
             // allow null
         } elseif ($container->fileExists($defaultDir)) {
@@ -1699,6 +1784,7 @@ class FrameworkExtension extends Extension
             TranslationBridge\Loco\LocoProviderFactory::class => ['symfony/loco-translation-provider', ['translation.provider_factory.loco', 'translation.provider_factory.loco.http_client']],
             TranslationBridge\Lokalise\LokaliseProviderFactory::class => ['symfony/lokalise-translation-provider', ['translation.provider_factory.lokalise']],
             TranslationBridge\Phrase\PhraseProviderFactory::class => ['symfony/phrase-translation-provider', ['translation.provider_factory.phrase']],
+            TranslationBridge\PoEditor\PoEditorProviderFactory::class => ['symfony/po-editor-translation-provider', ['translation.provider_factory.poeditor']],
         ];
 
         $parentPackages = ['symfony/framework-bundle', 'symfony/translation', 'symfony/http-client'];
@@ -2070,6 +2156,10 @@ class FrameworkExtension extends Extension
             });
         }
 
+        $container->registerAttributeForAutoconfiguration(SerializerMapping\DiscriminatorMapType::class, static function (ChildDefinition $definition, SerializerMapping\DiscriminatorMapType $attribute) {
+            $definition->addTag('serializer.attribute_metadata', ['for' => $attribute->class, 'type' => $attribute->type, 'discriminator_map_type' => true]);
+        });
+
         $serializerLoaders[] = new Reference('serializer.mapping.attribute_loader');
 
         $container->getDefinition('serializer.mapping.attribute_loader')
@@ -2262,7 +2352,7 @@ class FrameworkExtension extends Extension
         }
 
         foreach ($config['resources'] as $resourceName => $resourceStores) {
-            if (0 === \count($resourceStores)) {
+            if (!$resourceStores) {
                 continue;
             }
 
@@ -2277,13 +2367,17 @@ class FrameworkExtension extends Extension
                 }
                 $usedEnvs = [];
                 $storeDsn = $container->resolveEnvPlaceholders($resourceStore, null, $usedEnvs);
-                if (!$usedEnvs && !str_contains($resourceStore, ':') && !\in_array($resourceStore, ['flock', 'semaphore', 'in-memory', 'null'], true)) {
+                $advisory = false;
+                if (\is_array($resourceStore)) {
+                    $advisory = $resourceStore['advisory'];
+                    $resourceStore = new Reference($resourceStore['service_id']);
+                } elseif (!$usedEnvs && !str_contains($resourceStore, ':') && !\in_array($resourceStore, ['flock', 'semaphore', 'in-memory', 'null'], true)) {
                     $resourceStore = new Reference($resourceStore);
                 }
                 $storeDefinition = new Definition(PersistingStoreInterface::class);
                 $storeDefinition
                     ->setFactory([StoreFactory::class, 'createStore'])
-                    ->setArguments([$resourceStore])
+                    ->setArguments($advisory ? [$resourceStore, true] : [$resourceStore])
                     ->addTag('lock.store');
 
                 $container->setDefinition($storeDefinitionId = '.lock.'.$resourceName.'.store.'.$container->hash($storeDsn), $storeDefinition);
@@ -2387,6 +2481,10 @@ class FrameworkExtension extends Extension
             $container->removeDefinition('console.command.messenger_stats');
         }
 
+        if (!class_exists(ShowMessagesCommand::class)) {
+            $container->removeDefinition('console.command.messenger_show');
+        }
+
         $loader->load('messenger.php');
 
         if (!interface_exists(DenormalizerInterface::class)) {
@@ -2395,6 +2493,10 @@ class FrameworkExtension extends Extension
 
         if (ContainerBuilder::willBeAvailable('symfony/amqp-messenger', MessengerBridge\Amqp\Transport\AmqpTransportFactory::class, ['symfony/framework-bundle', 'symfony/messenger'])) {
             $container->getDefinition('messenger.transport.amqp.factory')->addTag('messenger.transport_factory');
+        }
+
+        if (ContainerBuilder::willBeAvailable('symfony/amp-sql-messenger', MessengerBridge\AmpSql\Transport\AmpSqlTransportFactory::class, ['symfony/framework-bundle', 'symfony/messenger'])) {
+            $container->getDefinition('messenger.transport.amp_sql.factory')->addTag('messenger.transport_factory');
         }
 
         if (ContainerBuilder::willBeAvailable('symfony/redis-messenger', MessengerBridge\Redis\Transport\RedisTransportFactory::class, ['symfony/framework-bundle', 'symfony/messenger'])) {
@@ -2407,6 +2509,10 @@ class FrameworkExtension extends Extension
 
         if (ContainerBuilder::willBeAvailable('symfony/beanstalkd-messenger', MessengerBridge\Beanstalkd\Transport\BeanstalkdTransportFactory::class, ['symfony/framework-bundle', 'symfony/messenger'])) {
             $container->getDefinition('messenger.transport.beanstalkd.factory')->addTag('messenger.transport_factory');
+        }
+
+        if (ContainerBuilder::willBeAvailable('symfony/mongodb-messenger', MessengerBridge\MongoDb\Transport\MongoDbTransportFactory::class, ['symfony/framework-bundle', 'symfony/messenger'])) {
+            $container->getDefinition('messenger.transport.mongodb.factory')->addTag('messenger.transport_factory');
         }
 
         if ($config['stop_worker_on_signals'] && $this->hasConsole()) {
@@ -2424,7 +2530,7 @@ class FrameworkExtension extends Extension
             'before' => [
                 ['id' => 'add_default_stamps_middleware'],
                 ['id' => 'add_bus_name_stamp_middleware'],
-                ['id' => 'reject_redelivered_message_middleware'],
+                ...($config['reject_redelivered_messages'] ? [['id' => 'reject_redelivered_message_middleware']] : []),
                 ['id' => 'dispatch_after_current_bus'],
                 ...(class_exists(DecodeFailedMessageMiddleware::class) ? [['id' => 'decode_failed_message_middleware']] : []),
                 ['id' => 'failed_message_processing_middleware'],
@@ -2491,6 +2597,7 @@ class FrameworkExtension extends Extension
             $container->removeDefinition('messenger.transport.redis.factory');
             $container->removeDefinition('messenger.transport.sqs.factory');
             $container->removeDefinition('messenger.transport.beanstalkd.factory');
+            $container->removeDefinition('messenger.transport.mongodb.factory');
             $container->removeAlias(SerializerInterface::class);
         } else {
             $container->getDefinition('messenger.transport.symfony_serializer')
@@ -2526,17 +2633,32 @@ class FrameworkExtension extends Extension
         $serializerIds = [];
         foreach ($config['transports'] as $name => $transport) {
             $serializerId = $transport['serializer'] ?? 'messenger.default_serializer';
+            $transportSerializerId = $serializerId;
             $tags = [
                 'alias' => $name,
                 'is_failure_transport' => \in_array($name, $failureTransports, true),
+                'priority' => $transport['priority'],
             ];
-            $serializerReferencesByTransport[$name] = new Reference($serializerId);
+            if ($transport['claim_check'] ?? null) {
+                if (!class_exists(ClaimCheckSerializer::class)) {
+                    throw new LogicException('Claim checks require symfony/messenger 8.2 or higher.');
+                }
+
+                $container->setDefinition($transportSerializerId = '.messenger.transport.'.$name.'.claim_check_serializer', (new Definition(ClaimCheckSerializer::class))
+                    ->setArguments([
+                        new Reference($serializerId),
+                        new Reference($transport['claim_check']['cache_pool']),
+                        $transport['claim_check']['max_size'],
+                    ]));
+            }
+
+            $serializerReferencesByTransport[$name] = new Reference($transportSerializerId);
             if (str_starts_with($transport['dsn'], 'sync://')) {
                 $tags['is_consumable'] = false;
             }
             $transportDefinition = (new Definition(TransportInterface::class))
                 ->setFactory([new Reference('messenger.transport_factory'), 'createTransport'])
-                ->setArguments([$transport['dsn'], $transport['options'] + ['transport_name' => $name], new Reference($serializerId)])
+                ->setArguments([$transport['dsn'], $transport['options'] + ['transport_name' => $name], new Reference($transportSerializerId)])
                 ->addTag('messenger.receiver', $tags)
             ;
             $container->setDefinition($transportId = 'messenger.transport.'.$name, $transportDefinition);
@@ -2649,7 +2771,7 @@ class FrameworkExtension extends Extension
                 ->replaceArgument(0, $transportRateLimiterReferences);
         }
 
-        if (\count($failureTransports) > 0) {
+        if ($failureTransports) {
             if ($this->hasConsole()) {
                 $container->getDefinition('console.command.messenger_failed_messages_retry')
                     ->replaceArgument(0, $config['failure_transport']);
@@ -2689,32 +2811,48 @@ class FrameworkExtension extends Extension
             // Inline any env vars referenced in the parameter
             $container->setParameter('cache.prefix.seed', $container->resolveEnvPlaceholders($container->getParameter('cache.prefix.seed'), true));
         }
-        foreach (['psr6', 'redis', 'valkey', 'memcached', 'doctrine_dbal', 'pdo'] as $name) {
+        foreach (['psr6', 'redis', 'valkey', 'memcached', 'doctrine_dbal', 'pdo', 'mongodb'] as $name) {
             if (isset($config[$name = 'default_'.$name.'_provider'])) {
                 $container->setAlias('cache.'.$name, new Alias(CachePoolPass::getServiceProvider($container, $config[$name]), false));
             }
         }
         foreach (['app', 'system'] as $name) {
             $config['pools']['cache.'.$name] = [
-                'adapters' => [$config[$name]],
+                // an explicit DSN decides which adapter "cache.app" uses, so none is named here
+                'adapters' => 'app' === $name && isset($config['default_provider']) ? [] : [$config[$name]],
+                'provider' => 'app' === $name ? $config['default_provider'] ?? null : null,
                 'public' => true,
                 'tags' => false,
             ];
         }
-        $redisTagAwareAdapters = [['cache.adapter.redis_tag_aware'], ['cache.adapter.valkey_tag_aware']];
+        $nativeTagAwareAdapters = [['cache.adapter.redis_tag_aware'], ['cache.adapter.valkey_tag_aware'], ['cache.adapter.pdo_tag_aware'], ['cache.adapter.mongodb_tag_aware']];
         foreach ($config['pools'] as $name => $pool) {
+            if (null === ($pool['provider'] ??= null)) {
+                unset($pool['provider']);
+            }
+            // no adapter named and a provider given: the DSN decides which adapter to build
+            $isDsnPool = !$pool['adapters'] && isset($pool['provider']);
             $pool['adapters'] = $pool['adapters'] ?: ['cache.app'];
 
-            $isRedisTagAware = \in_array($pool['adapters'], $redisTagAwareAdapters, true);
+            $isNativeTagAware = \in_array($pool['adapters'], $nativeTagAwareAdapters, true);
             foreach ($pool['adapters'] as $provider => $adapter) {
-                if (\in_array($config['pools'][$adapter]['adapters'] ?? null, $redisTagAwareAdapters, true)) {
-                    $isRedisTagAware = true;
+                if (\in_array($config['pools'][$adapter]['adapters'] ?? null, $nativeTagAwareAdapters, true)) {
+                    $isNativeTagAware = true;
                 } elseif ($config['pools'][$adapter]['tags'] ?? false) {
                     $pool['adapters'][$provider] = $adapter = '.'.$adapter.'.inner';
                 }
             }
 
-            if (1 === \count($pool['adapters'])) {
+            if ($isDsnPool) {
+                $definition = (new Definition(AdapterInterface::class))
+                    ->setFactory([AbstractAdapter::class, 'createAdapter'])
+                    ->setArguments([
+                        new Reference(CachePoolPass::getServiceProvider($container, $pool['provider'])),
+                        '',
+                        0,
+                        new Reference('cache.default_marshaller'),
+                    ]);
+            } elseif (1 === \count($pool['adapters'])) {
                 if (!isset($pool['provider']) && !\is_int($provider)) {
                     $pool['provider'] = $provider;
                 }
@@ -2724,10 +2862,10 @@ class FrameworkExtension extends Extension
                 $pool['reset'] = 'reset';
             }
 
-            if ($isRedisTagAware && 'cache.app' === $name) {
+            if ($isNativeTagAware && 'cache.app' === $name) {
                 $container->setAlias('cache.app.taggable', $name);
                 $definition->addTag('cache.taggable', ['pool' => $name]);
-            } elseif ($isRedisTagAware) {
+            } elseif ($isNativeTagAware) {
                 $tagAwareId = $name;
                 $container->setAlias('.'.$name.'.inner', $name);
                 $definition->addTag('cache.taggable', ['pool' => $name]);
@@ -2869,6 +3007,12 @@ class FrameworkExtension extends Extension
             $retryOptions = $scopeConfig['retry_failed'] ?? ['enabled' => false];
             unset($scopeConfig['retry_failed']);
 
+            // the base URI is the first one tried and the configured list holds the fallbacks; the
+            // scoping and the retryable clients must agree on the whole set
+            if ($retryOptions['base_uris'] ?? []) {
+                $retryOptions['base_uris'] = array_merge([$scopeConfig['base_uri']], $retryOptions['base_uris']);
+            }
+
             if (false === $mockResponseFactory = $scopeConfig['mock_response_factory'] ?? $defaultMockResponseFactory) {
                 $transportId = $realTransportId;
             } elseif ($mockResponseFactory === $defaultMockResponseFactory) {
@@ -2890,6 +3034,9 @@ class FrameworkExtension extends Extension
             // 4. CachingHttpClient (20) -> caches responses
             // 5. RetryableHttpClient (25) -> retries requests
             // 6. TraceableHttpClient (100) -> traces requests
+            //
+            // when "retry_failed.base_uris" is set, RetryableHttpClient moves to 12 so that it
+            // wraps ScopingHttpClient instead of being wrapped by it, see below
             $container->register($name, HttpClientInterface::class)
                 ->setFactory('current')
                 ->setArguments([[new Reference($transportId)]])
@@ -2904,9 +3051,17 @@ class FrameworkExtension extends Extension
                 $baseUri = $scopeConfig['base_uri'];
                 unset($scopeConfig['base_uri']);
 
-                $scopingDefinition
-                    ->setFactory([ScopingHttpClient::class, 'forBaseUri'])
-                    ->setArguments([new Reference('.inner'), $baseUri, $scopeConfig]);
+                if ($retryOptions['base_uris'] ?? []) {
+                    // the scope must match every URI the retryable client may rotate to, otherwise
+                    // the scoped options stop applying as soon as it leaves the first one
+                    $scopingDefinition
+                        ->setFactory([ScopingHttpClient::class, 'forBaseUris'])
+                        ->setArguments([new Reference('.inner'), $retryOptions['base_uris'], $scopeConfig]);
+                } else {
+                    $scopingDefinition
+                        ->setFactory([ScopingHttpClient::class, 'forBaseUri'])
+                        ->setArguments([new Reference('.inner'), $baseUri, $scopeConfig]);
+                }
             } else {
                 $scopingDefinition
                     ->setArguments([new Reference('.inner'), [$scope => $scopeConfig], $scope]);
@@ -2947,6 +3102,25 @@ class FrameworkExtension extends Extension
                     ->replaceArgument(0, new Reference($name));
 
                 $container->registerAliasForArgument('httplug.'.$name, HttpAsyncClient::class, $name);
+            }
+        }
+
+        if ($this->readConfigEnabled('http_client.recorder', $container, $config['recorder'])) {
+            $loader->load('http_client_recorder.php');
+
+            $container->getDefinition('http_client.recorder')
+                ->replaceArgument(5, $container->getDefinition('http_client.transport')->getArgument(0));
+
+            $recorder = $config['recorder'];
+            $container->getDefinition('http_client.recorder.redactor')
+                ->setArguments([$recorder['redact']['headers'], $recorder['redact']['query'], $recorder['redact']['body']]);
+
+            if ($recorder['redactor']) {
+                $container->setAlias('http_client.recorder.redactor', $recorder['redactor']);
+            }
+
+            if ($recorder['matcher']) {
+                $container->setAlias('http_client.recorder.matcher', $recorder['matcher']);
             }
         }
     }
@@ -3016,11 +3190,18 @@ class FrameworkExtension extends Extension
             $retryStrategy = new Reference($name.'.retry_strategy');
         }
 
-        $container
+        // when retrying against several URIs, the retryable client must sit outside the scoping one:
+        // scoping resolves the URL and consumes the "base_uri" option, so a base URI injected below
+        // it would never be applied
+        $definition = $container
             ->register($name.'.retryable', RetryableHttpClient::class)
-            ->setDecoratedService($name, null, 25)
+            ->setDecoratedService($name, null, $options['base_uris'] ? 12 : 25)
             ->setArguments([new Reference('.inner'), $retryStrategy, $options['max_retries'], new Reference('logger')])
             ->addTag('monolog.logger', ['channel' => 'http_client']);
+
+        if ($options['base_uris']) {
+            $definition->addMethodCall('withOptions', [['base_uri' => $options['base_uris']]], true);
+        }
     }
 
     private function registerMailerConfiguration(array $config, ContainerBuilder $container, PhpFileLoader $loader, bool $webhookEnabled): void
@@ -3031,11 +3212,37 @@ class FrameworkExtension extends Extension
 
         $loader->load('mailer.php');
         $loader->load('mailer_transports.php');
-        if (!\count($config['transports']) && null === $config['dsn']) {
+        if (!$config['transports'] && null === $config['dsn']) {
             $config['dsn'] = 'smtp://null';
         }
         $transports = $config['dsn'] ? ['main' => $config['dsn']] : $config['transports'];
-        $container->getDefinition('mailer.transports')->setArgument(0, $transports);
+        $transports = array_map(static function (array|string $transport): array {
+            if (\is_array($transport)) {
+                return $transport;
+            }
+
+            return ['dsn' => $transport];
+        }, $transports);
+
+        $container->getDefinition('mailer.transports')->setArgument(0, array_combine(array_keys($transports), array_column($transports, 'dsn')));
+
+        $transportRateLimiterReferences = [];
+
+        foreach ($transports as $name => $transport) {
+            if ($transport['rate_limiter'] ?? null) {
+                $transportRateLimiterReferences[$name] = new Reference('limiter.'.$transport['rate_limiter']);
+            }
+        }
+
+        if ($transportRateLimiterReferences && $this->isInitializedConfigEnabled('rate_limiter')) {
+            if (!interface_exists(LimiterInterface::class)) {
+                throw new LogicException('Rate limiter cannot be used within Mailer as the RateLimiter component is not installed. Try running "composer require symfony/rate-limiter".');
+            }
+
+            $container->getDefinition('mailer.rate_limiter_locator')->replaceArgument(0, $transportRateLimiterReferences);
+        } else {
+            $container->removeDefinition('mailer.rate_limiter_locator');
+        }
 
         $mailer = $container->getDefinition('mailer.mailer');
         if (false === $messageBus = $config['message_bus']) {
@@ -3048,23 +3255,27 @@ class FrameworkExtension extends Extension
             MailerBridge\AhaSend\Transport\AhaSendTransportFactory::class => ['symfony/aha-send-mailer', 'mailer.transport_factory.ahasend'],
             MailerBridge\Azure\Transport\AzureTransportFactory::class => ['symfony/azure-mailer', 'mailer.transport_factory.azure'],
             MailerBridge\Brevo\Transport\BrevoTransportFactory::class => ['symfony/brevo-mailer', 'mailer.transport_factory.brevo'],
+            MailerBridge\Cloudflare\Transport\CloudflareTransportFactory::class => ['symfony/cloudflare-mailer', 'mailer.transport_factory.cloudflare'],
             MailerBridge\Google\Transport\GmailTransportFactory::class => ['symfony/google-mailer', 'mailer.transport_factory.gmail'],
             MailerBridge\Infobip\Transport\InfobipTransportFactory::class => ['symfony/infobip-mailer', 'mailer.transport_factory.infobip'],
             MailerBridge\MailerSend\Transport\MailerSendTransportFactory::class => ['symfony/mailer-send-mailer', 'mailer.transport_factory.mailersend'],
             MailerBridge\Mailgun\Transport\MailgunTransportFactory::class => ['symfony/mailgun-mailer', 'mailer.transport_factory.mailgun'],
             MailerBridge\Mailjet\Transport\MailjetTransportFactory::class => ['symfony/mailjet-mailer', 'mailer.transport_factory.mailjet'],
+            MailerBridge\MailKite\Transport\MailKiteTransportFactory::class => ['symfony/mail-kite-mailer', 'mailer.transport_factory.mailkite'],
             MailerBridge\Mailomat\Transport\MailomatTransportFactory::class => ['symfony/mailomat-mailer', 'mailer.transport_factory.mailomat'],
             MailerBridge\MailPace\Transport\MailPaceTransportFactory::class => ['symfony/mail-pace-mailer', 'mailer.transport_factory.mailpace'],
             MailerBridge\Mailchimp\Transport\MandrillTransportFactory::class => ['symfony/mailchimp-mailer', 'mailer.transport_factory.mailchimp'],
             MailerBridge\MicrosoftGraph\Transport\MicrosoftGraphTransportFactory::class => ['symfony/microsoft-graph-mailer', 'mailer.transport_factory.microsoftgraph'],
             MailerBridge\Postal\Transport\PostalTransportFactory::class => ['symfony/postal-mailer', 'mailer.transport_factory.postal'],
             MailerBridge\Postmark\Transport\PostmarkTransportFactory::class => ['symfony/postmark-mailer', 'mailer.transport_factory.postmark'],
+            MailerBridge\PufferPost\Transport\PufferPostTransportFactory::class => ['symfony/puffer-post-mailer', 'mailer.transport_factory.pufferpost'],
             MailerBridge\Mailtrap\Transport\MailtrapTransportFactory::class => ['symfony/mailtrap-mailer', 'mailer.transport_factory.mailtrap'],
             MailerBridge\Resend\Transport\ResendTransportFactory::class => ['symfony/resend-mailer', 'mailer.transport_factory.resend'],
             MailerBridge\Scaleway\Transport\ScalewayTransportFactory::class => ['symfony/scaleway-mailer', 'mailer.transport_factory.scaleway'],
             MailerBridge\Sendgrid\Transport\SendgridTransportFactory::class => ['symfony/sendgrid-mailer', 'mailer.transport_factory.sendgrid'],
             MailerBridge\Amazon\Transport\SesTransportFactory::class => ['symfony/amazon-mailer', 'mailer.transport_factory.amazon'],
             MailerBridge\Sweego\Transport\SweegoTransportFactory::class => ['symfony/sweego-mailer', 'mailer.transport_factory.sweego'],
+            MailerBridge\TurboSmtp\Transport\TurboSmtpTransportFactory::class => ['symfony/turbo-smtp-mailer', 'mailer.transport_factory.turbosmtp'],
         ];
 
         foreach ($classToServices as $class => [$package, $service]) {
@@ -3078,8 +3289,18 @@ class FrameworkExtension extends Extension
         $envelopeListener->setArgument(1, $config['envelope']['recipients'] ?? null);
         $envelopeListener->setArgument(2, $config['envelope']['allowed_recipients'] ?? []);
 
-        if ($config['headers']) {
+        $tracking = $config['tracking'];
+        $hasTracking = null !== $tracking['opens'] || null !== $tracking['clicks'];
+
+        if ($hasTracking && !class_exists(TrackingHeader::class)) {
+            throw new LogicException('Configuring "framework.mailer.tracking" requires symfony/mailer 8.2 or higher.');
+        }
+
+        if ($config['headers'] || $hasTracking) {
             $headers = new Definition(Headers::class);
+            if ($hasTracking && !isset(array_change_key_case($config['headers'])['x-track'])) {
+                $headers->addMethodCall('add', [new Definition(TrackingHeader::class, [$tracking['opens'], $tracking['clicks']])]);
+            }
             foreach ($config['headers'] as $name => $data) {
                 $value = $data['value'];
                 if (\in_array(strtolower($name), ['from', 'to', 'cc', 'bcc', 'reply-to'], true)) {
@@ -3118,10 +3339,70 @@ class FrameworkExtension extends Extension
         }
 
         if ($config['smime_encrypter']['enabled']) {
-            $container->setAlias('mailer.smime_encrypter.repository', $config['smime_encrypter']['repository']);
+            if ($config['smime_encrypter']['certificates']) {
+                $container->setDefinition('mailer.smime_encrypter.repository', new Definition(InMemorySmimeCertificateRepository::class, [$config['smime_encrypter']['certificates']]));
+            } else {
+                $container->setAlias('mailer.smime_encrypter.repository', $config['smime_encrypter']['repository']);
+            }
             $container->setParameter('mailer.smime_encrypter.cipher', $config['smime_encrypter']['cipher']);
+            $container->getDefinition('mailer.smime_encrypter.listener')
+                ->setArgument(2, $config['smime_encrypter']['on_missing_certificate'])
+                ->setArgument(3, $config['smime_encrypter']['encrypt_for_sender']);
         } else {
             $container->removeDefinition('mailer.smime_encrypter.listener');
+        }
+
+        if ($config['pgp_signer']['enabled']) {
+            if (!class_exists(PgpSigner::class)) {
+                throw new LogicException('PGP/MIME signed messages support cannot be enabled as this version of the Mime component does not support it. Try upgrading "symfony/mime".');
+            }
+            if (!class_exists(PgpMimeSignedMessageListener::class)) {
+                throw new LogicException('PGP/MIME signed messages support cannot be enabled as this version of the Mailer component does not support it.');
+            }
+            if (!class_exists(Process::class)) {
+                throw new LogicException('PGP/MIME signed messages support cannot be enabled as the Process component is not installed. Try running "composer require symfony/process".');
+            }
+            $pgpSigner = $container->getDefinition('mailer.pgp_signer');
+            $pgpSigner->setArgument(0, $config['pgp_signer']['secret_key']);
+            $pgpSigner->setArgument(1, $config['pgp_signer']['public_key']);
+            $pgpSigner->setArgument(2, $config['pgp_signer']['passphrase']);
+            $pgpSigner->setArgument(3, [
+                'binary' => $config['pgp_signer']['binary'],
+                'digest_algorithm' => $config['pgp_signer']['digest_algorithm'],
+            ]);
+        } else {
+            $container->removeDefinition('mailer.pgp_signer');
+            $container->removeDefinition('mailer.pgp_signer.listener');
+        }
+
+        if ($config['pgp_encrypter']['enabled']) {
+            if (!class_exists(PgpEncrypter::class)) {
+                throw new LogicException('PGP/MIME encrypted messages support cannot be enabled as this version of the Mime component does not support it. Try upgrading "symfony/mime".');
+            }
+            if (!class_exists(PgpMimeEncryptedMessageListener::class)) {
+                throw new LogicException('PGP/MIME encrypted messages support cannot be enabled as this version of the Mailer component does not support it.');
+            }
+            if (!class_exists(Process::class)) {
+                throw new LogicException('PGP/MIME encrypted messages support cannot be enabled as the Process component is not installed. Try running "composer require symfony/process".');
+            }
+            if ($config['pgp_encrypter']['keys']) {
+                $container->setDefinition('mailer.pgp_encrypter.repository', new Definition(InMemoryPgpPublicKeyRepository::class, [$config['pgp_encrypter']['keys']]));
+            } else {
+                $container->setAlias('mailer.pgp_encrypter.repository', $config['pgp_encrypter']['repository']);
+            }
+            $pgpEncrypter = $container->getDefinition('mailer.pgp_encrypter');
+            $pgpEncrypter->setArgument(0, [
+                'binary' => $config['pgp_encrypter']['binary'],
+                'cipher_algorithm' => $config['pgp_encrypter']['cipher_algorithm'],
+                'timeout' => $config['pgp_encrypter']['timeout'],
+                'hide_recipients' => $config['pgp_encrypter']['hide_recipients'],
+            ]);
+            $container->getDefinition('mailer.pgp_encrypter.listener')
+                ->setArgument(2, $config['pgp_encrypter']['on_missing_key'])
+                ->setArgument(3, $config['pgp_encrypter']['encrypt_for_sender']);
+        } else {
+            $container->removeDefinition('mailer.pgp_encrypter');
+            $container->removeDefinition('mailer.pgp_encrypter.listener');
         }
 
         if ($webhookEnabled) {
@@ -3130,6 +3411,7 @@ class FrameworkExtension extends Extension
             $debug = $container->getParameter('kernel.debug');
             $webhookRequestParsers = [
                 MailerBridge\AhaSend\Webhook\AhaSendRequestParser::class => ['symfony/aha-send-mailer', 'mailer.webhook.request_parser.ahasend'],
+                MailerBridge\Azure\Webhook\AzureRequestParser::class => ['symfony/azure-mailer', 'mailer.webhook.request_parser.azure'],
                 MailerBridge\Brevo\Webhook\BrevoRequestParser::class => ['symfony/brevo-mailer', 'mailer.webhook.request_parser.brevo'],
                 MailerBridge\MailerSend\Webhook\MailerSendRequestParser::class => ['symfony/mailer-send-mailer', 'mailer.webhook.request_parser.mailersend'],
                 MailerBridge\Mailchimp\Webhook\MailchimpRequestParser::class => ['symfony/mailchimp-mailer', 'mailer.webhook.request_parser.mailchimp'],
@@ -3139,8 +3421,10 @@ class FrameworkExtension extends Extension
                 MailerBridge\Postmark\Webhook\PostmarkRequestParser::class => ['symfony/postmark-mailer', 'mailer.webhook.request_parser.postmark'],
                 MailerBridge\Mailtrap\Webhook\MailtrapRequestParser::class => ['symfony/mailtrap-mailer', 'mailer.webhook.request_parser.mailtrap'],
                 MailerBridge\Resend\Webhook\ResendRequestParser::class => ['symfony/resend-mailer', 'mailer.webhook.request_parser.resend'],
+                MailerBridge\Scaleway\Webhook\ScalewayRequestParser::class => ['symfony/scaleway-mailer', 'mailer.webhook.request_parser.scaleway'],
                 MailerBridge\Sendgrid\Webhook\SendgridRequestParser::class => ['symfony/sendgrid-mailer', 'mailer.webhook.request_parser.sendgrid'],
                 MailerBridge\Sweego\Webhook\SweegoRequestParser::class => ['symfony/sweego-mailer', 'mailer.webhook.request_parser.sweego'],
+                MailerBridge\TurboSmtp\Webhook\TurboSmtpRequestParser::class => ['symfony/turbo-smtp-mailer', 'mailer.webhook.request_parser.turbosmtp'],
             ];
 
             foreach ($webhookRequestParsers as $class => [$package, $service]) {
@@ -3231,6 +3515,7 @@ class FrameworkExtension extends Extension
             NotifierBridge\Engagespot\EngagespotTransportFactory::class => ['symfony/engagespot-notifier', 'notifier.transport_factory.engagespot'],
             NotifierBridge\Esendex\EsendexTransportFactory::class => ['symfony/esendex-notifier', 'notifier.transport_factory.esendex'],
             NotifierBridge\Expo\ExpoTransportFactory::class => ['symfony/expo-notifier', 'notifier.transport_factory.expo'],
+            NotifierBridge\FacebookPage\FacebookPageTransportFactory::class => ['symfony/facebook-page-notifier', 'notifier.transport_factory.facebook-page'],
             NotifierBridge\Firebase\FirebaseTransportFactory::class => ['symfony/firebase-notifier', 'notifier.transport_factory.firebase'],
             NotifierBridge\FortySixElks\FortySixElksTransportFactory::class => ['symfony/forty-six-elks-notifier', 'notifier.transport_factory.forty-six-elks'],
             NotifierBridge\FreeMobile\FreeMobileTransportFactory::class => ['symfony/free-mobile-notifier', 'notifier.transport_factory.free-mobile'],
@@ -3238,6 +3523,7 @@ class FrameworkExtension extends Extension
             NotifierBridge\GoIp\GoIpTransportFactory::class => ['symfony/go-ip-notifier', 'notifier.transport_factory.go-ip'],
             NotifierBridge\GoogleChat\GoogleChatTransportFactory::class => ['symfony/google-chat-notifier', 'notifier.transport_factory.google-chat'],
             NotifierBridge\Infobip\InfobipTransportFactory::class => ['symfony/infobip-notifier', 'notifier.transport_factory.infobip'],
+            NotifierBridge\Instagram\InstagramTransportFactory::class => ['symfony/instagram-notifier', 'notifier.transport_factory.instagram'],
             NotifierBridge\Iqsms\IqsmsTransportFactory::class => ['symfony/iqsms-notifier', 'notifier.transport_factory.iqsms'],
             NotifierBridge\Isendpro\IsendproTransportFactory::class => ['symfony/isendpro-notifier', 'notifier.transport_factory.isendpro'],
             NotifierBridge\JoliNotif\JoliNotifTransportFactory::class => ['symfony/joli-notif-notifier', 'notifier.transport_factory.joli-notif'],
@@ -3264,7 +3550,7 @@ class FrameworkExtension extends Extension
             NotifierBridge\OvhCloud\OvhCloudTransportFactory::class => ['symfony/ovh-cloud-notifier', 'notifier.transport_factory.ovh-cloud'],
             NotifierBridge\PagerDuty\PagerDutyTransportFactory::class => ['symfony/pager-duty-notifier', 'notifier.transport_factory.pager-duty'],
             NotifierBridge\Plivo\PlivoTransportFactory::class => ['symfony/plivo-notifier', 'notifier.transport_factory.plivo'],
-            NotifierBridge\Prelude\PreludeTransportFactory::class => ['symfony/prelude-notifier','notifier.transport_factory.prelude'],
+            NotifierBridge\Prelude\PreludeTransportFactory::class => ['symfony/prelude-notifier', 'notifier.transport_factory.prelude'],
             NotifierBridge\Primotexto\PrimotextoTransportFactory::class => ['symfony/primotexto-notifier', 'notifier.transport_factory.primotexto'],
             NotifierBridge\Pushover\PushoverTransportFactory::class => ['symfony/pushover-notifier', 'notifier.transport_factory.pushover'],
             NotifierBridge\Pushy\PushyTransportFactory::class => ['symfony/pushy-notifier', 'notifier.transport_factory.pushy'],
@@ -3282,6 +3568,7 @@ class FrameworkExtension extends Extension
             NotifierBridge\Smsbox\SmsboxTransportFactory::class => ['symfony/smsbox-notifier', 'notifier.transport_factory.smsbox'],
             NotifierBridge\Smsc\SmscTransportFactory::class => ['symfony/smsc-notifier', 'notifier.transport_factory.smsc'],
             NotifierBridge\SmsFactor\SmsFactorTransportFactory::class => ['symfony/sms-factor-notifier', 'notifier.transport_factory.sms-factor'],
+            NotifierBridge\SmsProxima\SmsProximaTransportFactory::class => ['symfony/sms-proxima-notifier', 'notifier.transport_factory.sms-proxima'],
             NotifierBridge\Smsmode\SmsmodeTransportFactory::class => ['symfony/smsmode-notifier', 'notifier.transport_factory.smsmode'],
             NotifierBridge\SmsSluzba\SmsSluzbaTransportFactory::class => ['symfony/sms-sluzba-notifier', 'notifier.transport_factory.sms-sluzba'],
             NotifierBridge\Smsense\SmsenseTransportFactory::class => ['symfony/smsense-notifier', 'notifier.transport_factory.smsense'],
@@ -3290,11 +3577,13 @@ class FrameworkExtension extends Extension
             NotifierBridge\Telegram\TelegramTransportFactory::class => ['symfony/telegram-notifier', 'notifier.transport_factory.telegram'],
             NotifierBridge\Telnyx\TelnyxTransportFactory::class => ['symfony/telnyx-notifier', 'notifier.transport_factory.telnyx'],
             NotifierBridge\Termii\TermiiTransportFactory::class => ['symfony/termii-notifier', 'notifier.transport_factory.termii'],
+            NotifierBridge\Threads\ThreadsTransportFactory::class => ['symfony/threads-notifier', 'notifier.transport_factory.threads'],
             NotifierBridge\TurboSms\TurboSmsTransportFactory::class => ['symfony/turbo-sms-notifier', 'notifier.transport_factory.turbo-sms'],
             NotifierBridge\Twilio\TwilioTransportFactory::class => ['symfony/twilio-notifier', 'notifier.transport_factory.twilio'],
             NotifierBridge\Twitter\TwitterTransportFactory::class => ['symfony/twitter-notifier', 'notifier.transport_factory.twitter'],
             NotifierBridge\Unifonic\UnifonicTransportFactory::class => ['symfony/unifonic-notifier', 'notifier.transport_factory.unifonic'],
             NotifierBridge\Vonage\VonageTransportFactory::class => ['symfony/vonage-notifier', 'notifier.transport_factory.vonage'],
+            NotifierBridge\WhatsApp\WhatsAppTransportFactory::class => ['symfony/whats-app-notifier', 'notifier.transport_factory.whats-app'],
             NotifierBridge\Yunpian\YunpianTransportFactory::class => ['symfony/yunpian-notifier', 'notifier.transport_factory.yunpian'],
             NotifierBridge\Zendesk\ZendeskTransportFactory::class => ['symfony/zendesk-notifier', 'notifier.transport_factory.zendesk'],
             NotifierBridge\Zulip\ZulipTransportFactory::class => ['symfony/zulip-notifier', 'notifier.transport_factory.zulip'],
@@ -3396,13 +3685,57 @@ class FrameworkExtension extends Extension
         $jsonBodyConfigurator = $container->getDefinition('webhook.body_configurator.json');
         $jsonBodyConfigurator->replaceArgument(0, new Reference($serializerEnabled ? 'webhook.payload_serializer.serializer' : 'webhook.payload_serializer.json'));
 
+        if (!class_exists(SignatureFormat::class)) {
+            foreach (['signature_format' => 'legacy', 'timestamp_header_name' => 'Webhook-Timestamp', 'timestamp_tolerance' => 300] as $option => $default) {
+                if ($default !== $config[$option]) {
+                    throw new LogicException(\sprintf('Configuring "framework.webhook.%s" requires symfony/webhook 8.2 or higher. Try running "composer update symfony/webhook".', $option));
+                }
+            }
+        }
+        $signatureFormat = class_exists(SignatureFormat::class) ? SignatureFormat::from($config['signature_format']) : null;
+
+        $jsonBodyConfigurator->replaceArgument(1, $signatureFormat);
+
         $container->getDefinition('webhook.headers_configurator')
             ->replaceArgument(0, $config['event_header_name'])
-            ->replaceArgument(1, $config['id_header_name']);
+            ->replaceArgument(1, $config['id_header_name'])
+            ->replaceArgument(2, $config['timestamp_header_name'])
+            ->replaceArgument(4, $signatureFormat);
 
         $container->getDefinition('webhook.signer')
             ->replaceArgument(0, $config['signing_algorithm'])
-            ->replaceArgument(1, $config['signature_header_name']);
+            ->replaceArgument(1, $config['signature_header_name'])
+            ->replaceArgument(2, $signatureFormat)
+            ->replaceArgument(3, $config['timestamp_header_name']);
+
+        $container->getDefinition('webhook.request_parser')
+            ->replaceArgument(0, $config['signing_algorithm'])
+            ->replaceArgument(1, $config['signature_header_name'])
+            ->replaceArgument(2, $config['event_header_name'])
+            ->replaceArgument(3, $config['id_header_name'])
+            ->replaceArgument(4, $config['timestamp_header_name'])
+            ->replaceArgument(5, $signatureFormat)
+            ->replaceArgument(6, $config['timestamp_tolerance']);
+
+        $clientId = $config['http_client'];
+
+        if ($this->readConfigEnabled('webhook.no_private_network', $container, $config['no_private_network'])) {
+            if (!class_exists(NoPrivateNetworkHttpClient::class)) {
+                throw new LogicException('Configuring "framework.webhook.no_private_network" requires the HttpClient component. Try running "composer require symfony/http-client".');
+            }
+
+            $container->register('webhook.http_client', NoPrivateNetworkHttpClient::class)
+                ->setArguments([
+                    new Reference($clientId),
+                    $config['no_private_network']['subnets'],
+                    $config['no_private_network']['allow_list'],
+                ])
+                ->addTag('kernel.reset', ['method' => 'reset']);
+
+            $clientId = 'webhook.http_client';
+        }
+
+        $container->getDefinition('webhook.transport')->replaceArgument(0, new Reference($clientId));
     }
 
     private function registerRemoteEventConfiguration(PhpFileLoader $loader): void
@@ -3473,19 +3806,57 @@ class FrameworkExtension extends Extension
                 throw new LogicException(\sprintf('Compound rate limiter "%s" requires at least one sub-limiter.', $name));
             }
 
-            if (array_diff($limiterConfig['limiters'], $limiters)) {
-                throw new LogicException(\sprintf('Compound rate limiter "%s" requires at least one sub-limiter to be configured.', $name));
+            if ($unknownLimiters = array_diff(array_keys($limiterConfig['limiters']), $limiters)) {
+                throw new LogicException(\sprintf('Compound rate limiter "%s" references unknown limiter(s) "%s".', $name, implode('", "', $unknownLimiters)));
+            }
+
+            $factories = $keys = [];
+            foreach ($limiterConfig['limiters'] as $subName => $subConfig) {
+                $factories[$subName] = new Reference('limiter.'.$subName);
+
+                if (null !== $subConfig['key']) {
+                    $keys[$subName] = $subConfig['key'];
+                }
             }
 
             $container->register($limiterId = 'limiter.'.$name, CompoundRateLimiterFactory::class)
                 ->addTag('rate_limiter', ['name' => $name])
-                ->addArgument(new IteratorArgument(array_map(
-                    static fn (string $name) => new Reference('limiter.'.$name),
-                    $limiterConfig['limiters']
-                )))
+                ->setArguments([new IteratorArgument($factories), $keys])
             ;
 
             $container->registerAliasForArgument($limiterId, RateLimiterFactoryInterface::class, $name.'.limiter', $name);
+        }
+
+        if (class_exists(RateLimiterBuilder::class)) {
+            $builderConfig = $config['builder'];
+
+            if ('auto' === $builderConfig['lock_factory']) {
+                $builderConfig['lock_factory'] = interface_exists(LockInterface::class) && $this->isInitializedConfigEnabled('lock') ? 'lock.factory' : null;
+            }
+
+            $builder = $container->getDefinition('limiter_builder');
+
+            if (null === $storageId = $builderConfig['storage_service']) {
+                $container->register($storageId = 'limiter_builder.storage', CacheStorage::class)->addArgument(new Reference($builderConfig['cache_pool']));
+            }
+
+            $builder->replaceArgument(0, new Reference($storageId));
+
+            if ($builderConfig['lock_factory']) {
+                if (!interface_exists(LockInterface::class)) {
+                    throw new LogicException('Rate Limiter Builder requires the Lock component to be installed. Try running "composer require symfony/lock".');
+                }
+
+                if (!$this->isInitializedConfigEnabled('lock')) {
+                    throw new LogicException('Rate Limiter Builder requires the Lock component to be configured.');
+                }
+
+                $builder->replaceArgument(1, new Reference($builderConfig['lock_factory']));
+            }
+
+            $container->setAlias(RateLimiterBuilder::class, 'limiter_builder');
+        } else {
+            $container->removeDefinition('limiter_builder');
         }
     }
 

@@ -61,6 +61,11 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
     public const GROUPS = 'groups';
 
     /**
+     * Exclude the attributes belonging to the specified groups, whichever groups are allowed.
+     */
+    public const IGNORED_GROUPS = 'ignored_groups';
+
+    /**
      * Limit (de)normalize to the specified names.
      *
      * For nested structures, this list needs to reflect the object tree.
@@ -128,6 +133,24 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
      * "1", "true", "on" and "yes" will be cast to true.
      */
     public const FILTER_BOOL = 'filter_bool';
+
+    /**
+     * While denormalizing, ignore the attributes whose value cannot be used.
+     *
+     * Such an attribute is handled as if it were absent from the input: a
+     * constructor argument falls back to DEFAULT_CONSTRUCTOR_ARGUMENTS, then to
+     * its default value, then to null when it is nullable; any other attribute
+     * is left untouched. No error is reported for it.
+     *
+     * Where ALLOW_EXTRA_ATTRIBUTES covers the attributes the class does not
+     * know about, this one covers the attributes it cannot use.
+     */
+    public const SKIP_INVALID_ATTRIBUTES = 'skip_invalid_attributes';
+
+    /**
+     * Add 'Default' and class-short-name groups when no custom group is specified.
+     */
+    public const ENABLE_DEFAULT_GROUPS = 'enable_default_groups';
 
     /**
      * @internal
@@ -223,32 +246,58 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
             return false;
         }
 
+        $classMetadata = $this->classMetadataFactory->getMetadataFor($classOrObject);
+        $class = $classMetadata->getName();
+
+        $enableDefaultGroups = $context[self::ENABLE_DEFAULT_GROUPS] ?? $this->defaultContext[self::ENABLE_DEFAULT_GROUPS] ?? false;
+
         $groups = $this->getGroups($context);
+        $ignoredGroups = $this->getIgnoredGroups($context);
+        $defaultGroups = ['Default', (false !== $nsSep = strrpos($class, '\\')) ? substr($class, $nsSep + 1) : $class];
+
+        // Capture before the merge below, so it reflects the user's intent rather than
+        // the post-merge state.
+        $groupsHasBeenDefined = [] !== $groups;
+        $customGroupsHasBeenDefined = (bool) array_diff($groups, $defaultGroups);
+
+        if ($enableDefaultGroups && !$customGroupsHasBeenDefined) {
+            $groups = array_merge($groups, $defaultGroups);
+        }
 
         $allowedAttributes = [];
         $ignoreUsed = false;
 
-        foreach ($this->classMetadataFactory->getMetadataFor($classOrObject)->getAttributesMetadata() as $attributeMetadata) {
+        foreach ($classMetadata->getAttributesMetadata() as $attributeMetadata) {
             if ($ignore = $attributeMetadata->isIgnored()) {
                 $ignoreUsed = true;
             }
 
-            // If you update this check, update accordingly the one in Symfony\Component\PropertyInfo\Extractor\SerializerExtractor::getProperties()
-            if (
-                !$ignore
-                && ([] === $groups || \in_array('*', $groups, true) || array_intersect($attributeMetadata->getGroups(), $groups))
-                && $this->isAllowedAttribute($classOrObject, $name = $attributeMetadata->getName(), null, $context)
-            ) {
+            // If you update these checks, update accordingly the one in Symfony\Component\PropertyInfo\Extractor\SerializerExtractor::getProperties()
+            if ($ignore || !$this->isAllowedAttribute($classOrObject, $name = $attributeMetadata->getName(), null, $context)) {
+                continue;
+            }
+
+            if (!($attributeGroups = $attributeMetadata->getGroups()) && $enableDefaultGroups && !$customGroupsHasBeenDefined) {
+                $attributeGroups = $defaultGroups;
+            }
+
+            // the synthesized groups count for exclusion too: ignoring "Default" excludes ungrouped attributes
+            if ($ignoredGroups && array_intersect($attributeGroups, $ignoredGroups)) {
+                continue;
+            }
+
+            if (!$groupsHasBeenDefined || \in_array('*', $groups, true) || array_intersect($attributeGroups, $groups)) {
                 $allowedAttributes[] = $attributesAsString ? $name : $attributeMetadata;
             }
         }
 
-        if (!$ignoreUsed && $allowExtraAttributes) {
-            if ([] === $groups) {
+        // returning false means "no restriction", which would defeat the exclusion
+        if (!$ignoreUsed && !$ignoredGroups && $allowExtraAttributes) {
+            if (!$groups) {
                 return false;
             }
 
-            if ([] === $allowedAttributes && \in_array('*', $groups, true)) {
+            if (!$allowedAttributes && \in_array('*', $groups, true)) {
                 return false;
             }
         }
@@ -259,6 +308,13 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
     protected function getGroups(array $context): array
     {
         $groups = $context[self::GROUPS] ?? $this->defaultContext[self::GROUPS] ?? [];
+
+        return \is_scalar($groups) ? (array) $groups : $groups;
+    }
+
+    protected function getIgnoredGroups(array $context): array
+    {
+        $groups = $context[self::IGNORED_GROUPS] ?? $this->defaultContext[self::IGNORED_GROUPS] ?? [];
 
         return \is_scalar($groups) ? (array) $groups : $groups;
     }
@@ -327,7 +383,7 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
 
         $constructor = $this->getConstructor($data, $class, $context, $reflectionClass, $allowedAttributes);
         if ($constructor) {
-            if (true !== $constructor->isPublic()) {
+            if (!$constructor->isPublic()) {
                 return $reflectionClass->newInstanceWithoutConstructor();
             }
 
@@ -336,6 +392,7 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
             $params = [];
             $unsetKeys = [];
             $collectedErrorCountBeforeConstructor = \count($context['not_normalizable_value_exceptions'] ?? []);
+            $skipInvalidAttributes = $context[self::SKIP_INVALID_ATTRIBUTES] ?? $this->defaultContext[self::SKIP_INVALID_ATTRIBUTES] ?? false;
 
             foreach ($constructorParameters as $constructorParameter) {
                 $paramName = $constructorParameter->name;
@@ -344,8 +401,10 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
 
                 $allowed = false === $allowedAttributes || \in_array($paramName, $allowedAttributes, true);
                 $ignored = !$this->isAllowedAttribute($class, $paramName, $format, $context);
+                $provided = $allowed && !$ignored && (isset($data[$key]) || \array_key_exists($key, $data));
+
                 if ($constructorParameter->isVariadic()) {
-                    if ($allowed && !$ignored && (isset($data[$key]) || \array_key_exists($key, $data))) {
+                    if ($provided) {
                         if (!\is_array($data[$key])) {
                             throw new RuntimeException(\sprintf('Cannot create an instance of "%s" from serialized data because the variadic parameter "%s" can only accept an array.', $class, $constructorParameter->name));
                         }
@@ -355,6 +414,10 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
                             try {
                                 $variadicParameters[$parameterKey] = $this->denormalizeParameter($reflectionClass, $constructorParameter, $paramName, $parameterData, $attributeContext, $format);
                             } catch (NotNormalizableValueException $exception) {
+                                if ($skipInvalidAttributes) {
+                                    continue;
+                                }
+
                                 if (!isset($context['not_normalizable_value_exceptions'])) {
                                     throw $exception;
                                 }
@@ -367,7 +430,11 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
                         $params = array_merge(array_values($params), $variadicParameters);
                         $unsetKeys[] = $key;
                     }
-                } elseif ($allowed && !$ignored && (isset($data[$key]) || \array_key_exists($key, $data))) {
+
+                    continue;
+                }
+
+                if ($provided) {
                     $parameterData = $data[$key];
                     if (null === $parameterData && $constructorParameter->allowsNull()) {
                         $params[$paramName] = null;
@@ -376,19 +443,28 @@ abstract class AbstractNormalizer implements NormalizerInterface, DenormalizerIn
                         continue;
                     }
 
+                    $unsetKeys[] = $key;
+                    $skipped = false;
+
                     try {
                         $params[$paramName] = $this->denormalizeParameter($reflectionClass, $constructorParameter, $paramName, $parameterData, $attributeContext, $format);
                     } catch (NotNormalizableValueException $exception) {
-                        if (!isset($context['not_normalizable_value_exceptions'])) {
+                        if ($skipInvalidAttributes) {
+                            $skipped = true;
+                        } elseif (!isset($context['not_normalizable_value_exceptions'])) {
                             throw $exception;
+                        } else {
+                            $context['not_normalizable_value_exceptions'][] = $exception;
+                            $params[$paramName] = $parameterData;
                         }
-
-                        $context['not_normalizable_value_exceptions'][] = $exception;
-                        $params[$paramName] = $parameterData;
                     }
 
-                    $unsetKeys[] = $key;
-                } elseif (\array_key_exists($key, $context[static::DEFAULT_CONSTRUCTOR_ARGUMENTS][$class] ?? [])) {
+                    if (!$skipped) {
+                        continue;
+                    }
+                }
+
+                if (\array_key_exists($key, $context[static::DEFAULT_CONSTRUCTOR_ARGUMENTS][$class] ?? [])) {
                     $params[$paramName] = $context[static::DEFAULT_CONSTRUCTOR_ARGUMENTS][$class][$key];
                 } elseif (\array_key_exists($key, $this->defaultContext[self::DEFAULT_CONSTRUCTOR_ARGUMENTS][$class] ?? [])) {
                     $params[$paramName] = $this->defaultContext[self::DEFAULT_CONSTRUCTOR_ARGUMENTS][$class][$key];
