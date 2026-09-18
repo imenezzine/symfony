@@ -1,0 +1,584 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\Security\Http\Authenticator;
+
+use Psr\Clock\ClockInterface;
+use Symfony\Component\Clock\Clock;
+use Symfony\Component\HttpFoundation\RedirectResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\Session\SessionInterface;
+use Symfony\Component\Security\Core\Authentication\AuthenticationMethod;
+use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
+use Symfony\Component\Security\Core\Exception\AuthenticationException;
+use Symfony\Component\Security\Core\User\UserProviderInterface;
+use Symfony\Component\Security\Http\Authentication\AuthenticationFailureHandlerInterface;
+use Symfony\Component\Security\Http\Authentication\AuthenticationSuccessHandlerInterface;
+use Symfony\Component\Security\Http\Authenticator\Oidc\OidcClientInterface;
+use Symfony\Component\Security\Http\Authenticator\Oidc\OidcIdToken;
+use Symfony\Component\Security\Http\Authenticator\Oidc\OidcSignatureVerifier;
+use Symfony\Component\Security\Http\Authenticator\Passport\Badge\UserBadge;
+use Symfony\Component\Security\Http\Authenticator\Passport\Passport;
+use Symfony\Component\Security\Http\Authenticator\Passport\SelfValidatingPassport;
+use Symfony\Component\Security\Http\Authenticator\Token\PostAuthenticationToken;
+use Symfony\Component\Security\Http\EntryPoint\AuthenticationEntryPointInterface;
+use Symfony\Component\Security\Http\EntryPoint\ReAuthenticationEntryPointInterface;
+use Symfony\Component\Security\Http\Event\OidcAuthorizationRequestEvent;
+use Symfony\Component\Security\Http\HttpUtils;
+use Symfony\Component\Security\Http\Oidc\OidcDiscovery;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
+
+/**
+ * Authenticator for the OpenID Connect Authorization Code Flow.
+ *
+ * @see https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth
+ *
+ * @author Mathieu Santostefano <msantostefano@proton.me>
+ */
+final class OidcLoginAuthenticator extends AbstractAuthenticator implements AuthenticationEntryPointInterface, InteractiveAuthenticatorInterface, ReAuthenticationEntryPointInterface
+{
+    private const MAX_CONCURRENT_ATTEMPTS = 5;
+
+    // parameters of the authorization request the authenticator computes itself, so
+    // that no configuration can weaken them; "max_age" is owned too, as sending it
+    // obliges this client to check the "auth_time" claim of the resulting ID token
+    private const MANAGED_PARAMS = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state', 'nonce', 'code_challenge', 'code_challenge_method', 'max_age'];
+
+    private array $options;
+    private readonly ClockInterface $clock;
+
+    /**
+     * A public client, which authenticates with "none", sends no secret: PKCE is then the
+     * only thing binding the authorization code to it, and the ID token signature the only
+     * thing tying the token endpoint response to the provider beyond the TLS verification.
+     * Neither can be turned off for such a client, which is what this constructor refuses.
+     *
+     * @param array<string, string>         $authorizationParams Additional parameters of the authorization request, e.g.
+     *                                                           "prompt" or "ui_locales"; the protocol parameters the
+     *                                                           authenticator manages itself are rejected. Listen to
+     *                                                           OidcAuthorizationRequestEvent to compute them per request
+     * @param OidcSignatureVerifier|null    $signatureVerifier   Verifies the ID token signature against the provider JWKS,
+     *                                                           or null to decode the token without verifying it, which
+     *                                                           OIDC Core 1.0, Section 3.1.3.7, item 6 only allows as long
+     *                                                           as the token endpoint request verifies TLS
+     * @param ClockInterface|null           $clock               Turns the "expires_in" of the token endpoint response into
+     *                                                           the absolute expiry the security token carries, or null to
+     *                                                           use the clock of the "symfony/clock" component
+     * @param EventDispatcherInterface|null $eventDispatcher     Dispatches OidcAuthorizationRequestEvent before the user is
+     *                                                           redirected to the provider, or null to always send the
+     *                                                           authorization request $authorizationParams describes
+     */
+    public function __construct(
+        private readonly HttpUtils $httpUtils,
+        private readonly UserProviderInterface $userProvider,
+        private readonly OidcClientInterface $oidcClient,
+        private readonly OidcDiscovery $discovery,
+        private readonly OidcIdToken $idToken,
+        private readonly string $clientId,
+        private readonly AuthenticationSuccessHandlerInterface $successHandler,
+        private readonly AuthenticationFailureHandlerInterface $failureHandler,
+        array $options,
+        private readonly array $authorizationParams = [],
+        private readonly ?OidcSignatureVerifier $signatureVerifier = null,
+        ?ClockInterface $clock = null,
+        private readonly ?EventDispatcherInterface $eventDispatcher = null,
+    ) {
+        if (null === $clock && !class_exists(Clock::class)) {
+            throw new \LogicException(\sprintf('The "symfony/clock" component is required to build "%s" without a clock. Try running "composer require symfony/clock", or pass any PSR-20 clock to the constructor.', self::class));
+        }
+
+        $this->clock = $clock ?? new Clock();
+
+        $this->options = array_merge([
+            'check_path' => '/oidc/callback',
+            'firewall_name' => 'main',
+            'scope' => ['openid'],
+            'pkce_enabled' => true,
+            'pkce_method' => 'S256',
+            'user_data_source' => 'userinfo',
+            'user_identifier_claim' => 'sub',
+        ], $options);
+
+        if (!\in_array($this->options['pkce_method'], ['S256', 'plain'], true)) {
+            throw new \InvalidArgumentException(\sprintf('Invalid PKCE method "%s": RFC 7636 defines "S256" and "plain" only.', $this->options['pkce_method']));
+        }
+
+        if ('none' === $oidcClient->getClientAuthenticationMethod()) {
+            if (!$this->options['pkce_enabled']) {
+                throw new \InvalidArgumentException('PKCE cannot be disabled for a public OIDC client, which authenticates with "none": it is the only thing binding the authorization code to this client.');
+            }
+
+            if (null === $signatureVerifier) {
+                throw new \InvalidArgumentException('The ID token signature must be verified for a public OIDC client, which authenticates with "none": without the check, only the TLS verification of the token request ties the ID token to the provider, which is too little for a client that has nothing but PKCE protecting its code exchange.');
+            }
+        }
+
+        if ($managed = array_intersect_key($authorizationParams, array_flip(self::MANAGED_PARAMS))) {
+            throw new \InvalidArgumentException(\sprintf('The authorization request parameter(s) "%s" are managed by the authenticator and cannot be set through $authorizationParams.', implode('", "', array_keys($managed))));
+        }
+    }
+
+    public function supports(Request $request): bool
+    {
+        // every request on the callback path is handled here: the route declared for it
+        // carries no controller, so one passing through would end up reported as a routing
+        // error instead of the authentication failure it is
+        if (!$this->httpUtils->checkRequestPath($request, $this->options['check_path'])) {
+            $request->attributes->get(SecurityRequestAttributes::UNSUPPORTED_REASONS)?->add(\sprintf('the request path "%s" does not match the "check_path" option "%s"', $request->getPathInfo(), $this->options['check_path']));
+
+            return false;
+        }
+
+        return true;
+    }
+
+    public function start(Request $request, ?AuthenticationException $authException = null): Response
+    {
+        return $this->startAuthorizationRequest($request);
+    }
+
+    /**
+     * "prompt=login" is what OIDC Core 1.0, Section 3.1.2.1 defines for this: the provider
+     * prompts the End-User for credentials again instead of answering from the session it
+     * already holds. The previous ID token goes along as "id_token_hint" so the provider
+     * knows which End-User is being re-authenticated rather than offering a picker.
+     *
+     * "prompt" is a SHOULD in the specification. Configure "max_age" as well if the provider
+     * has to be obliged rather than asked: that one the client verifies, so a provider
+     * ignoring it fails the "auth_time" check instead of quietly returning the stale
+     * authentication that was denied in the first place.
+     */
+    public function startReAuthentication(Request $request, TokenInterface $token): Response
+    {
+        $forcedParams = ['prompt' => 'login'];
+
+        if (\is_string($idToken = $token->hasAttribute('oidc_id_token') ? $token->getAttribute('oidc_id_token') : null)) {
+            $forcedParams['id_token_hint'] = $idToken;
+        }
+
+        return $this->startAuthorizationRequest($request, $forcedParams);
+    }
+
+    /**
+     * @param array<string, string> $forcedParams Parameters applied after "authorization_params"
+     *                                            and after the event, so that neither can drop them
+     */
+    private function startAuthorizationRequest(Request $request, array $forcedParams = []): Response
+    {
+        $session = $this->getSession($request);
+        $prefix = $this->getSessionPrefix();
+
+        // both resolved before anything is stored in the session, so that a provider
+        // announcing no usable authorization endpoint, or a "check_path" given as a route
+        // name with no URL generator to resolve it, does not leave any attempt behind
+        $authorizationEndpoint = $this->discovery->getSecureEndpoint('authorization_endpoint');
+        $redirectUri = $this->httpUtils->generateUri($request, $this->options['check_path']);
+
+        $state = bin2hex(random_bytes(32));
+        // 256 bits of entropy, base64url-encoded to 43 characters instead of the 64 a hex
+        // encoding would take: the nonce travels to the provider and back inside the ID
+        // token, and longer values are known not to be accepted by every provider
+        $nonce = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+
+        $params = [
+            'response_type' => 'code',
+            'client_id' => $this->clientId,
+            'redirect_uri' => $redirectUri,
+            'scope' => implode(' ', $this->getScopes()),
+            'state' => $state,
+            'nonce' => $nonce,
+        ];
+
+        $codeVerifier = null;
+        if ($this->options['pkce_enabled']) {
+            $codeVerifier = $this->generateCodeVerifier();
+
+            $params['code_challenge'] = $this->deriveCodeChallenge($codeVerifier);
+            $params['code_challenge_method'] = $this->options['pkce_method'];
+        }
+
+        if (null !== ($this->options['max_age'] ?? null)) {
+            $params['max_age'] = (string) $this->options['max_age'];
+        }
+
+        $extraParams = $this->authorizationParams;
+
+        if (null !== $this->eventDispatcher) {
+            $event = new OidcAuthorizationRequestEvent($request, $this->options['firewall_name'], $extraParams);
+            $this->eventDispatcher->dispatch($event);
+            $extraParams = $event->getParams();
+
+            if ($managed = array_intersect_key($extraParams, array_flip(self::MANAGED_PARAMS))) {
+                throw new \LogicException(\sprintf('A listener of "%s" set the authorization request parameter(s) "%s", which the authenticator manages and does not take from a listener.', OidcAuthorizationRequestEvent::class, implode('", "', array_keys($managed))));
+            }
+        }
+
+        $params += $extraParams;
+
+        // applied after the event on purpose: a listener answering with "prompt=none", or
+        // simply dropping the key, would otherwise turn a re-authentication into a silent
+        // no-op and leave the user looping through the provider
+        $params = array_merge($params, $forcedParams);
+
+        // each pending attempt lives under its own session key, carrying the state, so
+        // that concurrent logins started from several tabs write distinct entries instead
+        // of rewriting a shared one; the count is capped, oldest attempts dropped first,
+        // so that an unauthenticated visitor cannot grow the session unbounded
+        // (spring-security's unbounded per-state storage was CVE-2021-22119)
+        $attemptKeys = $this->getAttemptKeys($session);
+        while (\count($attemptKeys) >= self::MAX_CONCURRENT_ATTEMPTS) {
+            $session->remove(array_shift($attemptKeys));
+        }
+
+        $session->set($prefix.'attempt.'.$state, [
+            'nonce' => $nonce,
+            'code_verifier' => $codeVerifier,
+            'redirect_uri' => $redirectUri,
+        ]);
+
+        $authorizationUrl = $authorizationEndpoint
+            .(str_contains($authorizationEndpoint, '?') ? '&' : '?')
+            .http_build_query($params, '', '&', \PHP_QUERY_RFC3986);
+
+        return new RedirectResponse($authorizationUrl);
+    }
+
+    public function authenticate(Request $request): Passport
+    {
+        $session = $this->getSession($request);
+        $prefix = $this->getSessionPrefix();
+
+        // the "state" is validated first: an unauthenticated request would otherwise get an
+        // attacker-supplied "error_description" stored in the session, through the exception
+        // the failure handler keeps there (the provider echoes "state" back on errors too,
+        // as RFC 6749, Section 4.1.2.1 requires)
+        $state = $request->query->get('state');
+        if (!\is_string($state) || '' === $state) {
+            throw new AuthenticationException('Invalid OIDC state parameter.');
+        }
+
+        // the attempt is looked up with hash_equals() over the stored keys, so the
+        // attacker-supplied value is never used as a session key, and an unknown state
+        // fails with the same message as an empty session (no oracle, no login CSRF)
+        $expectedKey = $prefix.'attempt.'.$state;
+        $matchedKey = null;
+
+        foreach ($this->getAttemptKeys($session) as $key) {
+            if (hash_equals($key, $expectedKey)) {
+                $matchedKey = $key;
+                break;
+            }
+        }
+
+        if (null === $matchedKey) {
+            throw new AuthenticationException('Invalid OIDC state parameter.');
+        }
+
+        // the matched attempt is consumed right away, whatever the outcome: a replayed
+        // callback fails on the state check, and the other pending attempts survive
+        $attempt = $session->get($matchedKey);
+        $session->remove($matchedKey);
+
+        $nonce = \is_array($attempt) ? $attempt['nonce'] ?? null : null;
+        $codeVerifier = \is_array($attempt) ? $attempt['code_verifier'] ?? null : null;
+        $redirectUri = \is_array($attempt) ? $attempt['redirect_uri'] ?? null : null;
+
+        $this->checkIssuerParameter($request);
+        $this->checkForProviderError($request);
+
+        $code = $request->query->get('code');
+        if (null === $code) {
+            throw new AuthenticationException('Missing authorization code in OIDC callback.');
+        }
+
+        // the nonce is mandatory in this flow, since start() always sends one: requiring it
+        // here means the check of the "nonce" claim in the ID token can never be skipped
+        if (!\is_string($nonce) || '' === $nonce) {
+            throw new AuthenticationException('Missing OIDC nonce in session.');
+        }
+
+        // same for the PKCE verifier when PKCE is enabled: exchanging the code
+        // without it would downgrade PKCE
+        if ($this->options['pkce_enabled'] && (!\is_string($codeVerifier) || '' === $codeVerifier)) {
+            throw new AuthenticationException('Missing PKCE code verifier in session.');
+        }
+
+        // and the redirect URI resolved when the flow started: RFC 6749, Section 4.1.3
+        // requires the token request to carry the very value the authorization request
+        // used, so it is replayed from the attempt instead of being recomputed from the
+        // callback request, whose host is not necessarily the one the flow started on
+        if (!\is_string($redirectUri) || '' === $redirectUri) {
+            throw new AuthenticationException('Missing OIDC redirect URI in session.');
+        }
+
+        $tokenData = $this->exchangeAuthorizationCode($redirectUri, $code, $codeVerifier);
+
+        // the signature is verified before the claims are read, so that a token the
+        // provider did not issue never reaches the claim validation at all
+        if (null !== $this->signatureVerifier) {
+            $idTokenClaims = $this->signatureVerifier->verify($tokenData['id_token']);
+        } else {
+            $idTokenClaims = $this->idToken->decode($tokenData['id_token']);
+        }
+
+        $this->idToken->validateClaims(
+            $idTokenClaims,
+            $this->discovery->getConfiguration()['issuer'] ?? '',
+            $this->clientId,
+            $nonce,
+            $this->options['max_age'] ?? null,
+        );
+
+        $claims = $this->fetchUserClaims($tokenData['access_token'], $idTokenClaims);
+
+        // The user is loaded by the firewall's user provider, from the configured identifier
+        // claim and with every claim passed as badge attributes: a provider implementing
+        // AttributesBasedUserProviderInterface receives them, which is where mapping
+        // claims onto roles belongs. The built-in "oidc" provider builds a self-contained
+        // OidcUser, without letting a claim define the identity or grant any role.
+        $passport = new SelfValidatingPassport(
+            new UserBadge($claims[$this->options['user_identifier_claim']], $this->userProvider->loadUserByIdentifier(...), $claims),
+        );
+        $passport->setAttribute('oidc_token_data', $tokenData);
+        // "auth_time" tells when the user actually authenticated at the provider, which a
+        // silent SSO login can place well in the past; it is only validated when "max_age"
+        // is requested, so anything non-numeric is discarded rather than trusted
+        $passport->setAttribute('oidc_auth_time', is_numeric($idTokenClaims['auth_time'] ?? null) ? (int) $idTokenClaims['auth_time'] : null);
+        // "amr" names the methods the provider actually used, from the registry of RFC 8176,
+        // which is what lets a trust resolver require one of them and not just any login
+        $amr = $idTokenClaims['amr'] ?? null;
+        $passport->setAttribute('oidc_amr', \is_array($amr) ? array_values(array_filter($amr, \is_string(...))) : []);
+
+        return $passport;
+    }
+
+    public function createToken(Passport $passport, string $firewallName): TokenInterface
+    {
+        $token = new PostAuthenticationToken($passport->getUser(), $firewallName, $passport->getUser()->getRoles());
+
+        $tokenData = $passport->getAttribute('oidc_token_data');
+        if (\is_array($tokenData)) {
+            $token->setAttribute('oidc_id_token', $tokenData['id_token'] ?? null);
+            $token->setAttribute('oidc_access_token', $tokenData['access_token'] ?? null);
+            // the refresh token of RFC 6749, Section 6 and the expiry of the access token
+            // it renews; both are null unless the provider issued them, as it only issues
+            // a refresh token when it was asked for one, and "expires_in" is optional
+            $token->setAttribute('oidc_refresh_token', $tokenData['refresh_token'] ?? null);
+            $token->setAttribute('oidc_access_token_expires_at', is_numeric($tokenData['expires_in'] ?? null) ? $this->clock->now()->getTimestamp() + (int) $tokenData['expires_in'] : null);
+        }
+
+        $methods = $passport->getAttribute('oidc_amr');
+        $methods = \is_array($methods) && $methods ? $methods : [AuthenticationMethod::UNSPECIFIED];
+        $now = $this->clock->now()->getTimestamp();
+
+        // a provider whose clock runs ahead would otherwise extend the window that
+        // IS_AUTHENTICATED_RECENTLY grants, so the claim never dates from the future
+        if (null !== $authTime = $passport->getAttribute('oidc_auth_time')) {
+            $token->setAuthenticationProofs(array_fill_keys($methods, min($authTime, $now)));
+        } elseif ([AuthenticationMethod::UNSPECIFIED] !== $methods) {
+            // without "auth_time" the login instant is all that is known about when, which is
+            // what AuthenticationProofsListener would record; the methods are still worth keeping
+            $token->setAuthenticationProofs(array_fill_keys($methods, $now));
+        }
+
+        return $token;
+    }
+
+    public function onAuthenticationSuccess(Request $request, TokenInterface $token, string $firewallName): ?Response
+    {
+        // each pending attempt carries a nonce and a PKCE verifier, which have no
+        // place in an authenticated session; a callback for one of them would
+        // re-authenticate anyway, the state check just fails it earlier
+        $session = $this->getSession($request);
+        foreach ($this->getAttemptKeys($session) as $key) {
+            $session->remove($key);
+        }
+
+        return $this->successHandler->onAuthenticationSuccess($request, $token);
+    }
+
+    public function onAuthenticationFailure(Request $request, AuthenticationException $exception): Response
+    {
+        return $this->failureHandler->onAuthenticationFailure($request, $exception);
+    }
+
+    public function isInteractive(): bool
+    {
+        return true;
+    }
+
+    private function checkForProviderError(Request $request): void
+    {
+        $error = $request->query->get('error');
+        if (null !== $error) {
+            $description = $request->query->get('error_description', $error);
+
+            // only the matched attempt was consumed: a provider error for one tab
+            // must not cancel the logins pending in the others
+            throw new AuthenticationException(\sprintf('OIDC provider returned an error: "%s"', $description));
+        }
+    }
+
+    /**
+     * Checks the "iss" authorization response parameter of RFC 9207, which ties the
+     * callback to the provider that issued it: without it, a client registered with
+     * several providers can be led to send the code of an honest one to the token
+     * endpoint of a malicious one (the mix-up attack of the OAuth 2.0 Security BCP).
+     * It is checked before the "error" parameter, which RFC 9207, Section 2 requires
+     * it to accompany too.
+     */
+    private function checkIssuerParameter(Request $request): void
+    {
+        $configuration = $this->discovery->getConfiguration();
+        $iss = $request->query->get('iss');
+
+        if (null === $iss) {
+            // a provider announcing support for the parameter sends it on every
+            // authorization response, so a callback without it did not come from it
+            if (true === ($configuration['authorization_response_iss_parameter_supported'] ?? null)) {
+                throw new AuthenticationException('The OIDC provider announces support for the "iss" authorization response parameter, but the callback does not carry it.');
+            }
+
+            return;
+        }
+
+        $expectedIssuer = $configuration['issuer'] ?? null;
+        if (!\is_string($iss) || '' === $iss || !\is_string($expectedIssuer) || !hash_equals($expectedIssuer, $iss)) {
+            throw new AuthenticationException('The OIDC callback "iss" parameter does not match the expected issuer.');
+        }
+    }
+
+    /**
+     * Exchanges the authorization code for tokens and ensures the token endpoint
+     * returned an ID and access token.
+     *
+     * @return array<string, mixed>
+     */
+    private function exchangeAuthorizationCode(string $redirectUri, string $code, ?string $codeVerifier): array
+    {
+        $tokenData = $this->oidcClient->exchangeCode($code, $redirectUri, $codeVerifier);
+
+        if (!\is_string($tokenData['id_token'] ?? null) || '' === $tokenData['id_token']) {
+            throw new AuthenticationException('The token endpoint response does not contain a valid "id_token".');
+        }
+        if (!\is_string($tokenData['access_token'] ?? null) || '' === $tokenData['access_token']) {
+            throw new AuthenticationException('The token endpoint response does not contain a valid "access_token".');
+        }
+
+        return $tokenData;
+    }
+
+    /**
+     * Returns the user claims from the configured source, the UserInfo endpoint or
+     * the validated ID token, and checks the claim the user identifier is read from.
+     * Claims fetched from UserInfo are tied to the authenticated user by the OIDC
+     * Core 1.0, Section 5.3.2 rule that its "sub" matches the ID token "sub".
+     *
+     * @param array<string, mixed> $idTokenClaims
+     *
+     * @return array<string, mixed>
+     */
+    private function fetchUserClaims(string $accessToken, array $idTokenClaims): array
+    {
+        if ('userinfo' === $this->options['user_data_source']) {
+            $claims = $this->oidcClient->fetchUserInfo($accessToken);
+        } else {
+            $claims = $idTokenClaims;
+        }
+
+        $userIdentifierClaim = $this->options['user_identifier_claim'];
+        if (!\is_string($claims[$userIdentifierClaim] ?? null) || '' === $claims[$userIdentifierClaim]) {
+            throw new AuthenticationException(\sprintf('The "%s" claim is missing or invalid in the OIDC response.', $userIdentifierClaim));
+        }
+
+        // the ID token "sub" is validated by OidcIdToken::validateClaims(), before the
+        // UserInfo request this compares its answer to
+        if ('userinfo' === $this->options['user_data_source']
+            && (!\is_string($claims['sub'] ?? null) || !hash_equals($idTokenClaims['sub'], $claims['sub']))
+        ) {
+            throw new AuthenticationException('The "sub" claim from the UserInfo endpoint does not match the ID token.');
+        }
+
+        return $claims;
+    }
+
+    /**
+     * Returns the scopes of the authorization request, always including "openid",
+     * which OIDC Core 1.0, Section 3.1.2.1 requires for the request to return an
+     * ID token. Each configured value may hold several space-separated scopes, so
+     * that an environment variable can carry them all.
+     *
+     * @return list<string>
+     */
+    private function getScopes(): array
+    {
+        $scopes = ['openid'];
+        foreach ((array) $this->options['scope'] as $scope) {
+            foreach (preg_split('/\s+/', (string) $scope, -1, \PREG_SPLIT_NO_EMPTY) as $value) {
+                $scopes[] = $value;
+            }
+        }
+
+        return array_values(array_unique($scopes));
+    }
+
+    private function generateCodeVerifier(): string
+    {
+        // A 32-byte (256-bit) verifier, hex-encoded to 64 characters, as recommended
+        // by RFC 7636 Appendix B
+        return bin2hex(random_bytes(32));
+    }
+
+    private function deriveCodeChallenge(string $codeVerifier): string
+    {
+        return match ($this->options['pkce_method']) {
+            // BASE64URL(SHA256(verifier)) without padding, per RFC 7636, Section 4.2
+            'S256' => rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '='),
+            'plain' => $codeVerifier,
+        };
+    }
+
+    private function getSession(Request $request): SessionInterface
+    {
+        if (!$request->hasSession()) {
+            throw new \LogicException('The "oidc_login" authenticator stores the OIDC "state", "nonce" and PKCE code verifier in the session, which this request has none of: it cannot be used with the session disabled, nor on a stateless firewall.');
+        }
+
+        return $request->getSession();
+    }
+
+    /**
+     * Returns the session keys of the pending attempts, oldest first.
+     *
+     * @return list<string>
+     */
+    private function getAttemptKeys(SessionInterface $session): array
+    {
+        $attemptPrefix = $this->getSessionPrefix().'attempt.';
+
+        $keys = [];
+        foreach (array_keys($session->all()) as $key) {
+            // a numeric session attribute name comes back as an int key
+            if (str_starts_with((string) $key, $attemptPrefix)) {
+                $keys[] = (string) $key;
+            }
+        }
+
+        return $keys;
+    }
+
+    private function getSessionPrefix(): string
+    {
+        return '_security.oidc_login.'.$this->options['firewall_name'].'.';
+    }
+}

@@ -15,6 +15,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\Security\Core\Authentication\AuthenticationMethod;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
@@ -23,6 +24,7 @@ use Symfony\Component\Security\Core\User\PasswordUpgraderInterface;
 use Symfony\Component\Security\Core\User\UserProviderInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationFailureHandlerInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationSuccessHandlerInterface;
+use Symfony\Component\Security\Http\Authenticator\Passport\Badge\AuthenticationMethodBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\CsrfTokenBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\PasswordUpgradeBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\RememberMeBadge;
@@ -70,9 +72,27 @@ class FormLoginAuthenticator extends AbstractLoginFormAuthenticator
 
     public function supports(Request $request): bool
     {
-        return ($this->options['post_only'] ? $request->isMethod('POST') : true)
-            && $this->httpUtils->checkRequestPath($request, $this->options['check_path'])
-            && ($this->options['form_only'] ? 'form' === $request->getContentTypeFormat() : true);
+        $reasons = $request->attributes->get(SecurityRequestAttributes::UNSUPPORTED_REASONS);
+
+        if ($this->options['post_only'] && !$request->isMethod('POST')) {
+            $reasons?->add(\sprintf('the request method is "%s", and the "post_only" option requires POST', $request->getMethod()));
+
+            return false;
+        }
+
+        if (!$this->httpUtils->checkRequestPath($request, $this->options['check_path'])) {
+            $reasons?->add(\sprintf('the request path "%s" does not match the "check_path" option "%s"', $request->getPathInfo(), $this->options['check_path']));
+
+            return false;
+        }
+
+        if ($this->options['form_only'] && 'form' !== $request->getContentTypeFormat()) {
+            $reasons?->add(\sprintf('the "Content-Type" header is %s, and the "form_only" option requires a form one', ($contentType = $request->headers->get('Content-Type')) ? '"'.$contentType.'"' : 'missing'));
+
+            return false;
+        }
+
+        return true;
     }
 
     public function authenticate(Request $request): Passport
@@ -80,7 +100,7 @@ class FormLoginAuthenticator extends AbstractLoginFormAuthenticator
         $credentials = $this->getCredentials($request);
 
         $userBadge = new UserBadge($credentials['username'], $this->userProvider->loadUserByIdentifier(...));
-        $passport = new Passport($userBadge, new PasswordCredentials($credentials['password']), [new RememberMeBadge()]);
+        $passport = new Passport($userBadge, new PasswordCredentials($credentials['password']), [new RememberMeBadge(), new AuthenticationMethodBadge(AuthenticationMethod::PASSWORD)]);
 
         if ($this->options['enable_csrf']) {
             $passport->addBadge(new CsrfTokenBadge($this->options['csrf_token_id'], $credentials['csrf_token']));

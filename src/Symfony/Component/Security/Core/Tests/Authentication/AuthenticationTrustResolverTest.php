@@ -11,10 +11,15 @@
 
 namespace Symfony\Component\Security\Core\Tests\Authentication;
 
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Clock\MockClock;
+use Symfony\Component\Security\Core\Authentication\AuthenticationMethod;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
 use Symfony\Component\Security\Core\Authentication\Token\RememberMeToken;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
+use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Security\Core\User\InMemoryUser;
 use Symfony\Component\Security\Core\User\UserInterface;
 
@@ -28,6 +33,119 @@ class AuthenticationTrustResolverTest extends TestCase
         $this->assertFalse($resolver->isRememberMe(new FakeCustomToken()));
         $this->assertTrue($resolver->isRememberMe(new RealCustomRememberMeToken()));
         $this->assertTrue($resolver->isRememberMe($this->getRememberMeToken()));
+    }
+
+    public function testIsAuthenticatedRecently()
+    {
+        $clock = new MockClock('2026-09-13 12:00:00');
+        $resolver = new AuthenticationTrustResolver(900, clock: $clock);
+
+        $this->assertFalse($resolver->isAuthenticatedRecently(null));
+
+        // a token that never went through an interactive login carries no stamp
+        $this->assertFalse($resolver->isAuthenticatedRecently($this->getUsernamePasswordToken()));
+
+        $fresh = $this->getUsernamePasswordToken();
+        $fresh->setAuthenticationProofs([AuthenticationMethod::UNSPECIFIED => $clock->now()->getTimestamp()]);
+        $this->assertTrue($resolver->isAuthenticatedRecently($fresh));
+
+        $clock->sleep(900);
+        $this->assertTrue($resolver->isAuthenticatedRecently($fresh));
+        $clock->sleep(1);
+        $this->assertFalse($resolver->isAuthenticatedRecently($fresh));
+    }
+
+    public function testTheMostRecentProofDecidesRecency()
+    {
+        $clock = new MockClock('2026-09-13 12:00:00');
+        $resolver = new AuthenticationTrustResolver(900, clock: $clock);
+        $token = $this->getUsernamePasswordToken();
+
+        $token->setAuthenticationProofs([
+            AuthenticationMethod::ONE_TIME_PASSWORD => $clock->now()->getTimestamp() - 7200,
+            AuthenticationMethod::PASSWORD => $clock->now()->getTimestamp() - 60,
+        ]);
+        $this->assertTrue($resolver->isAuthenticatedRecently($token));
+
+        $token->setAuthenticationProofs([
+            AuthenticationMethod::ONE_TIME_PASSWORD => $clock->now()->getTimestamp() - 7200,
+            AuthenticationMethod::PASSWORD => $clock->now()->getTimestamp() - 901,
+        ]);
+        $this->assertFalse($resolver->isAuthenticatedRecently($token));
+    }
+
+    public function testAnEmptyProofsMapIsNotRecent()
+    {
+        $resolver = new AuthenticationTrustResolver();
+        $token = $this->getUsernamePasswordToken();
+        $token->setAuthenticationProofs([]);
+
+        $this->assertFalse($resolver->isAuthenticatedRecently($token));
+    }
+
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testATokenWithoutTheProofsMethodsIsDeprecatedAndNeverRecent()
+    {
+        $token = $this->createStub(TokenInterface::class);
+        $token->method('getUser')->willReturn(new InMemoryUser('wouter', 'password', ['ROLE_USER']));
+
+        $this->expectUserDeprecationMessage(\sprintf('Since symfony/security-core 8.2: Not implementing "%s::getAuthenticationProofs()" is deprecated, the method will be added to "%s" in 9.0; no authentication proof is read until then.', get_debug_type($token), TokenInterface::class));
+
+        $this->assertFalse((new AuthenticationTrustResolver())->isAuthenticatedRecently($token));
+    }
+
+    public function testIsAuthenticatedVeryRecently()
+    {
+        $clock = new MockClock('2026-09-13 12:00:00');
+        $resolver = new AuthenticationTrustResolver(900, 60, $clock);
+
+        $this->assertFalse($resolver->isAuthenticatedVeryRecently(null));
+        $this->assertFalse($resolver->isAuthenticatedVeryRecently($this->getUsernamePasswordToken()));
+
+        $fresh = $this->getUsernamePasswordToken();
+        $fresh->setAuthenticationProofs([AuthenticationMethod::UNSPECIFIED => $clock->now()->getTimestamp()]);
+        $this->assertTrue($resolver->isAuthenticatedVeryRecently($fresh));
+
+        $clock->sleep(60);
+        $this->assertTrue($resolver->isAuthenticatedVeryRecently($fresh));
+        $clock->sleep(1);
+        $this->assertFalse($resolver->isAuthenticatedVeryRecently($fresh));
+        // the wider window still holds
+        $this->assertTrue($resolver->isAuthenticatedRecently($fresh));
+
+        $remembered = $this->getRememberMeToken();
+        $remembered->setAuthenticationProofs([AuthenticationMethod::UNSPECIFIED => $clock->now()->getTimestamp()]);
+        $this->assertFalse($resolver->isAuthenticatedVeryRecently($remembered));
+    }
+
+    private function getUsernamePasswordToken(): UsernamePasswordToken
+    {
+        return new UsernamePasswordToken(new InMemoryUser('wouter', 'password', ['ROLE_USER']), 'main', ['ROLE_USER']);
+    }
+
+    public function testIsAuthenticatedRecentlyHandlesANullTokenWhateverIsFullFledgedSays()
+    {
+        // the default isFullFledged() keeps null out, but nothing guarantees an
+        // override does, and reaching getAuthenticationProofs() on null would be fatal
+        $resolver = new class extends AuthenticationTrustResolver {
+            public function isFullFledged(?TokenInterface $token = null): bool
+            {
+                return true;
+            }
+        };
+
+        $this->assertFalse($resolver->isAuthenticatedRecently(null));
+    }
+
+    public function testRememberMeIsNeverAuthenticatedRecently()
+    {
+        $resolver = new AuthenticationTrustResolver();
+
+        $token = $this->getRememberMeToken();
+        $token->setAuthenticationProofs([AuthenticationMethod::UNSPECIFIED => time()]);
+
+        $this->assertFalse($resolver->isAuthenticatedRecently($token));
     }
 
     public function testisFullFledged()

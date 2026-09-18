@@ -100,6 +100,7 @@ class YamlFileLoaderTest extends TestCase
         $this->assertEquals(['https'], $route->getSchemes());
         $this->assertEquals('context.getMethod() == "GET"', $route->getCondition());
         $this->assertTrue($route->getDefault('_stateless'));
+        $this->assertSame('api', $route->getDefault('_firewall'));
     }
 
     public function testLoadWithResource()
@@ -119,6 +120,17 @@ class YamlFileLoaderTest extends TestCase
             $this->assertSame('', $route->getHost());
             $this->assertSame('context.getMethod() == "POST"', $route->getCondition());
         }
+    }
+
+    public function testLoadWithAddCondition()
+    {
+        $loader = new YamlFileLoader(new FileLocator([__DIR__.'/../Fixtures']));
+        $routeCollection = $loader->load('add_condition.yml');
+
+        $this->assertSame('(context.getMethod() == "GET") and (request.isSecure())', $routeCollection->get('route_with_conditions')->getCondition());
+        $this->assertSame('(context.getMethod() == "GET") and (request.isSecure())', $routeCollection->get('added_blog_show')->getCondition());
+        $this->assertSame('request.isSecure()', $routeCollection->get('added_blog_show_inherited')->getCondition());
+        $this->assertSame('(context.getMethod() == "POST") and (request.isSecure())', $routeCollection->get('replaced_blog_show')->getCondition());
     }
 
     public function testLoadRouteWithControllerAttribute()

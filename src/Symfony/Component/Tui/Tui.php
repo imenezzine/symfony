@@ -68,6 +68,7 @@ class Tui implements RenderRequestorInterface, TickRuntimeInterface
     private TickScheduler $tickScheduler;
     private AdaptativeTicker $adaptativeTicker;
     private EventDispatcherInterface $eventDispatcher;
+    private readonly TerminalInterface $terminal;
 
     /** @var (\Closure(TickEvent): mixed)|null */
     private ?\Closure $onTick = null;
@@ -83,22 +84,28 @@ class Tui implements RenderRequestorInterface, TickRuntimeInterface
     private ?Suspension $runSuspension = null;
 
     /**
-     * @param Renderer|null $renderer @internal Override the default renderer; framework-internal use only
+     * @param Renderer|null                 $renderer        @internal Override the default renderer; framework-internal use only
+     * @param EventDispatcherInterface|null $eventDispatcher Reference dispatcher; the terminal must use the same instance
      */
     public function __construct(
         ?StyleSheet $styleSheet = null,
-        private readonly TerminalInterface $terminal = new Terminal(),
+        ?TerminalInterface $terminal = null,
         ?Keybindings $keybindings = null,
         ?FontRegistry $fontRegistry = null,
         ?Renderer $renderer = null,
         ?EventDispatcherInterface $eventDispatcher = null,
     ) {
+        $this->eventDispatcher = $eventDispatcher ?? $terminal?->getEventDispatcher() ?? new EventDispatcher();
+        $this->terminal = $terminal ?? new Terminal($this->eventDispatcher);
+
+        if ($this->eventDispatcher !== $this->terminal->getEventDispatcher()) {
+            throw new InvalidArgumentException('The terminal must use the TUI event dispatcher.');
+        }
         $this->keybindings = $keybindings ?? new Keybindings();
         $this->root = new ContainerWidget();
         $this->root->expandVertically(true);
         $this->renderer = $renderer ?? new Renderer($styleSheet, $fontRegistry);
-        $this->screenWriter = new ScreenWriter($terminal);
-        $this->eventDispatcher = $eventDispatcher ?? new EventDispatcher();
+        $this->screenWriter = new ScreenWriter($this->terminal);
 
         // Share the KeyParser so Kitty protocol state is consistent
         $this->focusManager = new FocusManager(
@@ -276,7 +283,8 @@ class Tui implements RenderRequestorInterface, TickRuntimeInterface
         // Move cursor to end of content
         $state = $this->screenWriter->getState();
         if ($state['line_count'] > 0) {
-            $lineDiff = $state['line_count'] - $state['cursor_row'];
+            // cursor_row is a zero-based index, line_count a count
+            $lineDiff = $state['line_count'] - 1 - $state['cursor_row'];
 
             if ($lineDiff > 0) {
                 $this->terminal->write("\x1b[{$lineDiff}B");
@@ -320,15 +328,14 @@ class Tui implements RenderRequestorInterface, TickRuntimeInterface
     }
 
     /**
-     * Register a listener for a widget event.
+     * Register a listener for a TUI event.
      *
      * The event class is inferred from the listener's first parameter type hint:
      *
      *     $tui->addListener(function (InputEvent $event) { ... });
      *
-     * This is the primary way to react to widget events (submit, cancel,
-     * change, select, etc.). All events dispatched by any widget in the
-     * tree are routed through this single dispatcher.
+     * This is the primary way to react to widget and lifecycle events. All
+     * events are routed through a single dispatcher.
      *
      * Use {@see AbstractEvent::getTarget()} to filter by source widget when
      * listening for a shared event type like CancelEvent.
@@ -472,7 +479,7 @@ class Tui implements RenderRequestorInterface, TickRuntimeInterface
             $this->renderRequested = false;
             $columns = $this->terminal->getColumns();
             $rows = $this->terminal->getRows();
-            $this->screenWriter->writeLines($this->renderer->render($this->root, $columns, $rows));
+            $this->screenWriter->writeFrame($this->renderer->renderFrame($this->root, $columns, $rows));
         }
     }
 

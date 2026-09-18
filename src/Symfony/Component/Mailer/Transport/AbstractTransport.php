@@ -20,10 +20,12 @@ use Symfony\Component\Mailer\Event\FailedMessageEvent;
 use Symfony\Component\Mailer\Event\MessageEvent;
 use Symfony\Component\Mailer\Event\SentMessageEvent;
 use Symfony\Component\Mailer\Exception\LogicException;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\BodyRendererInterface;
 use Symfony\Component\Mime\RawMessage;
+use Symfony\Component\RateLimiter\RateLimiterFactoryInterface;
 
 /**
  * @author Fabien Potencier <fabien@symfony.com>
@@ -33,6 +35,7 @@ abstract class AbstractTransport implements TransportInterface
     private LoggerInterface $logger;
     private float $rate = 0;
     private float $lastSent = 0;
+    private ?RateLimiterFactoryInterface $rateLimiterFactory = null;
 
     public function __construct(
         private ?EventDispatcherInterface $dispatcher = null,
@@ -62,10 +65,15 @@ abstract class AbstractTransport implements TransportInterface
     {
         $message = clone $message;
         $envelope = null !== $envelope ? clone $envelope : Envelope::create($message);
+        $rateLimiter = $this->rateLimiterFactory?->create();
 
         try {
             if (!$this->dispatcher) {
+                $this->ensureRemoteTemplateSupport($message);
                 $sentMessage = new SentMessage($message, $envelope);
+
+                $rateLimiter?->consume(1)->ensureAccepted();
+
                 $this->doSend($sentMessage);
 
                 return $sentMessage;
@@ -84,9 +92,13 @@ abstract class AbstractTransport implements TransportInterface
                 throw new LogicException(\sprintf('You must configure a "%s" when a "%s" instance has a text or HTML template set.', BodyRendererInterface::class, get_debug_type($message)));
             }
 
+            $this->ensureRemoteTemplateSupport($message);
+
             $sentMessage = new SentMessage($message, $envelope);
 
             try {
+                $rateLimiter?->consume(1)->ensureAccepted();
+
                 $this->doSend($sentMessage);
             } catch (\Throwable $error) {
                 $this->dispatcher->dispatch(new FailedMessageEvent($message, $error));
@@ -101,6 +113,20 @@ abstract class AbstractTransport implements TransportInterface
         } finally {
             $this->checkThrottling();
         }
+    }
+
+    /**
+     * Sets the rate limiter used to throttle the messages sent by this transport.
+     *
+     * When the limit is exceeded, send() throws a RateLimitExceededException.
+     *
+     * @return $this
+     */
+    public function setRateLimiterFactory(RateLimiterFactoryInterface $rateLimiterFactory): static
+    {
+        $this->rateLimiterFactory = $rateLimiterFactory;
+
+        return $this;
     }
 
     abstract protected function doSend(SentMessage $message): void;
@@ -118,6 +144,13 @@ abstract class AbstractTransport implements TransportInterface
     protected function getLogger(): LoggerInterface
     {
         return $this->logger;
+    }
+
+    private function ensureRemoteTemplateSupport(RawMessage $message): void
+    {
+        if ($message instanceof RemoteTemplateEmail && null !== $message->getRemoteTemplate() && !$this instanceof RemoteTemplateTransportInterface) {
+            throw new LogicException(\sprintf('The "%s" transport does not support sending emails rendered from a remote template.', get_debug_type($this)));
+        }
     }
 
     private function checkThrottling(): void

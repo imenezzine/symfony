@@ -21,9 +21,12 @@ use Symfony\Component\Mailer\Bridge\Postmark\Transport\MessageStreamHeader;
 use Symfony\Component\Mailer\Bridge\Postmark\Transport\PostmarkApiTransport;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\Mailer\Exception\TransportException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -111,6 +114,68 @@ class PostmarkApiTransportTest extends TestCase
         $message = $transport->send($mail);
 
         $this->assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testSendRemoteTemplate()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $this->assertSame('POST', $method);
+            $this->assertSame('https://api.postmarkapp.com/email/withTemplate', $url);
+
+            $body = json_decode($options['body'], true);
+            $this->assertSame(12345, $body['TemplateId']);
+            $this->assertSame(['name' => 'Fabien'], $body['TemplateModel']);
+            $this->assertArrayNotHasKey('TemplateAlias', $body);
+            $this->assertArrayNotHasKey('Subject', $body);
+            $this->assertArrayNotHasKey('TextBody', $body);
+            $this->assertArrayNotHasKey('HtmlBody', $body);
+
+            return new JsonMockResponse(['MessageID' => 'foobar'], [
+                'http_code' => 200,
+            ]);
+        });
+
+        $transport = new PostmarkApiTransport('KEY', $client);
+
+        $mail = (new RemoteTemplateEmail())
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->template('12345', ['name' => 'Fabien']);
+
+        $message = $transport->send($mail);
+
+        $this->assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testRemoteTemplateWithAlias()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('welcome');
+        $envelope = new Envelope(new Address('fabpot@symfony.com', 'Fabien'), [new Address('saif.gmati@symfony.com', 'Saif Eddin')]);
+
+        $transport = new PostmarkApiTransport('KEY');
+        $method = new \ReflectionMethod(PostmarkApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('welcome', $payload['TemplateAlias']);
+        $this->assertArrayNotHasKey('TemplateId', $payload);
+        $this->assertEquals(new \stdClass(), $payload['TemplateModel']);
+    }
+
+    public function testRemoteTemplateRejectsSubject()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->subject('Hello!')
+            ->template('welcome');
+        $envelope = new Envelope(new Address('fabpot@symfony.com', 'Fabien'), [new Address('saif.gmati@symfony.com', 'Saif Eddin')]);
+
+        $transport = new PostmarkApiTransport('KEY');
+        $method = new \ReflectionMethod(PostmarkApiTransport::class, 'getPayload');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Postmark does not support overriding the subject of a template; define the subject in the template itself.');
+
+        $method->invoke($transport, $email, $envelope);
     }
 
     public function testSendThrowsForErrorResponse()
@@ -240,5 +305,38 @@ class PostmarkApiTransportTest extends TestCase
         $this->expectException(TransportException::class);
 
         $method->invoke($transport, $email, $envelope);
+    }
+
+    public function testTrackingHeader()
+    {
+        $transport = new PostmarkApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(PostmarkApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('alice@system.com'), [new Address('bob@system.com')]);
+
+        $enabled = new Email();
+        $enabled->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+        $enabledPayload = $method->invoke($transport, $enabled, $envelope);
+        $this->assertTrue($enabledPayload['TrackOpens']);
+        $this->assertSame('HtmlAndText', $enabledPayload['TrackLinks']);
+
+        $disabled = new Email();
+        $disabled->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+        $disabledPayload = $method->invoke($transport, $disabled, $envelope);
+        $this->assertFalse($disabledPayload['TrackOpens']);
+        $this->assertSame('None', $disabledPayload['TrackLinks']);
+    }
+
+    public function testTrackingHeaderControlsOpensAndClicksIndependently()
+    {
+        $transport = new PostmarkApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(PostmarkApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('alice@system.com'), [new Address('bob@system.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: false));
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertFalse($payload['TrackOpens']);
+        $this->assertArrayNotHasKey('TrackLinks', $payload);
     }
 }

@@ -170,6 +170,27 @@ abstract class BaseNode implements NodeInterface
     }
 
     /**
+     * Returns true if null is an acceptable input value for this node.
+     */
+    public function isNullable(): bool
+    {
+        if ($this->hasDefaultValue() && null === $this->getDefaultValue()) {
+            return true;
+        }
+
+        foreach ($this->equivalentValues as [$from, $to]) {
+            // the builder registers a null equivalence on every node; only a mapping that
+            // replaces null makes it acceptable, as an identity mapping leaves it to be
+            // rejected by the type check
+            if (null === $from && null !== $to) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Set this node as required.
      */
     public function setRequired(bool $boolean): void
@@ -212,6 +233,14 @@ abstract class BaseNode implements NodeInterface
     public function setNormalizationClosures(array $closures): void
     {
         $this->normalizationClosures = $closures;
+    }
+
+    /**
+     * Tells whether closures are used to normalize the value.
+     */
+    public function hasNormalizationClosures(): bool
+    {
+        return (bool) $this->normalizationClosures;
     }
 
     /**

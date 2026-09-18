@@ -21,9 +21,12 @@ use Symfony\Component\Security\Http\AccessToken\AccessTokenExtractorInterface;
 use Symfony\Component\Security\Http\AccessToken\AccessTokenHandlerInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationFailureHandlerInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationSuccessHandlerInterface;
+use Symfony\Component\Security\Http\Authenticator\Passport\Badge\UserBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Passport;
 use Symfony\Component\Security\Http\Authenticator\Passport\SelfValidatingPassport;
 use Symfony\Component\Security\Http\Authenticator\Token\PostAuthenticationToken;
+use Symfony\Component\Security\Http\EntryPoint\FallbackAuthenticationEntryPointInterface;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 /**
@@ -32,10 +35,27 @@ use Symfony\Contracts\Translation\TranslatorInterface;
  *
  * @author Florent Morselli <florent.morselli@spomky-labs.com>
  */
-class AccessTokenAuthenticator implements AuthenticatorInterface
+class AccessTokenAuthenticator implements AuthenticatorInterface, FallbackAuthenticationEntryPointInterface
 {
+    /**
+     * The token attribute holding the scopes the access token was granted, as a list of strings.
+     *
+     * @see https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
+     */
+    public const SCOPE_ATTRIBUTE = 'oauth2_scope';
+
+    /**
+     * The claims a scope is read from, in order of precedence: "scope" is the one RFC 9068 §2.2.3
+     * and RFC 7662 §2.2 define, "scp" is the spelling some providers use instead.
+     */
+    private const SCOPE_CLAIMS = ['scope', 'scp'];
+
     private ?TranslatorInterface $translator = null;
 
+    /**
+     * @param string|null $resourceMetadataUri The URL of the RFC 9728 protected resource metadata document to advertise
+     *                                         in the "WWW-Authenticate" header; a path is resolved against the request
+     */
     public function __construct(
         private readonly AccessTokenHandlerInterface $accessTokenHandler,
         private readonly AccessTokenExtractorInterface $accessTokenExtractor,
@@ -43,12 +63,19 @@ class AccessTokenAuthenticator implements AuthenticatorInterface
         private readonly ?AuthenticationSuccessHandlerInterface $successHandler = null,
         private readonly ?AuthenticationFailureHandlerInterface $failureHandler = null,
         private readonly ?string $realm = null,
+        private readonly ?string $resourceMetadataUri = null,
     ) {
     }
 
     public function supports(Request $request): ?bool
     {
-        return null === $this->accessTokenExtractor->extractAccessToken($request) ? false : null;
+        if (null === $this->accessTokenExtractor->extractAccessToken($request)) {
+            $request->attributes->get(SecurityRequestAttributes::UNSUPPORTED_REASONS)?->add(\sprintf('the "%s" extractor found no access token in the request', get_debug_type($this->accessTokenExtractor)));
+
+            return false;
+        }
+
+        return null;
     }
 
     public function authenticate(Request $request): Passport
@@ -68,7 +95,10 @@ class AccessTokenAuthenticator implements AuthenticatorInterface
 
     public function createToken(Passport $passport, string $firewallName): TokenInterface
     {
-        return new PostAuthenticationToken($passport->getUser(), $firewallName, $passport->getUser()->getRoles());
+        $token = new PostAuthenticationToken($passport->getUser(), $firewallName, $passport->getUser()->getRoles());
+        $token->setAttribute(self::SCOPE_ATTRIBUTE, self::extractScopes($passport->getBadge(UserBadge::class)?->getAttributes() ?? []));
+
+        return $token;
     }
 
     public function onAuthenticationSuccess(Request $request, TokenInterface $token, string $firewallName): ?Response
@@ -91,7 +121,19 @@ class AccessTokenAuthenticator implements AuthenticatorInterface
         return new Response(
             null,
             Response::HTTP_UNAUTHORIZED,
-            ['WWW-Authenticate' => $this->getAuthenticateHeader($errorMessage)]
+            ['WWW-Authenticate' => $this->getAuthenticateHeader($request, 'invalid_token', $errorMessage)]
+        );
+    }
+
+    public function start(Request $request, ?AuthenticationException $authException = null): Response
+    {
+        // RFC 6750, Section 3: the challenge of a request that carries no access token at all
+        // holds no error code, as an error code describes a token the client did send. This is
+        // the request an RFC 9728 client makes to discover where to get a token from.
+        return new Response(
+            null,
+            Response::HTTP_UNAUTHORIZED,
+            ['WWW-Authenticate' => $this->getAuthenticateHeader($request)]
         );
     }
 
@@ -101,14 +143,42 @@ class AccessTokenAuthenticator implements AuthenticatorInterface
     }
 
     /**
-     * @see https://datatracker.ietf.org/doc/html/rfc6750#section-3
+     * @return string[]
+     *
+     * @see https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
      */
-    private function getAuthenticateHeader(?string $errorDescription = null): string
+    private static function extractScopes(array $claims): array
+    {
+        foreach (self::SCOPE_CLAIMS as $claim) {
+            $scope = $claims[$claim] ?? null;
+            if (\is_array($scope)) {
+                $scope = implode(' ', array_filter($scope, \is_string(...)));
+            }
+            if (!\is_string($scope) || '' === trim($scope)) {
+                continue;
+            }
+
+            return array_values(array_unique(preg_split('/\s+/', trim($scope))));
+        }
+
+        return [];
+    }
+
+    /**
+     * @see https://datatracker.ietf.org/doc/html/rfc6750#section-3
+     * @see https://datatracker.ietf.org/doc/html/rfc9728#section-5.1
+     */
+    private function getAuthenticateHeader(Request $request, ?string $error = null, ?string $errorDescription = null): string
     {
         $data = [
             'realm' => $this->realm,
-            'error' => 'invalid_token',
+            'error' => $error,
             'error_description' => $errorDescription,
+            'resource_metadata' => match (true) {
+                null === $this->resourceMetadataUri => null,
+                str_starts_with($this->resourceMetadataUri, '/') => $request->getUriForPath($this->resourceMetadataUri),
+                default => $this->resourceMetadataUri,
+            },
         ];
         $values = [];
         foreach ($data as $k => $v) {
@@ -118,6 +188,6 @@ class AccessTokenAuthenticator implements AuthenticatorInterface
             $values[] = \sprintf('%s="%s"', $k, $v);
         }
 
-        return \sprintf('Bearer %s', implode(',', $values));
+        return $values ? 'Bearer '.implode(',', $values) : 'Bearer';
     }
 }

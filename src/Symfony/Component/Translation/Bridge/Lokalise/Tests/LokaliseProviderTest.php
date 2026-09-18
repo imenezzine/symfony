@@ -13,6 +13,7 @@ namespace Symfony\Component\Translation\Bridge\Lokalise\Tests;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
+use PHPUnit\Framework\Attributes\TestWith;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -247,6 +248,155 @@ class LokaliseProviderTest extends ProviderTestCase
         $translatorBag->addCatalogue(new MessageCatalogue('fr', [
             'messages' => ['young_dog' => 'chiot'],
             'validators' => ['post.num_comments' => '{count, plural, one {# commentaire} other {# commentaires}}'],
+        ]));
+
+        $provider->write($translatorBag);
+        $this->assertTrue($updateProcessed, 'Translations update was not called.');
+    }
+
+    public function testWriteSendsNumericKeysAsStrings()
+    {
+        $getLanguagesResponse = function (string $method, string $url): ResponseInterface {
+            $this->assertSame('GET', $method);
+            $this->assertSame('https://api.lokalise.com/api2/projects/PROJECT_ID/languages', $url);
+
+            return new JsonMockResponse(['languages' => [
+                ['lang_iso' => 'en'],
+                ['lang_iso' => 'fr'],
+            ]]);
+        };
+
+        $getKeysIdsResponse = function (string $method, string $url, array $options = []): ResponseInterface {
+            $this->assertSame('GET', $method);
+            $this->assertSame(['filter_keys' => '', 'filter_filenames' => 'messages.xliff', 'limit' => 5000, 'page' => 1], $options['query']);
+
+            return new JsonMockResponse(['keys' => []]);
+        };
+
+        $createKeysResponse = function (string $method, string $url, array $options = []): ResponseInterface {
+            $this->assertSame('POST', $method);
+            $this->assertSame(['0', 'young_dog'], array_column(json_decode($options['body'], true)['keys'], 'key_name'));
+
+            return new JsonMockResponse(['keys' => [
+                ['key_name' => ['web' => '0'], 'key_id' => 7],
+                ['key_name' => ['web' => 'young_dog'], 'key_id' => 29],
+            ]]);
+        };
+
+        $updateProcessed = false;
+        $updateTranslationsResponse = function (string $method, string $url, array $options = []) use (&$updateProcessed): ResponseInterface {
+            $updateProcessed = true;
+            $keys = json_decode($options['body'], true)['keys'];
+
+            $this->assertSame('PUT', $method);
+            $this->assertSame([7, 29], array_column($keys, 'key_id'));
+            $this->assertSame([
+                [
+                    ['language_iso' => 'en', 'translation' => 'zero'],
+                    ['language_iso' => 'fr', 'translation' => 'zéro'],
+                ],
+                [
+                    ['language_iso' => 'en', 'translation' => 'puppy'],
+                    ['language_iso' => 'fr', 'translation' => 'chiot'],
+                ],
+            ], array_column($keys, 'translations'));
+
+            return new MockResponse();
+        };
+
+        $provider = self::createProvider((new MockHttpClient([
+            $getLanguagesResponse,
+            $getKeysIdsResponse,
+            $createKeysResponse,
+            $updateTranslationsResponse,
+        ]))->withOptions([
+            'base_uri' => 'https://api.lokalise.com/api2/projects/PROJECT_ID/',
+            'headers' => ['X-Api-Token' => 'API_KEY'],
+        ]), $this->getLoader(), $this->getLogger(), $this->getDefaultLocale(), 'api.lokalise.com');
+
+        $translatorBag = new TranslatorBag();
+        $translatorBag->addCatalogue(new MessageCatalogue('en', [
+            'messages' => ['0' => 'zero', 'young_dog' => 'puppy'],
+        ]));
+        $translatorBag->addCatalogue(new MessageCatalogue('fr', [
+            'messages' => ['0' => 'zéro', 'young_dog' => 'chiot'],
+        ]));
+
+        $provider->write($translatorBag);
+        $this->assertTrue($updateProcessed, 'Translations update was not called.');
+    }
+
+    public function testWriteDoesNotCreateKeysAlreadyExistingOnLokalise()
+    {
+        $getLanguagesResponse = function (string $method, string $url): ResponseInterface {
+            $this->assertSame('GET', $method);
+            $this->assertSame('https://api.lokalise.com/api2/projects/PROJECT_ID/languages', $url);
+
+            return new JsonMockResponse(['languages' => [
+                ['lang_iso' => 'en'],
+                ['lang_iso' => 'fr'],
+            ]]);
+        };
+
+        $getKeysIdsResponse = function (string $method, string $url, array $options = []): ResponseInterface {
+            $this->assertSame('GET', $method);
+            $this->assertSame(['filter_keys' => '', 'filter_filenames' => 'messages.xliff', 'limit' => 5000, 'page' => 1], $options['query']);
+
+            return new JsonMockResponse(['keys' => [
+                ['key_name' => ['web' => '11'], 'key_id' => 42],
+            ]]);
+        };
+
+        $createKeysResponse = function (string $method, string $url, array $options = []): ResponseInterface {
+            $this->assertSame('POST', $method);
+            $this->assertSame(['10', '12'], array_column(json_decode($options['body'], true)['keys'], 'key_name'));
+
+            return new JsonMockResponse(['keys' => [
+                ['key_name' => ['web' => '10'], 'key_id' => 7],
+                ['key_name' => ['web' => '12'], 'key_id' => 8],
+            ]]);
+        };
+
+        $updateProcessed = false;
+        $updateTranslationsResponse = function (string $method, string $url, array $options = []) use (&$updateProcessed): ResponseInterface {
+            $updateProcessed = true;
+            $keys = json_decode($options['body'], true)['keys'];
+
+            $this->assertSame('PUT', $method);
+            $this->assertSame([7, 8, 42], array_column($keys, 'key_id'));
+            $this->assertSame([
+                [
+                    ['language_iso' => 'en', 'translation' => 'ten'],
+                    ['language_iso' => 'fr', 'translation' => 'dix'],
+                ],
+                [
+                    ['language_iso' => 'en', 'translation' => 'twelve'],
+                ],
+                [
+                    ['language_iso' => 'en', 'translation' => 'eleven'],
+                    ['language_iso' => 'fr', 'translation' => 'onze'],
+                ],
+            ], array_column($keys, 'translations'));
+
+            return new MockResponse();
+        };
+
+        $provider = self::createProvider((new MockHttpClient([
+            $getLanguagesResponse,
+            $getKeysIdsResponse,
+            $createKeysResponse,
+            $updateTranslationsResponse,
+        ]))->withOptions([
+            'base_uri' => 'https://api.lokalise.com/api2/projects/PROJECT_ID/',
+            'headers' => ['X-Api-Token' => 'API_KEY'],
+        ]), $this->getLoader(), $this->getLogger(), $this->getDefaultLocale(), 'api.lokalise.com');
+
+        $translatorBag = new TranslatorBag();
+        $translatorBag->addCatalogue(new MessageCatalogue('en', [
+            'messages' => ['10' => 'ten', '11' => 'eleven', '12' => 'twelve'],
+        ]));
+        $translatorBag->addCatalogue(new MessageCatalogue('fr', [
+            'messages' => ['10' => 'dix', '11' => 'onze'],
         ]));
 
         $provider->write($translatorBag);
@@ -712,6 +862,84 @@ class LokaliseProviderTest extends ProviderTestCase
         $this->assertSame([], $translatorBag->getCatalogues());
     }
 
+    public function testReadSendsFilterFilenamesAsJsonArray()
+    {
+        $response = function (string $method, string $url, array $options = []): ResponseInterface {
+            $this->assertSame('https://api.lokalise.com/api2/projects/PROJECT_ID/files/export', $url);
+
+            $body = json_decode($options['body'], true);
+
+            $this->assertSame(['validators.xliff'], $body['filter_filenames']);
+            $this->assertSame(['en'], $body['filter_langs']);
+
+            return new JsonMockResponse(['files' => []]);
+        };
+
+        $provider = self::createProvider((new MockHttpClient($response))->withOptions([
+            'base_uri' => 'https://api.lokalise.com/api2/projects/PROJECT_ID/',
+            'headers' => ['X-Api-Token' => 'API_KEY'],
+        ]), new XliffFileLoader(), $this->getLogger(), $this->getDefaultLocale(), 'api.lokalise.com');
+
+        // FilteringProvider narrows domains and locales with array_intersect(), which preserves the original keys.
+        $provider->read([1 => 'validators'], [1 => 'en']);
+    }
+
+    #[TestWith([[], ['en']])]
+    #[TestWith([['messages'], []])]
+    #[TestWith([[], []])]
+    public function testReadWithoutDomainsOrLocalesReadsEverything(array $domains, array $locales)
+    {
+        $expectedDomains = $domains ?: ['messages', 'validators'];
+        // Lokalise returns language codes with a "-" separator
+        $expectedLanguages = $locales ?: ['en', 'pt-BR'];
+        $expectedLocales = array_map(static fn (string $language) => str_replace('-', '_', $language), $expectedLanguages);
+
+        $response = function (string $method, string $url, array $options = []) use ($domains, $locales, $expectedDomains, $expectedLanguages): ResponseInterface {
+            $this->assertSame('https://api.lokalise.com/api2/projects/PROJECT_ID/files/export', $url);
+
+            // an empty filter is no filter at all for Lokalise
+            $body = json_decode($options['body'], true);
+            $this->assertSame($locales, $body['filter_langs']);
+            $this->assertSame(array_map(static fn (string $domain) => $domain.'.xliff', $domains), $body['filter_filenames']);
+
+            $files = [];
+            foreach ($expectedLanguages as $language) {
+                $locale = str_replace('-', '_', $language);
+
+                foreach ($expectedDomains as $domain) {
+                    $files[$language][$domain.'.xliff'] = ['content' => <<<XLIFF
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2">
+                          <file source-language="en" target-language="$language" datatype="plaintext" original="file.ext">
+                            <body>
+                              <trans-unit id="a" resname="a">
+                                <source>a</source>
+                                <target>{$domain}_{$locale}_a</target>
+                              </trans-unit>
+                            </body>
+                          </file>
+                        </xliff>
+                        XLIFF];
+                }
+            }
+
+            return new JsonMockResponse(['files' => $files]);
+        };
+
+        $provider = self::createProvider((new MockHttpClient($response))->withOptions([
+            'base_uri' => 'https://api.lokalise.com/api2/projects/PROJECT_ID/',
+            'headers' => ['X-Api-Token' => 'API_KEY'],
+        ]), new XliffFileLoader(), $this->getLogger(), $this->getDefaultLocale(), 'api.lokalise.com');
+
+        $translatorBag = $provider->read($domains, $locales);
+
+        $this->assertSame($expectedLocales, array_map(static fn (MessageCatalogue $catalogue) => $catalogue->getLocale(), $translatorBag->getCatalogues()));
+        foreach ($expectedLocales as $locale) {
+            $this->assertEqualsCanonicalizing($expectedDomains, $translatorBag->getCatalogue($locale)->getDomains());
+            $this->assertSame(['a' => $expectedDomains[0].'_'.$locale.'_a'], $translatorBag->getCatalogue($locale)->all($expectedDomains[0]));
+        }
+    }
+
     #[RequiresPhpExtension('zip')]
     public function testReadWithExportAsync()
     {
@@ -720,9 +948,16 @@ class LokaliseProviderTest extends ProviderTestCase
             ['error' => ['code' => 413, 'message' => 'test']],
             ['http_code' => 413],
         );
-        $secondResponse = static fn (): ResponseInterface => new JsonMockResponse(
-            ['process_id' => 123],
-        );
+        $secondResponse = function (string $method, string $url, array $options = []): ResponseInterface {
+            $this->assertSame('https://api.lokalise.com/api2/projects/PROJECT_ID/files/async-download', $url);
+
+            $body = json_decode($options['body'], true);
+
+            $this->assertSame(['foo.xliff'], $body['filter_filenames']);
+            $this->assertSame(['baz'], $body['filter_langs']);
+
+            return new JsonMockResponse(['process_id' => 123]);
+        };
         $thirdResponse = static fn (): ResponseInterface => new JsonMockResponse(
             ['process' => ['status' => 'finished', 'details' => ['download_url' => 'https://api.lokalise.com/Symfony-locale.zip']]],
         );
@@ -738,7 +973,8 @@ class LokaliseProviderTest extends ProviderTestCase
             'base_uri' => 'https://api.lokalise.com/api2/projects/PROJECT_ID/',
             'headers' => ['X-Api-Token' => 'API_KEY'],
         ]), new XliffFileLoader(), $this->getLogger(), $this->getDefaultLocale(), 'api.lokalise.com');
-        $translatorBag = $provider->read(['foo'], ['baz']);
+        // FilteringProvider narrows domains and locales with array_intersect(), which preserves the original keys.
+        $translatorBag = $provider->read([1 => 'foo'], [1 => 'baz']);
 
         // We don't want to assert equality of metadata here, due to the ArrayLoader usage.
         /** @var MessageCatalogue $catalogue */

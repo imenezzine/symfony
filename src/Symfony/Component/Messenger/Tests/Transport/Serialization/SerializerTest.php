@@ -16,16 +16,30 @@ use PHPUnit\Framework\Constraint\Constraint;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
+use Symfony\Component\Messenger\Stamp\BusNameStamp;
 use Symfony\Component\Messenger\Stamp\DeduplicateStamp;
 use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\SerializedMessageStamp;
 use Symfony\Component\Messenger\Stamp\SerializerStamp;
+use Symfony\Component\Messenger\Stamp\StampInterface;
 use Symfony\Component\Messenger\Stamp\ValidationStamp;
 use Symfony\Component\Messenger\Tests\Fixtures\DummyMessage;
 use Symfony\Component\Messenger\Tests\Fixtures\DummyMessageWithInterfaceWithSerializedTypeName;
 use Symfony\Component\Messenger\Tests\Fixtures\DummyMessageWithSerializedTypeName;
 use Symfony\Component\Messenger\Transport\Serialization\Serializer;
+use Symfony\Component\Serializer\Attribute\Groups;
+use Symfony\Component\Serializer\Encoder\JsonEncoder;
+use Symfony\Component\Serializer\Encoder\XmlEncoder;
+use Symfony\Component\Serializer\Mapping\Factory\ClassMetadataFactory;
+use Symfony\Component\Serializer\Mapping\Loader\AttributeLoader;
+use Symfony\Component\Serializer\Normalizer\AbstractNormalizer;
+use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
+use Symfony\Component\Serializer\Normalizer\ArrayDenormalizer;
+use Symfony\Component\Serializer\Normalizer\DateTimeNormalizer;
 use Symfony\Component\Serializer\Normalizer\ObjectNormalizer;
+use Symfony\Component\Serializer\Serializer as SymfonySerializer;
 use Symfony\Component\Serializer\SerializerInterface as SerializerComponentInterface;
 
 class SerializerTest extends TestCase
@@ -193,6 +207,26 @@ class SerializerTest extends TestCase
                 'X-Message-Stamp-'.SerializerStamp::class => '[{"context":{"groups":["foo"]}}]',
             ],
         ]);
+    }
+
+    public function testStampsIgnoreTheAttributeSelectionOfTheContext()
+    {
+        if (!class_exists(AttributeLoader::class)) {
+            $this->markTestSkipped('The "AttributeLoader" class from symfony/serializer 6.4 is required.');
+        }
+
+        $symfonySerializer = new SymfonySerializer([new ArrayDenormalizer(), new ObjectNormalizer(new ClassMetadataFactory(new AttributeLoader()))], [new JsonEncoder()]);
+        $serializer = new Serializer($symfonySerializer, 'json', [
+            AbstractNormalizer::GROUPS => ['dummy'],
+            AbstractNormalizer::ATTRIBUTES => ['message'],
+            AbstractNormalizer::IGNORED_ATTRIBUTES => ['busName'],
+        ]);
+
+        $encoded = $serializer->encode(new Envelope(new DummySymfonySerializerGroupedMessage('Hello'), [new BusNameStamp('the_bus')]));
+
+        $this->assertSame('{"message":"Hello"}', $encoded['body']);
+        $this->assertSame('[{"busName":"the_bus"}]', $encoded['headers']['X-Message-Stamp-'.BusNameStamp::class]);
+        $this->assertEquals([new BusNameStamp('the_bus')], $serializer->decode($encoded)->all(BusNameStamp::class));
     }
 
     public function testDecodingFailsWithBadFormat()
@@ -390,6 +424,133 @@ class SerializerTest extends TestCase
         $this->assertInstanceOf(DummyMessageWithSerializedTypeName::class, $decodedEnvelope->getMessage());
         $this->assertSame('Hello', $decodedEnvelope->getMessage()->getMessage());
     }
+
+    public function testDecodingFailureKeepsDecodedStampsOnTheWrappedEnvelope()
+    {
+        $serializer = new Serializer();
+
+        // a payload whose stamps decode fine but whose body cannot be deserialized
+        $encodedEnvelope = [
+            'body' => '{}',
+            'headers' => [
+                'type' => DummyMessageWithPrivateConstructorProperty::class,
+                'X-Message-Stamp-'.RedeliveryStamp::class => '[{"retryCount":2,"redeliveredAt":"2026-08-03T11:47:47+00:00"}]',
+                'Content-Type' => 'application/json',
+            ],
+        ];
+
+        $envelope = $serializer->decode($encodedEnvelope);
+
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $envelope->getMessage());
+
+        $redeliveryStamp = $envelope->last(RedeliveryStamp::class);
+        $this->assertNotNull($redeliveryStamp, 'Stamps decoded from headers must be kept on the wrapper envelope, otherwise the retry counter resets on every redelivery.');
+        $this->assertSame(2, $redeliveryStamp->getRetryCount());
+    }
+
+    public function testEncodingDecodeFailureWrapperReemitsOriginalPayload()
+    {
+        $serializer = new Serializer();
+
+        $originalEncoded = [
+            'body' => '{"some":"payload"}',
+            'headers' => ['type' => 'App\NonExistentMessage', 'Content-Type' => 'application/json'],
+        ];
+
+        $wrapperEnvelope = $serializer->decode($originalEncoded);
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $wrapperEnvelope->getMessage());
+
+        $reEncoded = $serializer->encode($wrapperEnvelope->with(new RedeliveryStamp(1)));
+
+        $this->assertSame($originalEncoded['body'], $reEncoded['body'], 'Re-sending a decode-failure wrapper must re-emit the original payload.');
+        $this->assertSame('App\NonExistentMessage', $reEncoded['headers']['type'], 'The original type header must be preserved so a later decode can succeed after a fix.');
+        $this->assertArrayHasKey('X-Message-Stamp-'.RedeliveryStamp::class, $reEncoded['headers'], 'Current stamps must be in the headers so the retry counter survives.');
+    }
+
+    public function testEncodingDecodeFailureWrapperWithoutOriginalHeaders()
+    {
+        $serializer = new Serializer();
+
+        // PhpSerializer::encode() returns a body without any headers
+        $envelope = new Envelope(new MessageDecodingFailedException('Could not decode message', 0, null, ['body' => 'a:0:{}']));
+
+        $reEncoded = $serializer->encode($envelope);
+
+        $this->assertSame('a:0:{}', $reEncoded['body']);
+        $this->assertSame(MessageDecodingFailedException::class, $reEncoded['headers']['type']);
+        $this->assertArrayNotHasKey('Content-Type', $reEncoded['headers'], 'The content type must not describe a body encoded by another serializer.');
+    }
+
+    public function testEncodingDecodeFailureWrapperWithoutOriginalBody()
+    {
+        $serializer = new Serializer();
+
+        $envelope = new Envelope(new MessageDecodingFailedException('Could not decode message', 0, null, ['headers' => ['type' => 'App\NonExistentMessage']]));
+
+        $reEncoded = $serializer->encode($envelope);
+
+        $this->assertStringContainsString('Could not decode message', $reEncoded['body']);
+        $this->assertSame(MessageDecodingFailedException::class, $reEncoded['headers']['type'], 'Without an original body, the headers must describe the body that was actually encoded.');
+        $this->assertSame('application/json', $reEncoded['headers']['Content-Type']);
+        $body = json_decode($reEncoded['body'], true);
+        $this->assertArrayNotHasKey('trace', $body, 'The stack trace holds the arguments of every call and must be left out.');
+        $this->assertArrayHasKey('traceAsString', $body);
+    }
+
+    public function testDecodingFailsWithAStampHeaderThatIsNotAStamp()
+    {
+        $serializer = new Serializer();
+
+        $envelope = $serializer->decode([
+            'body' => '{"message":"hello"}',
+            'headers' => [
+                'type' => DummyMessage::class,
+                'X-Message-Stamp-'.DummyMessage::class => '[{"message":"injected"}]',
+            ],
+        ]);
+
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $envelope->getMessage());
+        $this->assertSame(\sprintf('Could not decode stamp: "%s" is not a "%s".', DummyMessage::class, StampInterface::class), $envelope->getMessage()->getMessage());
+    }
+
+    public function testDecodedSkipsNonSendableStamps()
+    {
+        $serializer = new Serializer();
+
+        $envelope = $serializer->decode([
+            'body' => '{"message":"hello"}',
+            'headers' => [
+                'type' => DummyMessage::class,
+                'X-Message-Stamp-'.ReceivedStamp::class => '[{"transportName":"injected"}]',
+                'X-Message-Stamp-'.BusNameStamp::class => '[{"busName":"the_bus"}]',
+            ],
+        ]);
+
+        $this->assertNull($envelope->last(ReceivedStamp::class));
+        $this->assertEquals([new BusNameStamp('the_bus')], $envelope->all(BusNameStamp::class));
+    }
+
+    public function testDecodedSerializerStampSkipsCodeAffectingContextOptions()
+    {
+        $serializer = new Serializer();
+
+        $envelope = $serializer->decode([
+            'body' => '{"message":"hello"}',
+            'headers' => [
+                'type' => DummyMessage::class,
+                'X-Message-Stamp-'.SerializerStamp::class => json_encode([['context' => [
+                    AbstractNormalizer::CALLBACKS => ['message' => [DummySymfonySerializerCallback::class, 'shout']],
+                    AbstractNormalizer::CIRCULAR_REFERENCE_HANDLER => [DummySymfonySerializerCallback::class, 'shout'],
+                    AbstractObjectNormalizer::MAX_DEPTH_HANDLER => [DummySymfonySerializerCallback::class, 'shout'],
+                    XmlEncoder::LOAD_OPTIONS => \LIBXML_NOENT,
+                    DateTimeNormalizer::FORMAT_KEY => 'Y-m-d',
+                ]]]),
+            ],
+        ]);
+
+        $this->assertSame('hello', $envelope->getMessage()->getMessage());
+        $this->assertSame([DateTimeNormalizer::FORMAT_KEY => 'Y-m-d'], $envelope->last(SerializerStamp::class)->getContext());
+    }
 }
 class DummySymfonySerializerNonSendableStamp implements NonSendableStampInterface
 {
@@ -398,5 +559,29 @@ class DummySymfonySerializerInvalidConstructor
 {
     public function __construct(string $missingArgument)
     {
+    }
+}
+class DummyMessageWithPrivateConstructorProperty
+{
+    public function __construct(private string $secret)
+    {
+    }
+}
+
+class DummySymfonySerializerGroupedMessage
+{
+    #[Groups(['dummy'])]
+    public string $message;
+
+    public function __construct(string $message)
+    {
+        $this->message = $message;
+    }
+}
+class DummySymfonySerializerCallback
+{
+    public static function shout(...$arguments): string
+    {
+        return strtoupper($arguments[0]);
     }
 }

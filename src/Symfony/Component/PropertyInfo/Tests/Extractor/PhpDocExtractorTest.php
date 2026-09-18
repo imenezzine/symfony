@@ -20,10 +20,10 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\PropertyInfo\Extractor\PhpDocExtractor;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Clazz;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\ConstructorDummy;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\ConstructorDummyWithPropertyDocBlock;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\ConstructorDummyWithVarTagsDocBlock;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\DockBlockFallback;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Dummy;
-use Symfony\Component\PropertyInfo\Tests\Fixtures\MultiParameterAdderDocDummy;
-use Symfony\Component\PropertyInfo\Tests\Fixtures\RejectedCandidateDocDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyCollection;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\DummyGeneric;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Extractor\ChildOfParentUsingTrait;
@@ -40,10 +40,12 @@ use Symfony\Component\PropertyInfo\Tests\Fixtures\Extractor\ParentWithSelfDocBlo
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Extractor\PromotedPropertiesWithDocBlock;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\IFace;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\InvalidDummy;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\MultiParameterAdderDocDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\ParentDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\Php80Dummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\PseudoTypeDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\PseudoTypesDummy;
+use Symfony\Component\PropertyInfo\Tests\Fixtures\RejectedCandidateDocDummy;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\TraitUsage\DummyUsedInTrait;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\TraitUsage\DummyUsingTrait;
 use Symfony\Component\PropertyInfo\Tests\Fixtures\VoidNeverReturnTypeDummy;
@@ -491,6 +493,40 @@ class PhpDocExtractorTest extends TestCase
         yield ['dateTime', null];
         yield ['ddd', null];
         yield ['mixed', Type::mixed()];
+    }
+
+    #[DataProvider('constructorTypesWithOnlyVarTagsProvider')]
+    public function testExtractConstructorTypesWithOnlyVarTags(string $property, ?Type $type)
+    {
+        $this->assertEquals($type, $this->extractor->getTypeFromConstructor(ConstructorDummyWithVarTagsDocBlock::class, $property));
+    }
+
+    /**
+     * @return iterable<array{0: string, 1: ?Type}>
+     */
+    public static function constructorTypesWithOnlyVarTagsProvider(): iterable
+    {
+        yield ['date', Type::int()];
+        yield ['dateObject', Type::object(\DateTimeInterface::class)];
+        yield ['objectsArray', Type::array(Type::object(ConstructorDummy::class))];
+        yield ['dateTime', null];
+        yield ['mixed', null];
+        yield ['timezone', null];
+    }
+
+    #[DataProvider('constructorTypesWithPropertyDocBlockProvider')]
+    public function testExtractConstructorTypesIgnoresTheDocBlockOfAPlainProperty(string $property)
+    {
+        $this->assertNull($this->extractor->getTypeFromConstructor(ConstructorDummyWithPropertyDocBlock::class, $property));
+    }
+
+    /**
+     * @return iterable<array{0: string}>
+     */
+    public static function constructorTypesWithPropertyDocBlockProvider(): iterable
+    {
+        yield ['date'];
+        yield ['objectsArray'];
     }
 
     #[DataProvider('pseudoTypeProvider')]

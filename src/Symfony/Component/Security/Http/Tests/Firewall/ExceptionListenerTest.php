@@ -12,22 +12,34 @@
 namespace Symfony\Component\Security\Http\Tests\Firewall;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\Session\Session;
+use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolverInterface;
 use Symfony\Component\Security\Core\Authentication\Token\NullToken;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
+use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
+use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
+use Symfony\Component\Security\Core\Authorization\Voter\AuthenticatedVoter;
 use Symfony\Component\Security\Core\Exception\AccessDeniedException;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
 use Symfony\Component\Security\Core\Exception\LogoutException;
+use Symfony\Component\Security\Core\User\InMemoryUser;
 use Symfony\Component\Security\Http\Authorization\AccessDeniedHandlerInterface;
 use Symfony\Component\Security\Http\EntryPoint\AuthenticationEntryPointInterface;
+use Symfony\Component\Security\Http\EntryPoint\FallbackAuthenticationEntryPointInterface;
+use Symfony\Component\Security\Http\EntryPoint\ReAuthenticationEntryPointInterface;
 use Symfony\Component\Security\Http\Firewall\ExceptionListener;
 use Symfony\Component\Security\Http\HttpUtils;
 
@@ -147,15 +159,32 @@ class ExceptionListenerTest extends TestCase
         $this->assertEquals(403, $event->getThrowable()->getStatusCode());
     }
 
-    public function testUnregister()
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testRegisterIsDeprecated()
     {
         $listener = $this->createExceptionListener();
         $dispatcher = new EventDispatcher();
 
+        $this->expectUserDeprecationMessage('Since symfony/security-http 8.2: The "Symfony\\Component\\Security\\Http\\Firewall\\ExceptionListener::register()" method is deprecated and will be removed in 9.0, register "onKernelException()" on the "kernel.exception" event instead.');
+
         $listener->register($dispatcher);
+
         $this->assertNotEmpty($dispatcher->getListeners());
+    }
+
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testUnregisterIsDeprecated()
+    {
+        $listener = $this->createExceptionListener();
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addListener(KernelEvents::EXCEPTION, $listener->onKernelException(...), 1);
+
+        $this->expectUserDeprecationMessage('Since symfony/security-http 8.2: The "Symfony\\Component\\Security\\Http\\Firewall\\ExceptionListener::unregister()" method is deprecated and will be removed in 9.0, register "onKernelException()" on the "kernel.exception" event instead.');
 
         $listener->unregister($dispatcher);
+
         $this->assertSame([], $dispatcher->getListeners());
     }
 
@@ -168,6 +197,28 @@ class ExceptionListenerTest extends TestCase
             [new \LogicException('random', 0, $e = new AccessDeniedException('embed', new AuthenticationException())), $e],
             [new AccessDeniedException('random', new \LogicException())],
         ];
+    }
+
+    public function testTargetPathIsSavedForAnEntryPointThatStartsAnAuthentication()
+    {
+        $event = $this->createEvent(new AuthenticationException(), null, $session = new Session(new MockArraySessionStorage()));
+
+        $this->createExceptionListener(null, null, null, $this->createEntryPoint())->onKernelException($event);
+
+        $this->assertSame('http://localhost/', $session->get('_security.key.target_path'));
+    }
+
+    public function testNoTargetPathIsSavedForAnEntryPointThatOnlyStandsIn()
+    {
+        $entryPoint = $this->createMock(FallbackAuthenticationEntryPointInterface::class);
+        $entryPoint->expects($this->once())->method('start')->willReturn(new Response(null, 401));
+
+        $event = $this->createEvent(new AuthenticationException(), null, $session = new Session(new MockArraySessionStorage()));
+
+        $this->createExceptionListener(null, null, null, $entryPoint)->onKernelException($event);
+
+        $this->assertFalse($session->isStarted());
+        $this->assertNull($session->get('_security.key.target_path'));
     }
 
     private function createEntryPoint(?Response $response = null)
@@ -186,14 +237,18 @@ class ExceptionListenerTest extends TestCase
         return $trustResolver;
     }
 
-    private function createEvent(\Exception $exception, $kernel = null)
+    private function createEvent(\Exception $exception, $kernel = null, ?Session $session = null)
     {
         $kernel ??= $this->createStub(HttpKernelInterface::class);
+        $request = Request::create('/');
+        if (null !== $session) {
+            $request->setSession($session);
+        }
 
-        return new ExceptionEvent($kernel, Request::create('/'), HttpKernelInterface::MAIN_REQUEST, $exception);
+        return new ExceptionEvent($kernel, $request, HttpKernelInterface::MAIN_REQUEST, $exception);
     }
 
-    private function createExceptionListener(?TokenStorageInterface $tokenStorage = null, ?AuthenticationTrustResolverInterface $trustResolver = null, ?HttpUtils $httpUtils = null, ?AuthenticationEntryPointInterface $authenticationEntryPoint = null, $errorPage = null, ?AccessDeniedHandlerInterface $accessDeniedHandler = null)
+    private function createExceptionListener(?TokenStorageInterface $tokenStorage = null, ?AuthenticationTrustResolverInterface $trustResolver = null, ?HttpUtils $httpUtils = null, ?AuthenticationEntryPointInterface $authenticationEntryPoint = null, $errorPage = null, ?AccessDeniedHandlerInterface $accessDeniedHandler = null, ?ReAuthenticationEntryPointInterface $reAuthenticationEntryPoint = null)
     {
         return new ExceptionListener(
             $tokenStorage ?? new TokenStorage(),
@@ -202,7 +257,132 @@ class ExceptionListenerTest extends TestCase
             'key',
             $authenticationEntryPoint,
             $errorPage,
-            $accessDeniedHandler
+            $accessDeniedHandler,
+            null,
+            false,
+            $reAuthenticationEntryPoint
         );
     }
+
+    private function createFullFledgedTrustResolver(): AuthenticationTrustResolverInterface
+    {
+        $trustResolver = $this->createMock(AuthenticationTrustResolverInterface::class);
+        $trustResolver->expects($this->once())->method('isFullFledged')->willReturn(true);
+
+        return $trustResolver;
+    }
+
+    private function createTokenStorageWithAToken(): TokenStorageInterface
+    {
+        $tokenStorage = new TokenStorage();
+        $tokenStorage->setToken(new UsernamePasswordToken(new InMemoryUser('wouter', 'password', ['ROLE_USER']), 'key', ['ROLE_USER']));
+
+        return $tokenStorage;
+    }
+
+    public function testReAuthenticationEntryPointStartsOnAStaleAuthentication()
+    {
+        $exception = new AccessDeniedException();
+        $exception->setAttributes([AuthenticatedVoter::IS_AUTHENTICATED_RECENTLY]);
+        $event = $this->createEvent($exception);
+
+        $entryPoint = $this->createMock(ReAuthenticationEntryPointInterface::class);
+        $entryPoint->expects($this->once())
+            ->method('startReAuthentication')
+            ->with($this->anything(), $this->isInstanceOf(TokenInterface::class))
+            ->willReturn(new Response('Confirm your password', 200));
+
+        $listener = $this->createExceptionListener($this->createTokenStorageWithAToken(), $this->createFullFledgedTrustResolver(), null, null, null, null, $entryPoint);
+        $listener->onKernelException($event);
+
+        $this->assertSame('Confirm your password', $event->getResponse()->getContent());
+    }
+
+    public function testReAuthenticationEntryPointStartsWhenAVeryRecentAuthenticationIsRequired()
+    {
+        $exception = new AccessDeniedException();
+        $exception->setAttributes([AuthenticatedVoter::IS_AUTHENTICATED_VERY_RECENTLY]);
+        $event = $this->createEvent($exception);
+
+        $entryPoint = $this->createMock(ReAuthenticationEntryPointInterface::class);
+        $entryPoint->expects($this->once())
+            ->method('startReAuthentication')
+            ->willReturn(new Response('Confirm your password', 200));
+
+        $listener = $this->createExceptionListener($this->createTokenStorageWithAToken(), $this->createFullFledgedTrustResolver(), null, null, null, null, $entryPoint);
+        $listener->onKernelException($event);
+
+        $this->assertSame('Confirm your password', $event->getResponse()->getContent());
+    }
+
+    public function testTheFirewallEntryPointIsUsedWhenItCanReAuthenticate()
+    {
+        $exception = new AccessDeniedException();
+        $exception->setAttributes([AuthenticatedVoter::IS_AUTHENTICATED_RECENTLY]);
+        $event = $this->createEvent($exception);
+
+        // an entry point implementing both contracts needs no extra configuration; one
+        // that only implements AuthenticationEntryPointInterface is never picked up,
+        // which is what stops a plain login page from looping
+        $entryPoint = $this->createMock(ReAuthenticatingEntryPoint::class);
+        $entryPoint->expects($this->once())
+            ->method('startReAuthentication')
+            ->willReturn(new Response('Confirm your password', 200));
+
+        $listener = $this->createExceptionListener($this->createTokenStorageWithAToken(), $this->createFullFledgedTrustResolver(), null, $entryPoint);
+        $listener->onKernelException($event);
+
+        $this->assertSame('Confirm your password', $event->getResponse()->getContent());
+    }
+
+    public function testAPlainFirewallEntryPointIsNotUsedToReAuthenticate()
+    {
+        $exception = new AccessDeniedException();
+        $exception->setAttributes([AuthenticatedVoter::IS_AUTHENTICATED_RECENTLY]);
+        $event = $this->createEvent($exception);
+
+        $entryPoint = $this->createMock(AuthenticationEntryPointInterface::class);
+        $entryPoint->expects($this->never())->method('start');
+
+        $listener = $this->createExceptionListener($this->createTokenStorageWithAToken(), $this->createFullFledgedTrustResolver(), null, $entryPoint);
+        $listener->onKernelException($event);
+
+        $this->assertInstanceOf(AccessDeniedHttpException::class, $event->getThrowable());
+    }
+
+    public function testReAuthenticationEntryPointIsNotStartedForAnUnrelatedDenial()
+    {
+        $exception = new AccessDeniedException();
+        $exception->setAttributes(['ROLE_ADMIN']);
+        $event = $this->createEvent($exception);
+
+        $entryPoint = $this->createMock(ReAuthenticationEntryPointInterface::class);
+        $entryPoint->expects($this->never())->method('startReAuthentication');
+
+        $listener = $this->createExceptionListener($this->createTokenStorageWithAToken(), $this->createFullFledgedTrustResolver(), null, null, null, null, $entryPoint);
+        $listener->onKernelException($event);
+
+        $this->assertInstanceOf(AccessDeniedHttpException::class, $event->getThrowable());
+    }
+
+    public function testReAuthenticationEntryPointIsNotStartedWhenAnotherAttributeMayHaveFailed()
+    {
+        // an access_control rule is decided on all of its roles at once, so this denial
+        // does not say which attribute failed and re-authenticating may not help
+        $exception = new AccessDeniedException();
+        $exception->setAttributes(['ROLE_ADMIN', AuthenticatedVoter::IS_AUTHENTICATED_RECENTLY]);
+        $event = $this->createEvent($exception);
+
+        $entryPoint = $this->createMock(ReAuthenticationEntryPointInterface::class);
+        $entryPoint->expects($this->never())->method('startReAuthentication');
+
+        $listener = $this->createExceptionListener($this->createTokenStorageWithAToken(), $this->createFullFledgedTrustResolver(), null, null, null, null, $entryPoint);
+        $listener->onKernelException($event);
+
+        $this->assertInstanceOf(AccessDeniedHttpException::class, $event->getThrowable());
+    }
+}
+
+interface ReAuthenticatingEntryPoint extends AuthenticationEntryPointInterface, ReAuthenticationEntryPointInterface
+{
 }

@@ -12,6 +12,7 @@
 namespace Symfony\Component\HttpClient\Tests;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\TestWith;
 use Symfony\Bridge\PhpUnit\DnsMock;
 use Symfony\Component\HttpClient\Exception\ClientException;
@@ -45,6 +46,26 @@ abstract class HttpClientTestCase extends BaseHttpClientTestCase
         }
 
         parent::testTimeoutOnDestruct();
+    }
+
+    #[RequiresPhpExtension('openssl')]
+    public function testRedirectToADifferentSchemeDropsCredentials()
+    {
+        TestRedirectServer::start();
+        $client = $this->getHttpClient(__FUNCTION__);
+
+        $response = $client->request('GET', 'https://127.0.0.1:8059/', [
+            'auth_basic' => 'foo:bar',
+            'headers' => ['Cookie' => 'a=b', 'X-Custom' => 'kept'],
+            'verify_peer' => false,
+            'verify_host' => false,
+        ]);
+        $headers = $response->toArray();
+
+        $this->assertSame('http://127.0.0.1:8059/', $response->getInfo('url'));
+        $this->assertSame('kept', $headers['x-custom']);
+        $this->assertArrayNotHasKey('authorization', $headers);
+        $this->assertArrayNotHasKey('cookie', $headers);
     }
 
     public function testAcceptHeader()
@@ -637,6 +658,48 @@ abstract class HttpClientTestCase extends BaseHttpClientTestCase
             'same host and port' => ['url' => 'http://localhost:8057/302', 'redirectWithAuth' => true],
             'other port' => ['url' => 'http://localhost:8067/302', 'redirectWithAuth' => false],
             'other host' => ['url' => 'http://127.0.0.1:8057/302', 'redirectWithAuth' => false],
+        ];
+    }
+
+    #[DataProvider('getRedirectWithHostHeaderTests')]
+    public function testRedirectWithHostHeader(string $url, bool $redirectWithAuth, string $expectedHost)
+    {
+        $p = TestHttpServer::start(8067);
+
+        try {
+            $client = $this->getHttpClient(__FUNCTION__);
+
+            $response = $client->request('GET', $url, [
+                'query' => [
+                    'status' => 302,
+                    'headers' => ['Location: http://localhost:8057/'],
+                ],
+                'headers' => [
+                    'Host' => 'foo.example.com',
+                    'Authorization' => 'Basic Zm9vOmJhcg==',
+                ],
+            ]);
+            $body = $response->toArray();
+        } finally {
+            $p->stop();
+        }
+
+        $this->assertSame('http://localhost:8057/', $response->getInfo('url'));
+        $this->assertSame($expectedHost, $body['HTTP_HOST']);
+
+        if ($redirectWithAuth) {
+            $this->assertSame('Basic Zm9vOmJhcg==', $body['HTTP_AUTHORIZATION']);
+        } else {
+            $this->assertArrayNotHasKey('HTTP_AUTHORIZATION', $body);
+        }
+    }
+
+    public static function getRedirectWithHostHeaderTests()
+    {
+        return [
+            'same host and port' => ['url' => 'http://localhost:8057/custom', 'redirectWithAuth' => true, 'expectedHost' => 'localhost:8057'],
+            'other port' => ['url' => 'http://localhost:8067/custom', 'redirectWithAuth' => false, 'expectedHost' => 'localhost:8057'],
+            'other host' => ['url' => 'http://127.0.0.1:8057/custom', 'redirectWithAuth' => false, 'expectedHost' => 'localhost:8057'],
         ];
     }
 

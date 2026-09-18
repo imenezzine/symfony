@@ -17,8 +17,10 @@ require_once __DIR__.'/../Fixtures/includes/fixture_app_services.php';
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Config\FileLocator;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Dumper\PhpDumper;
 use Symfony\Component\DependencyInjection\Dumper\YamlDumper;
@@ -85,6 +87,17 @@ class PhpFileLoaderTest extends TestCase
         $this->assertSame($expected, $container->getExtensionConfig('acme'));
     }
 
+    public function testExtensionWithScalarConfig()
+    {
+        $container = new ContainerBuilder();
+        $container->registerExtension(new \AcmeExtension());
+        $loader = new PhpFileLoader($container, new FileLocator(\dirname(__DIR__).'/Fixtures/config'));
+        $loader->load('scalar_extension_config.php');
+        $loader->load('scalar_extension_config_returned.php');
+
+        $this->assertSame(['from the DSL', 'from a returned array'], $container->getExtensionConfig('acme'));
+    }
+
     public function testConfigServices()
     {
         $fixtures = realpath(__DIR__.'/../Fixtures');
@@ -142,6 +155,7 @@ class PhpFileLoaderTest extends TestCase
         yield ['static_constructor'];
         yield ['inline_static_constructor'];
         yield ['instanceof_static_constructor'];
+        yield ['instanceof_factory'];
         yield ['closure'];
         yield ['from_callable'];
         yield ['env_param'];
@@ -149,6 +163,34 @@ class PhpFileLoaderTest extends TestCase
         yield ['array_config_tagged_iterator'];
         yield ['object_array_config'];
         yield ['return_when_env'];
+    }
+
+    public function testConfigLazyProxyArgument()
+    {
+        $fixtures = realpath(__DIR__.'/../Fixtures');
+        $loader = new PhpFileLoader($container = new ContainerBuilder(), new FileLocator());
+        $loader->load($fixtures.'/config/services_with_lazy_proxy_argument.php');
+
+        $this->assertEquals([
+            new LazyProxyArgument(new Reference('foo_service')),
+            new LazyProxyArgument(new Reference('foo_service'), 'SomeInterface'),
+            new LazyProxyArgument(new Reference('foo_service'), ['SomeInterface', 'AnotherInterface']),
+        ], $container->getDefinition('bar_service')->getArguments());
+    }
+
+    public function testConfigLazyProxyArgumentWithInvalidBehavior()
+    {
+        $fixtures = realpath(__DIR__.'/../Fixtures');
+        $loader = new PhpFileLoader($container = new ContainerBuilder(), new FileLocator());
+        $loader->load($fixtures.'/config/services_with_lazy_proxy_invalid_behavior.php');
+
+        $this->assertEquals([
+            new LazyProxyArgument(new Reference('foo_service', ContainerInterface::IGNORE_ON_INVALID_REFERENCE)),
+            new LazyProxyArgument(new Reference('foo_service', ContainerInterface::NULL_ON_INVALID_REFERENCE)),
+            new LazyProxyArgument(new Reference('foo_service', ContainerInterface::IGNORE_ON_UNINITIALIZED_REFERENCE)),
+            new LazyProxyArgument(new Reference('foo_service', ContainerInterface::IGNORE_ON_INVALID_REFERENCE), 'SomeInterface'),
+            new LazyProxyArgument(new Reference('foo_service', ContainerInterface::NULL_ON_INVALID_REFERENCE), ['SomeInterface', 'AnotherInterface']),
+        ], $container->getDefinition('bar_service')->getArguments());
     }
 
     public function testResourceTags()

@@ -24,17 +24,55 @@ class AmpHttpClientTest extends HttpClientTestCase
         parent::testNonBlockingStream();
     }
 
-    /**
-     * @group transient-on-windows
-     */
+    #[Group('transient-on-windows')]
     public function testResolve()
     {
         parent::testResolve();
     }
 
+    #[Group('transient-on-windows')]
+    public function testNotATimeout()
+    {
+        parent::testNotATimeout();
+    }
+
+    #[Group('transient-on-windows')]
+    public function testTimeoutIsNotAFatalError()
+    {
+        parent::testTimeoutIsNotAFatalError();
+    }
+
+    #[Group('transient-on-windows')]
+    public function testTimeoutOnStream()
+    {
+        parent::testTimeoutOnStream();
+    }
+
+    #[Group('transient-on-windows')]
+    public function testTimeoutOnInitialize()
+    {
+        parent::testTimeoutOnInitialize();
+    }
+
+    #[Group('transient-on-windows')]
+    public function testTimeoutOnDestruct()
+    {
+        parent::testTimeoutOnDestruct();
+    }
+
     protected function getHttpClient(string $testCase): HttpClientInterface
     {
         return new AmpHttpClient(['verify_peer' => false, 'verify_host' => false, 'timeout' => 30]);
+    }
+
+    public static function getRedirectWithHostHeaderTests()
+    {
+        // unlike curl and the native client, amphp keeps the user-provided Host header when the authority doesn't change
+        return [
+            'same host and port' => ['url' => 'http://localhost:8057/custom', 'redirectWithAuth' => true, 'expectedHost' => 'foo.example.com'],
+            'other port' => ['url' => 'http://localhost:8067/custom', 'redirectWithAuth' => false, 'expectedHost' => 'localhost:8057'],
+            'other host' => ['url' => 'http://127.0.0.1:8057/custom', 'redirectWithAuth' => false, 'expectedHost' => 'localhost:8057'],
+        ];
     }
 
     public function testProxy()

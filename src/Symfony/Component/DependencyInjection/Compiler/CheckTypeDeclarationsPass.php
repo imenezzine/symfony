@@ -14,9 +14,11 @@ namespace Symfony\Component\DependencyInjection\Compiler;
 use Symfony\Component\DependencyInjection\Argument\EnvClosure;
 use Symfony\Component\DependencyInjection\Argument\EnvClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\RewindableGenerator;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Container;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
@@ -192,6 +194,12 @@ final class CheckTypeDeclarationsPass extends AbstractRecursivePass
 
         $type = $reflectionType->getName();
 
+        if ($value instanceof LazyProxyArgument) {
+            if (!$value = $value->getValues()[2]) {
+                return;
+            }
+        }
+
         if ($value instanceof Reference) {
             if (!$this->container->has($value = (string) $value)) {
                 return;
@@ -267,6 +275,8 @@ final class CheckTypeDeclarationsPass extends AbstractRecursivePass
                 $class = $value->isStringable() ? EnvClosure::class : \Closure::class;
             } elseif ($value instanceof ServiceLocatorArgument) {
                 $class = ServiceLocator::class;
+            } elseif ($value instanceof TaggedClassMapArgument) {
+                $class = 'array';
             } elseif (\is_object($value)) {
                 $class = $value::class;
             } else {

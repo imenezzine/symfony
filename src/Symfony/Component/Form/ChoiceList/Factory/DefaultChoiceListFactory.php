@@ -52,8 +52,12 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
         return new LazyChoiceList($loader, $value);
     }
 
-    public function createView(ChoiceListInterface $list, array|callable|null $preferredChoices = null, callable|false|null $label = null, ?callable $index = null, ?callable $groupBy = null, array|callable|null $attr = null, array|callable $labelTranslationParameters = [], bool $duplicatePreferredChoices = true): ChoiceListView
+    /**
+     * @param array|callable|null $help
+     */
+    public function createView(ChoiceListInterface $list, array|callable|null $preferredChoices = null, callable|false|null $label = null, ?callable $index = null, ?callable $groupBy = null, array|callable|null $attr = null, array|callable $labelTranslationParameters = [], bool $duplicatePreferredChoices = true/* , array|callable|null $help = null */): ChoiceListView
     {
+        $help = \func_num_args() > 8 ? func_get_arg(8) : null;
         $preferredViews = [];
         $preferredViewsOrder = [];
         $otherViews = [];
@@ -89,6 +93,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                     $index,
                     $attr,
                     $labelTranslationParameters,
+                    $help,
                     $preferredChoices,
                     $preferredViews,
                     $preferredViewsOrder,
@@ -100,13 +105,13 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
             // Remove empty group views that may have been created by
             // addChoiceViewsGroupedByCallable()
             foreach ($preferredViews as $key => $view) {
-                if ($view instanceof ChoiceGroupView && 0 === \count($view->choices)) {
+                if ($view instanceof ChoiceGroupView && !$view->choices) {
                     unset($preferredViews[$key]);
                 }
             }
 
             foreach ($otherViews as $key => $view) {
-                if ($view instanceof ChoiceGroupView && 0 === \count($view->choices)) {
+                if ($view instanceof ChoiceGroupView && !$view->choices) {
                     unset($otherViews[$key]);
                 }
             }
@@ -128,6 +133,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                 $index,
                 $attr,
                 $labelTranslationParameters,
+                $help,
                 $preferredChoices,
                 $preferredViews,
                 $preferredViewsOrder,
@@ -144,7 +150,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
     /**
      * @param-immediately-invoked-callable $isPreferred
      */
-    private static function addChoiceView($choice, string $value, $label, array $keys, &$index, $attr, $labelTranslationParameters, ?callable $isPreferred, array &$preferredViews, array &$preferredViewsOrder, array &$otherViews, bool $duplicatePreferredChoices): void
+    private static function addChoiceView($choice, string $value, $label, array $keys, &$index, $attr, $labelTranslationParameters, $help, ?callable $isPreferred, array &$preferredViews, array &$preferredViewsOrder, array &$otherViews, bool $duplicatePreferredChoices): void
     {
         // $value may be an integer or a string, since it's stored in the array
         // keys. We want to guarantee it's a string though.
@@ -169,6 +175,16 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
             }
         }
 
+        if (\is_callable($help)) {
+            $help = $help($choice, $key, $value);
+        } else {
+            $help = $help[$key] ?? null;
+        }
+
+        if (null !== $help && !$help instanceof TranslatableInterface) {
+            $help = (string) $help;
+        }
+
         $view = new ChoiceView(
             $choice,
             $value,
@@ -178,7 +194,8 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
             \is_callable($attr) ? $attr($choice, $key, $value) : ($attr[$key] ?? []),
             // The label translation parameters may be a callable or a mapping from choice indices
             // to nested arrays
-            \is_callable($labelTranslationParameters) ? $labelTranslationParameters($choice, $key, $value) : ($labelTranslationParameters[$key] ?? [])
+            \is_callable($labelTranslationParameters) ? $labelTranslationParameters($choice, $key, $value) : ($labelTranslationParameters[$key] ?? []),
+            $help,
         );
 
         // $isPreferred may be null if no choices are preferred
@@ -194,7 +211,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
         }
     }
 
-    private static function addChoiceViewsFromStructuredValues(array $values, $label, array $choices, array $keys, &$index, $attr, $labelTranslationParameters, ?callable $isPreferred, array &$preferredViews, array &$preferredViewsOrder, array &$otherViews, bool $duplicatePreferredChoices): void
+    private static function addChoiceViewsFromStructuredValues(array $values, $label, array $choices, array $keys, &$index, $attr, $labelTranslationParameters, $help, ?callable $isPreferred, array &$preferredViews, array &$preferredViewsOrder, array &$otherViews, bool $duplicatePreferredChoices): void
     {
         foreach ($values as $key => $value) {
             if (null === $value) {
@@ -214,6 +231,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                     $index,
                     $attr,
                     $labelTranslationParameters,
+                    $help,
                     $isPreferred,
                     $preferredViewsForGroup,
                     $preferredViewsOrder,
@@ -221,11 +239,11 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                     $duplicatePreferredChoices,
                 );
 
-                if (\count($preferredViewsForGroup) > 0) {
+                if ($preferredViewsForGroup) {
                     $preferredViews[$key] = new ChoiceGroupView($key, $preferredViewsForGroup);
                 }
 
-                if (\count($otherViewsForGroup) > 0) {
+                if ($otherViewsForGroup) {
                     $otherViews[$key] = new ChoiceGroupView($key, $otherViewsForGroup);
                 }
 
@@ -241,6 +259,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                 $index,
                 $attr,
                 $labelTranslationParameters,
+                $help,
                 $isPreferred,
                 $preferredViews,
                 $preferredViewsOrder,
@@ -254,7 +273,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
      * @param-immediately-invoked-callable $groupBy
      * @param-immediately-invoked-callable $isPreferred
      */
-    private static function addChoiceViewsGroupedByCallable(callable $groupBy, $choice, string $value, $label, array $keys, &$index, $attr, $labelTranslationParameters, ?callable $isPreferred, array &$preferredViews, array &$preferredViewsOrder, array &$otherViews, bool $duplicatePreferredChoices): void
+    private static function addChoiceViewsGroupedByCallable(callable $groupBy, $choice, string $value, $label, array $keys, &$index, $attr, $labelTranslationParameters, $help, ?callable $isPreferred, array &$preferredViews, array &$preferredViewsOrder, array &$otherViews, bool $duplicatePreferredChoices): void
     {
         $groupLabels = $groupBy($choice, $keys[$value], $value);
 
@@ -268,6 +287,7 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                 $index,
                 $attr,
                 $labelTranslationParameters,
+                $help,
                 $isPreferred,
                 $preferredViews,
                 $preferredViewsOrder,
@@ -278,17 +298,23 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
             return;
         }
 
-        $groupLabels = \is_array($groupLabels) ? array_map('strval', $groupLabels) : [(string) $groupLabels];
+        $groupLabels = \is_array($groupLabels) ? $groupLabels : [$groupLabels];
 
         foreach ($groupLabels as $groupLabel) {
+            if (!$groupLabel instanceof TranslatableInterface) {
+                $groupLabel = (string) $groupLabel;
+            }
+
+            $groupKey = self::getGroupKey($groupLabel, $preferredViews);
+
             // Initialize the group views if necessary. Unnecessarily built group
             // views will be cleaned up at the end of createView()
-            if (!isset($preferredViews[$groupLabel])) {
-                $preferredViews[$groupLabel] = new ChoiceGroupView($groupLabel);
-                $otherViews[$groupLabel] = new ChoiceGroupView($groupLabel);
+            if (!isset($preferredViews[$groupKey])) {
+                $preferredViews[$groupKey] = new ChoiceGroupView($groupLabel);
+                $otherViews[$groupKey] = new ChoiceGroupView($groupLabel);
             }
-            if (!isset($preferredViewsOrder[$groupLabel])) {
-                $preferredViewsOrder[$groupLabel] = [];
+            if (!isset($preferredViewsOrder[$groupKey])) {
+                $preferredViewsOrder[$groupKey] = [];
             }
 
             self::addChoiceView(
@@ -299,12 +325,41 @@ class DefaultChoiceListFactory implements ChoiceListFactoryInterface
                 $index,
                 $attr,
                 $labelTranslationParameters,
+                $help,
                 $isPreferred,
-                $preferredViews[$groupLabel]->choices,
-                $preferredViewsOrder[$groupLabel],
-                $otherViews[$groupLabel]->choices,
+                $preferredViews[$groupKey]->choices,
+                $preferredViewsOrder[$groupKey],
+                $otherViews[$groupKey]->choices,
                 $duplicatePreferredChoices,
             );
         }
+    }
+
+    /**
+     * Translatable group labels cannot be used as array keys. An opaque key is
+     * generated for them instead, reusing the one of an equivalent label so that
+     * choices sharing the same group label end up in the same group view.
+     *
+     * @param array<ChoiceGroupView|ChoiceView> $views
+     */
+    private static function getGroupKey(string|TranslatableInterface $groupLabel, array $views): string
+    {
+        if (!$groupLabel instanceof TranslatableInterface) {
+            return $groupLabel;
+        }
+
+        foreach ($views as $key => $view) {
+            if ($view instanceof ChoiceGroupView && $view->label instanceof TranslatableInterface && $view->label == $groupLabel) {
+                return $key;
+            }
+        }
+
+        // Prefixing with a NUL byte avoids clashing with the integer keys of ungrouped choices
+        $i = \count($views);
+        while (isset($views["\0".$i])) {
+            ++$i;
+        }
+
+        return "\0".$i;
     }
 }

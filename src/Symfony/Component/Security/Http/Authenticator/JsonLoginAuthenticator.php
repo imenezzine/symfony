@@ -18,6 +18,7 @@ use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\PropertyAccess\Exception\AccessException;
 use Symfony\Component\PropertyAccess\PropertyAccess;
 use Symfony\Component\PropertyAccess\PropertyAccessorInterface;
+use Symfony\Component\Security\Core\Authentication\AuthenticationMethod;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
@@ -26,12 +27,14 @@ use Symfony\Component\Security\Core\User\PasswordUpgraderInterface;
 use Symfony\Component\Security\Core\User\UserProviderInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationFailureHandlerInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationSuccessHandlerInterface;
+use Symfony\Component\Security\Http\Authenticator\Passport\Badge\AuthenticationMethodBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\PasswordUpgradeBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\RememberMeBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\UserBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Credentials\PasswordCredentials;
 use Symfony\Component\Security\Http\Authenticator\Passport\Passport;
 use Symfony\Component\Security\Http\HttpUtils;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 /**
@@ -63,14 +66,20 @@ class JsonLoginAuthenticator implements InteractiveAuthenticatorInterface
 
     public function supports(Request $request): ?bool
     {
+        $reasons = $request->attributes->get(SecurityRequestAttributes::UNSUPPORTED_REASONS);
+
         if (
             !str_contains($request->getRequestFormat() ?? '', 'json')
             && !str_contains($request->getContentTypeFormat() ?? '', 'json')
         ) {
+            $reasons?->add(($contentType = $request->headers->get('Content-Type')) ? \sprintf('neither the request format "%s" nor the "Content-Type" header "%s" is a JSON one', $request->getRequestFormat(), $contentType) : \sprintf('the request format "%s" is not a JSON one, and the request has no "Content-Type" header', $request->getRequestFormat()));
+
             return false;
         }
 
         if (isset($this->options['check_path']) && !$this->httpUtils->checkRequestPath($request, $this->options['check_path'])) {
+            $reasons?->add(\sprintf('the request path "%s" does not match the "check_path" option "%s"', $request->getPathInfo(), $this->options['check_path']));
+
             return false;
         }
 
@@ -93,7 +102,7 @@ class JsonLoginAuthenticator implements InteractiveAuthenticatorInterface
         }
 
         $userBadge = new UserBadge($credentials['username'], $this->userProvider->loadUserByIdentifier(...));
-        $passport = new Passport($userBadge, new PasswordCredentials($credentials['password']), [new RememberMeBadge((array) $data)]);
+        $passport = new Passport($userBadge, new PasswordCredentials($credentials['password']), [new RememberMeBadge((array) $data), new AuthenticationMethodBadge(AuthenticationMethod::PASSWORD)]);
 
         if ($this->userProvider instanceof PasswordUpgraderInterface) {
             $passport->addBadge(new PasswordUpgradeBadge($credentials['password'], $this->userProvider));

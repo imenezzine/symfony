@@ -21,11 +21,6 @@ $container->loadFromExtension('framework', [
         'only_exceptions' => true,
         'enabled' => false,
     ],
-    'router' => [
-        'resource' => '%kernel.project_dir%/config/routing.xml',
-        'type' => 'xml',
-        'utf8' => true,
-    ],
     'session' => [
         'storage_factory_id' => 'session.storage.factory.native',
         'handler_id' => 'session.handler.native_file',
@@ -42,36 +37,7 @@ $container->loadFromExtension('framework', [
         'gc_probability' => 1,
         'save_path' => '/path/to/sessions',
     ],
-    'assets' => [
-        'version' => 'v1',
-    ],
-    'translator' => [
-        'enabled' => true,
-        'fallback' => 'fr',
-        'paths' => ['%kernel.project_dir%/Fixtures/translations'],
-        'cache_dir' => '%kernel.cache_dir%/translations',
-    ],
-    'validation' => [
-        'enabled' => true,
-        'email_validation_mode' => 'html5',
-    ],
-    'serializer' => [
-        'enabled' => true,
-        'enable_attributes' => true,
-        'name_converter' => 'serializer.name_converter.camel_case_to_snake_case',
-        'circular_reference_handler' => 'my.circular.reference.handler',
-        'max_depth_handler' => 'my.max.depth.handler',
-        'default_context' => ['enable_max_depth' => true],
-        'named_serializers' => [
-            'api' => [
-                'include_built_in_normalizers' => true,
-                'include_built_in_encoders' => true,
-                'default_context' => ['enable_max_depth' => false],
-            ],
-        ],
-    ],
     'property_info' => true,
-    'type_info' => true,
     'request' => [
         'formats' => [
             'csv' => [
@@ -80,8 +46,5 @@ $container->loadFromExtension('framework', [
             ],
             'pdf' => 'application/pdf',
         ],
-    ],
-    'html_sanitizer' => [
-        'enabled' => true,
     ],
 ]);

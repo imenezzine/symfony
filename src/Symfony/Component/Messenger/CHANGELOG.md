@@ -4,7 +4,31 @@ CHANGELOG
 8.2
 ---
 
+ * `messenger:consume` and `messenger:failed:retry` add the listeners of a run to a `ScopedEventDispatcher` instead of to the event dispatcher of the application
+ * Add `FailedMessageRepository` and `FailedMessageFilter` to list, inspect, remove and redispatch failed messages outside the console
+ * Add `MessengerBundle`, which provides the `messenger` configuration and the services previously provided by `FrameworkBundle` under `framework.messenger`
+ * Add claim check support with `ClaimCheckSerializer` and PSR-6 cache pools
+ * Add routing and failure transport information and a `--message` option to the `debug:messenger` command
+ * Add `HandlerStartingEvent`, `HandlerSuccessEvent` and `HandlerFailureEvent`, dispatched around each handler call
  * Add `$serializedTypeNameAliases` parameter to `#[AsMessage]` to accept alternate serialized type names when decoding
+ * Add `--failed-after` and `--failed-before` options to the `messenger:failed:retry`, `messenger:failed:remove` and `messenger:failed:show` commands, and a `--class-filter` option to `messenger:failed:retry`
+ * `RedispatchMessage` now dispatches to the senders configured for the message (routing config or `#[AsMessage]`) when `$transportNames` is empty, instead of sending to no sender at all
+ * Add a `--concurrency` option to the `messenger:consume` command to process messages in parallel
+ * Add a `--redispatch` option to the `messenger:failed:retry` command to send messages back to their transport instead of handling them in the command
+ * Allow prioritizing receivers so that `messenger:consume --all` consumes receivers in a predefined order
+ * Add an optional `extra` key to the encoded envelope passed to `SerializerInterface::decode()`, holding metadata added by the receiving transport
+ * Add an optional `LoggingMiddleware` logging the processing time and memory usage of each message
+ * Add the `messenger:show` command to list and inspect pending messages of a transport
+ * Make the `messenger:consume` and `messenger:failed:retry` commands exit immediately when a second `SIGINT` is received
+ * Add a `transport` option to `#[AsMessageHandler]` and to the `messenger.message_handler` tag to route the handled messages to that transport and bind the handler to it
+ * Add `OutboxStamp` and `OutboxSender` to store messages in an outbox transport and forward them to their target transport when the outbox is consumed
+ * Add the `outbox` option to transports
+ * Add `StopWorkerOnIdleListener` to stop the worker as soon as no message is available
+ * Make `InMemoryTransport` implement `ListableReceiverInterface` and `MessageCountAwareInterface`
+ * Add `retry` and `failure_transport` options to the `sync://` transport
+ * Add `$retryStrategy`, `$failureSender`, `$eventDispatcher` and `$logger` arguments to `SyncTransport`
+ * Add `$retryStrategyLocator`, `$failureSenderLocator`, `$eventDispatcher` and `$logger` arguments to `SyncTransportFactory`
+ * Add `SyncMessageFailedEvent` and `SyncMessageRetryingEvent`, dispatched by the sync transport
 
 8.1
 ---

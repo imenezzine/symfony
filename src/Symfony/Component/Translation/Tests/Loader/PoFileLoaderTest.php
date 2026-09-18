@@ -13,6 +13,7 @@ namespace Symfony\Component\Translation\Tests\Loader;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Config\Resource\FileResource;
+use Symfony\Component\Translation\Exception\InvalidResourceException;
 use Symfony\Component\Translation\Exception\NotFoundResourceException;
 use Symfony\Component\Translation\Loader\PoFileLoader;
 
@@ -104,6 +105,57 @@ class PoFileLoaderTest extends TestCase
         $this->assertArrayHasKey('foo1', $messages);
         $this->assertArrayNotHasKey('foo2', $messages);
         $this->assertArrayHasKey('foo3', $messages);
+    }
+
+    public function testSkipFuzzyTranslationsWithoutBlankLines()
+    {
+        $loader = new PoFileLoader();
+        $resource = __DIR__.'/../Fixtures/fuzzy-translations-no-blank-lines.po';
+        $catalogue = $loader->load($resource, 'en', 'domain1');
+
+        $this->assertEquals([
+            'foo2' => 'bar2',
+            'foo3' => 'bar3',
+        ], $catalogue->all('domain1'));
+    }
+
+    public function testLoadContextsIntoMetadata()
+    {
+        $loader = new PoFileLoader();
+        $resource = __DIR__.'/../Fixtures/contexts.po';
+        $catalogue = $loader->load($resource, 'en', 'domain1');
+
+        $this->assertEquals([
+            'foo1' => 'bar1',
+            'foo2' => 'bar2',
+            'foo3' => 'bar3',
+        ], $catalogue->all('domain1'));
+
+        $this->assertEquals(['context' => 'menu'], $catalogue->getMetadata('foo1', 'domain1'));
+        $this->assertNull($catalogue->getMetadata('foo2', 'domain1'));
+        $this->assertEquals(['context' => 'multi-line context'], $catalogue->getMetadata('foo3', 'domain1'));
+    }
+
+    public function testLoadThrowsWhenTheSameMessageHasDifferentContexts()
+    {
+        $loader = new PoFileLoader();
+        $resource = __DIR__.'/../Fixtures/contexts-ambiguous.po';
+
+        $this->expectException(InvalidResourceException::class);
+        $this->expectExceptionMessage('The "foo" message is defined twice with different contexts ("menu" and "sidebar"), which is not supported because contexts are ignored in message keys.');
+
+        $loader->load($resource, 'en', 'domain1');
+    }
+
+    public function testLoadThrowsWhenTheSameMessageIsDefinedWithAndWithoutContext()
+    {
+        $loader = new PoFileLoader();
+        $resource = __DIR__.'/../Fixtures/contexts-with-and-without.po';
+
+        $this->expectException(InvalidResourceException::class);
+        $this->expectExceptionMessage('The "foo" message is defined both with and without a context, which is not supported because contexts are ignored in message keys.');
+
+        $loader->load($resource, 'en', 'domain1');
     }
 
     public function testMissingPlurals()

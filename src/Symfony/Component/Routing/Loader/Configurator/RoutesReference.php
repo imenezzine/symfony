@@ -41,10 +41,12 @@ namespace Symfony\Component\Routing\Loader\Configurator;
  *     host?: string|array<string,string>,
  *     schemes?: string|list<string>,
  *     condition?: string,
+ *     add_condition?: string,
  *     locale?: string,
  *     format?: string,
  *     utf8?: bool,
  *     stateless?: bool,
+ *     firewall?: string,
  * }
  * @psalm-type ImportConfig = array{
  *     resource: string,
@@ -61,10 +63,12 @@ namespace Symfony\Component\Routing\Loader\Configurator;
  *     host?: string|array<string,string>,
  *     schemes?: string|list<string>,
  *     condition?: string,
+ *     add_condition?: string,
  *     locale?: string,
  *     format?: string,
  *     utf8?: bool,
  *     stateless?: bool,
+ *     firewall?: string,
  * }
  * @psalm-type AliasConfig = array{
  *     alias: string,

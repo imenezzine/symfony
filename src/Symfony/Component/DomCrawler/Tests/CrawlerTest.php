@@ -202,6 +202,10 @@ class CrawlerTest extends TestCase
         $crawler = $this->createCrawler();
         $crawler->addContent($this->getDoctype().'<html><script>var foo = "bär";</script></html>', 'text/html; charset=UTF-8');
         $this->assertEquals('var foo = "bär";', $crawler->filterXPath('//script')->text(), '->addContent() does not interfere with script content');
+
+        $crawler = $this->createCrawler();
+        $crawler->addContent($this->getDoctype().'<html><script>var foo = "charset=utf-16";</script></html>', 'text/html; charset=UTF-8');
+        $this->assertEquals('var foo = "charset=utf-16";', $crawler->filterXPath('//script')->text(), '->addContent() does not rewrite charsets found outside meta tags');
     }
 
     #[RequiresPhpExtension('iconv')]
@@ -210,6 +214,14 @@ class CrawlerTest extends TestCase
         $crawler = $this->createCrawler();
         $crawler->addContent(iconv('UTF-8', 'SJIS', $this->getDoctype().'<html><head><meta charset="Shift_JIS"></head><body>日本語</body></html>'));
         $this->assertEquals('日本語', $crawler->filterXPath('//body')->text(), '->addContent() can recognize "Shift_JIS" in html5 meta charset tag');
+    }
+
+    #[RequiresPhpExtension('mbstring')]
+    public function testAddContentIgnoresCharsetOutsideMetaTags()
+    {
+        $crawler = $this->createCrawler();
+        $crawler->addContent($this->getDoctype().'<html><head><script charset="utf-8" src="foo.js"></script><meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-15"></head><body><p>10'."\xA4".'</p></body></html>');
+        $this->assertSame('10€', $crawler->filterXPath('//p')->text(), '->addContent() reads the charset from the meta tag, not from a preceding script tag');
     }
 
     public function testAddDocument()
@@ -993,6 +1005,13 @@ class CrawlerTest extends TestCase
         yield ['#bar', true, '.bar'];
         yield ['#bar', true, '.other'];
         yield ['#bar', false, '.foo'];
+
+        yield ['#foo', true, 'body > div'];
+        yield ['#foo', false, 'div div'];
+
+        yield ['#bar', true, 'div div'];
+        yield ['#bar', true, '#foo div'];
+        yield ['#bar', false, '#bar div'];
     }
 
     #[DataProvider('provideMatchTests')]
@@ -1013,6 +1032,69 @@ class CrawlerTest extends TestCase
         $crawler = $this->createCrawler($this->getDoctype().$html);
         $node = $crawler->filter($mainNodeSelector);
         $this->assertSame($expected, $node->matches($selector));
+    }
+
+    public function testMatchWithPositionalSelector()
+    {
+        $crawler = $this->createCrawler($this->getDoctype().'<ul><li class="a">One</li><li class="b">Two</li><li class="c">Three</li></ul>');
+        $items = $crawler->filter('li');
+
+        $this->assertTrue($items->eq(0)->matches('li:first-child'));
+        $this->assertTrue($items->eq(1)->matches('li:nth-child(2)'));
+        $this->assertTrue($items->eq(1)->matches('li:nth-of-type(2)'));
+        $this->assertTrue($items->eq(2)->matches('li:last-child'));
+
+        $this->assertFalse($items->eq(0)->matches('li:nth-child(2)'));
+        $this->assertFalse($items->eq(2)->matches('li:first-child'));
+    }
+
+    public function testMatchAndChildrenWithNodeDetachedFromTheDocument()
+    {
+        $crawler = $this->createCrawler($this->getDoctype().'<html lang="en"><body><div id="foo"><span class="a"></span></div></body></html>');
+        $foo = $crawler->filter('#foo');
+
+        $fooNode = $foo->getNode(0);
+        $fooNode->parentNode->replaceChild($fooNode->ownerDocument->createElement('ol'), $fooNode);
+
+        $this->assertTrue($foo->matches('#foo'));
+        $this->assertSame('a', $foo->children('span')->attr('class'));
+    }
+
+    public function testChildrenWithNodesFromSeveralTrees()
+    {
+        $crawler = $this->createCrawler($this->getDoctype().'<html lang="en"><body><ul id="kept"><li class="a"></li></ul><ul id="cut"><li class="b"></li></ul></body></html>');
+
+        $kept = $crawler->filter('#kept')->getNode(0);
+        $cut = $crawler->filter('#cut')->getNode(0);
+        $cut->parentNode->removeChild($cut);
+
+        $both = $this->createCrawler();
+        $both->add($kept);
+        $both->add($cut);
+
+        $this->assertSame(['a', 'b'], $both->children('li')->each(static fn ($node) => $node->attr('class')));
+    }
+
+    public function testClosestWithPositionalSelector()
+    {
+        $crawler = $this->createCrawler($this->getDoctype().'<ul><li class="a">One</li><li class="b">Two</li><li class="c">Three</li></ul>');
+        $second = $crawler->filter('li')->eq(1);
+
+        $closest = $second->closest('li:nth-child(2)');
+        $this->assertInstanceOf(Crawler::class, $closest);
+        $this->assertSame('b', $closest->attr('class'));
+
+        $this->assertNull($second->closest('li:nth-child(3)'));
+    }
+
+    public function testChildrenWithPositionalSelector()
+    {
+        $crawler = $this->createCrawler($this->getDoctype().'<ul><li class="a">One</li><li class="b">Two</li><li class="c">Three</li></ul>');
+        $list = $crawler->filter('ul');
+
+        $this->assertSame('b', $list->children('li:nth-child(2)')->attr('class'));
+        $this->assertSame('a', $list->children('li:first-child')->attr('class'));
+        $this->assertSame(0, $list->children('li:nth-child(4)')->count());
     }
 
     public function testClosest()

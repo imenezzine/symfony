@@ -31,15 +31,14 @@ use Symfony\Contracts\Service\ResetInterface;
 class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterface
 {
     /**
-     * @var \SplObjectStorage<WrappedListener, array{string, string}>|null
+     * @var \SplObjectStorage<WrappedListener, array{string, int}>|null
      */
     private ?\SplObjectStorage $callStack = null;
-    private array $wrappedListeners = [];
     private array $orphanedEvents = [];
     private array $dispatchDepth = [];
     private array $calledListenerInfos = [];
     private array $calledOriginalListeners = [];
-    private string $currentRequestHash = '';
+    private int $currentRequestHash = 0;
 
     public function __construct(
         private EventDispatcherInterface $dispatcher,
@@ -62,16 +61,6 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
 
     public function removeListener(string $eventName, callable|array $listener): void
     {
-        if (isset($this->wrappedListeners[$eventName])) {
-            foreach ($this->wrappedListeners[$eventName] as $index => $wrappedListener) {
-                if ($wrappedListener->getWrappedListener() === $listener || ($listener instanceof \Closure && $wrappedListener->getWrappedListener() == $listener)) {
-                    $listener = $wrappedListener;
-                    unset($this->wrappedListeners[$eventName][$index]);
-                    break;
-                }
-            }
-        }
-
         $this->dispatcher->removeListener($eventName, $listener);
     }
 
@@ -87,16 +76,6 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
 
     public function getListenerPriority(string $eventName, callable|array $listener): ?int
     {
-        // we might have wrapped listeners for the event (if called while dispatching)
-        // in that case get the priority by wrapper
-        if (isset($this->wrappedListeners[$eventName])) {
-            foreach ($this->wrappedListeners[$eventName] as $wrappedListener) {
-                if ($wrappedListener->getWrappedListener() === $listener || ($listener instanceof \Closure && $wrappedListener->getWrappedListener() == $listener)) {
-                    return $this->dispatcher->getListenerPriority($eventName, $wrappedListener);
-                }
-            }
-        }
-
         return $this->dispatcher->getListenerPriority($eventName, $listener);
     }
 
@@ -114,19 +93,27 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
 
         $this->callStack ??= new \SplObjectStorage();
 
-        $currentRequestHash = $this->currentRequestHash = $this->requestStack && ($request = $this->requestStack->getCurrentRequest()) ? spl_object_hash($request) : '';
+        $currentRequestHash = $this->currentRequestHash = $this->requestStack && ($request = $this->requestStack->getCurrentRequest()) ? spl_object_id($request) : 0;
 
         if (null !== $this->logger && $event instanceof StoppableEventInterface && $event->isPropagationStopped()) {
             $this->logger->debug(\sprintf('The "%s" event is already stopped. No listeners have been called.', $eventName));
         }
 
-        $this->preProcess($eventName);
+        $listeners = $this->preProcess($eventName);
         try {
             $this->beforeDispatch($eventName, $event);
             try {
                 $e = $this->stopwatch->start($eventName, 'section');
                 try {
-                    $this->dispatcher->dispatch($event, $eventName);
+                    $stoppable = $event instanceof StoppableEventInterface;
+
+                    foreach ($listeners as $listener) {
+                        if ($stoppable && $event->isPropagationStopped()) {
+                            break;
+                        }
+
+                        $listener($event, $eventName, $this);
+                    }
                 } finally {
                     if ($e->isStarted()) {
                         $e->stop();
@@ -137,7 +124,7 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
             }
         } finally {
             $this->currentRequestHash = $currentRequestHash;
-            $this->postProcess($eventName);
+            $this->postProcess($eventName, $listeners);
         }
 
         return $event;
@@ -149,7 +136,7 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
             return [];
         }
 
-        $hash = $request ? spl_object_hash($request) : null;
+        $hash = $request ? spl_object_id($request) : null;
         $called = [];
 
         foreach ($this->calledListenerInfos as $requestHash => $eventInfos) {
@@ -179,7 +166,7 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
             return [];
         }
 
-        $hash = $request ? spl_object_hash($request) : null;
+        $hash = $request ? spl_object_id($request) : null;
         $calledListeners = [];
 
         foreach ($this->calledOriginalListeners as $requestHash => $eventListeners) {
@@ -211,7 +198,7 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
     public function getOrphanedEvents(?Request $request = null): array
     {
         if ($request) {
-            return $this->orphanedEvents[spl_object_hash($request)] ?? [];
+            return $this->orphanedEvents[spl_object_id($request)] ?? [];
         }
 
         if (!$this->orphanedEvents) {
@@ -224,9 +211,8 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
     public function reset(): void
     {
         $this->callStack = null;
-        $this->wrappedListeners = [];
         $this->orphanedEvents = [];
-        $this->currentRequestHash = '';
+        $this->currentRequestHash = 0;
         $this->dispatchDepth = [];
         $this->calledListenerInfos = [];
         $this->calledOriginalListeners = [];
@@ -257,27 +243,34 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
     {
     }
 
-    private function preProcess(string $eventName): void
+    /**
+     * @return list<WrappedListener>
+     */
+    private function preProcess(string $eventName): array
     {
         $this->dispatchDepth[$eventName] = ($this->dispatchDepth[$eventName] ?? 0) + 1;
 
         if (!$this->dispatcher->hasListeners($eventName)) {
             $this->orphanedEvents[$this->currentRequestHash][] = $eventName;
 
-            return;
+            return [];
         }
+
+        $listeners = [];
 
         foreach ($this->dispatcher->getListeners($eventName) as $listener) {
-            $priority = $this->getListenerPriority($eventName, $listener) ?? 0;
             $wrappedListener = new WrappedListener($listener instanceof WrappedListener ? $listener->getWrappedListener() : $listener, null, $this->stopwatch, $this);
-            $this->wrappedListeners[$eventName][] = $wrappedListener;
-            $this->dispatcher->removeListener($eventName, $listener);
-            $this->dispatcher->addListener($eventName, $wrappedListener, $priority);
+            $listeners[] = $wrappedListener;
             $this->callStack[$wrappedListener] = [$eventName, $this->currentRequestHash];
         }
+
+        return $listeners;
     }
 
-    private function postProcess(string $eventName): void
+    /**
+     * @param list<WrappedListener> $listeners
+     */
+    private function postProcess(string $eventName, array $listeners): void
     {
         if (null === $this->callStack) {
             return;
@@ -285,17 +278,8 @@ class TraceableEventDispatcher implements EventDispatcherInterface, ResetInterfa
 
         $this->dispatchDepth[$eventName] = ($this->dispatchDepth[$eventName] ?? 1) - 1;
 
-        unset($this->wrappedListeners[$eventName]);
         $skipped = false;
-        foreach ($this->dispatcher->getListeners($eventName) as $listener) {
-            if (!$listener instanceof WrappedListener) { // #12845: a new listener was added during dispatch.
-                continue;
-            }
-            // Unwrap listener
-            $priority = $this->getListenerPriority($eventName, $listener);
-            $this->dispatcher->removeListener($eventName, $listener);
-            $this->dispatcher->addListener($eventName, $listener->getWrappedListener(), $priority);
-
+        foreach ($listeners as $listener) {
             if (null !== $this->logger) {
                 $context = ['event' => $eventName, 'listener' => $listener->getPretty()];
             }

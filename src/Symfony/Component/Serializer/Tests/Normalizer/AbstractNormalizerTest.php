@@ -70,6 +70,7 @@ class AbstractNormalizerTest extends TestCase
         $a4 = new AttributeMetadata('a4');
         $a4->addGroup('test');
         $a4->addGroup('other');
+        $a4->addGroup('ignore');
         $classMetadata->addAttributeMetadata($a4);
 
         $this->classMetadata->method('getMetadataFor')->willReturn($classMetadata);
@@ -82,6 +83,33 @@ class AbstractNormalizerTest extends TestCase
 
         $result = $this->normalizer->getAllowedAttributes('c', [AbstractNormalizer::GROUPS => ['*']], true);
         $this->assertEquals(['a1', 'a2', 'a3', 'a4'], $result);
+
+        $result = $this->normalizer->getAllowedAttributes('c', [AbstractNormalizer::GROUPS => ['test'], AbstractNormalizer::IGNORED_GROUPS => ['ignore']], true);
+        $this->assertEquals(['a2'], $result);
+
+        $result = $this->normalizer->getAllowedAttributes('c', [AbstractNormalizer::GROUPS => ['*'], AbstractNormalizer::IGNORED_GROUPS => ['ignore']], true);
+        $this->assertEquals(['a1', 'a2', 'a3'], $result);
+
+        $result = $this->normalizer->getAllowedAttributes('c', [AbstractNormalizer::IGNORED_GROUPS => ['ignore']], true);
+        $this->assertEquals(['a1', 'a2', 'a3'], $result);
+    }
+
+    public function testIgnoringTheDefaultGroupExcludesUngroupedAttributesWhenDefaultGroupsAreEnabled()
+    {
+        $classMetadata = new ClassMetadata('c');
+        $a1 = new AttributeMetadata('a1');
+        $classMetadata->addAttributeMetadata($a1);
+        $a2 = new AttributeMetadata('a2');
+        $a2->addGroup('g');
+        $classMetadata->addAttributeMetadata($a2);
+
+        $this->classMetadata->method('getMetadataFor')->willReturn($classMetadata);
+
+        $context = [AbstractNormalizer::ENABLE_DEFAULT_GROUPS => true, AbstractNormalizer::IGNORED_GROUPS => ['Default']];
+        // the synthesized groups count for exclusion too: a1 belongs to them, a2 keeps its own group
+        $this->assertEquals(['a2'], array_values($this->normalizer->getAllowedAttributes('c', $context + [AbstractNormalizer::GROUPS => ['g']], true)));
+        // without explicit groups every non-ignored attribute stays allowed; only a1 is excluded through the synthesized groups
+        $this->assertEquals(['a2'], array_values($this->normalizer->getAllowedAttributes('c', $context, true)));
     }
 
     public function testGetAllowedAttributesWithWildcardGroupAndNoMetadata()
@@ -112,6 +140,7 @@ class AbstractNormalizerTest extends TestCase
         $a4 = new AttributeMetadata('a4');
         $a4->addGroup('test');
         $a4->addGroup('other');
+        $a4->addGroup('ignore');
         $classMetadata->addAttributeMetadata($a4);
 
         $this->classMetadata->method('getMetadataFor')->willReturn($classMetadata);
@@ -127,6 +156,9 @@ class AbstractNormalizerTest extends TestCase
 
         $result = $this->normalizer->getAllowedAttributes('c', [AbstractNormalizer::GROUPS => ['*']], false);
         $this->assertEquals([$a1, $a2, $a3, $a4], $result);
+
+        $result = $this->normalizer->getAllowedAttributes('c', [AbstractNormalizer::IGNORED_GROUPS => ['ignore']], false);
+        $this->assertEquals([$a1, $a2, $a3], $result);
     }
 
     public function testObjectWithStaticConstructor()

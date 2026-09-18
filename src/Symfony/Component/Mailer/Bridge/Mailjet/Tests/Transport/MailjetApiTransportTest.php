@@ -12,12 +12,18 @@
 namespace Symfony\Component\Mailer\Bridge\Mailjet\Tests\Transport;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bridge\PhpUnit\ExpectUserDeprecationMessageTrait;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\Mailer\Bridge\Mailjet\Transport\MailjetApiTransport;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
@@ -25,6 +31,8 @@ use Symfony\Component\Mime\Part\DataPart;
 
 class MailjetApiTransportTest extends TestCase
 {
+    use ExpectUserDeprecationMessageTrait;
+
     protected const USER = 'u$er';
     protected const PASSWORD = 'pa$s';
 
@@ -301,6 +309,73 @@ class MailjetApiTransportTest extends TestCase
         $method->invoke($transport, $email, $envelope);
     }
 
+    public function testRemoteTemplate()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('12345', ['firstName' => 'Fabien']);
+        $envelope = new Envelope(new Address('foo@example.com', 'Foo'), [new Address('bar@example.com', 'Bar')]);
+
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+        $message = $method->invoke($transport, $email, $envelope)['Messages'][0];
+
+        $this->assertSame(12345, $message['TemplateID']);
+        $this->assertTrue($message['TemplateLanguage']);
+        $this->assertSame(['firstName' => 'Fabien'], $message['Variables']);
+        $this->assertArrayNotHasKey('Subject', $message);
+        $this->assertArrayNotHasKey('TextPart', $message);
+        $this->assertArrayNotHasKey('HTMLPart', $message);
+    }
+
+    public function testRemoteTemplateWithSubject()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->subject('Hello!')
+            ->template('12345');
+        $envelope = new Envelope(new Address('foo@example.com', 'Foo'), [new Address('bar@example.com', 'Bar')]);
+
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+        $message = $method->invoke($transport, $email, $envelope)['Messages'][0];
+
+        $this->assertSame('Hello!', $message['Subject']);
+        $this->assertSame(12345, $message['TemplateID']);
+    }
+
+    public function testRemoteTemplateWithNonNumericReference()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('welcome');
+        $envelope = new Envelope(new Address('foo@example.com', 'Foo'), [new Address('bar@example.com', 'Bar')]);
+
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The Mailjet API expects a numeric template id, "welcome" given.');
+
+        $method->invoke($transport, $email, $envelope);
+    }
+
+    #[IgnoreDeprecations]
+    #[Group('legacy')]
+    public function testDeprecatedTemplateIdHeader()
+    {
+        $this->expectUserDeprecationMessage(\sprintf('Since symfony/mailjet-mailer 8.2: Using the "X-MJ-TemplateID" email header to select a Mailjet template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class));
+
+        $email = (new Email())->subject('Hello!');
+        $email->getHeaders()->addTextHeader('X-MJ-TemplateID', '12345');
+        $envelope = new Envelope(new Address('foo@example.com', 'Foo'), [new Address('bar@example.com', 'Bar')]);
+
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+        $message = $method->invoke($transport, $email, $envelope)['Messages'][0];
+
+        $this->assertSame(12345, $message['TemplateID']);
+    }
+
+    #[IgnoreDeprecations]
+    #[Group('legacy')]
     public function testHeaderToMessage()
     {
         $email = (new Email())
@@ -514,5 +589,61 @@ class MailjetApiTransportTest extends TestCase
         $this->assertSame('text.txt', $contentId ?? null);
         $this->assertCount(1, $payload['Messages']);
         $this->assertCount(1, $payload['Messages'][0]['InlinedAttachments']);
+    }
+
+    public function testTrackingHeader()
+    {
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $enabled = new Email();
+        $enabled->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+        $enabledPayload = $method->invoke($transport, $enabled, $envelope);
+        $this->assertSame('enabled', $enabledPayload['Messages'][0]['TrackClicks']);
+        $this->assertSame('enabled', $enabledPayload['Messages'][0]['TrackOpens']);
+
+        $disabled = new Email();
+        $disabled->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+        $disabledPayload = $method->invoke($transport, $disabled, $envelope);
+        $this->assertSame('disabled', $disabledPayload['Messages'][0]['TrackClicks']);
+        $this->assertSame('disabled', $disabledPayload['Messages'][0]['TrackOpens']);
+    }
+
+    public function testTrackingHeaderControlsOpensAndClicksIndependently()
+    {
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: false));
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('disabled', $payload['Messages'][0]['TrackOpens']);
+        $this->assertArrayNotHasKey('TrackClicks', $payload['Messages'][0]);
+    }
+
+    public function testExplicitMailjetTrackingHeadersOverrideTrackingHeaderRegardlessOfOrder()
+    {
+        $transport = new MailjetApiTransport(self::USER, self::PASSWORD);
+        $method = new \ReflectionMethod(MailjetApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $trackingHeaderFirst = new Email();
+        $trackingHeaderFirst->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+        $trackingHeaderFirst->getHeaders()->addTextHeader('X-Mailjet-TrackClick', 'account_default');
+
+        $payload = $method->invoke($transport, $trackingHeaderFirst, $envelope);
+        $this->assertSame('account_default', $payload['Messages'][0]['TrackClicks']);
+        $this->assertSame('disabled', $payload['Messages'][0]['TrackOpens']);
+
+        $nativeHeaderFirst = new Email();
+        $nativeHeaderFirst->getHeaders()->addTextHeader('X-Mailjet-TrackClick', 'account_default');
+        $nativeHeaderFirst->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+
+        $payload = $method->invoke($transport, $nativeHeaderFirst, $envelope);
+        $this->assertSame('account_default', $payload['Messages'][0]['TrackClicks']);
+        $this->assertSame('disabled', $payload['Messages'][0]['TrackOpens']);
     }
 }

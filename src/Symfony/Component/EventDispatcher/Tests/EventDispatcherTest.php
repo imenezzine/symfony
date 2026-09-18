@@ -196,6 +196,49 @@ class EventDispatcherTest extends TestCase
         $this->assertTrue($this->dispatcher->hasListeners(self::postFoo));
     }
 
+    public function testAddSubscriberWithNamedKeys()
+    {
+        $eventSubscriber = new TestEventSubscriberWithNamedKeys();
+        $this->dispatcher->addSubscriber($eventSubscriber);
+
+        $this->assertTrue($this->dispatcher->hasListeners('pre.foo'));
+        $this->assertTrue($this->dispatcher->hasListeners('post.foo'));
+        $this->assertSame(10, $this->dispatcher->getListenerPriority('pre.foo', [$eventSubscriber, 'preFoo']));
+        $this->assertSame(0, $this->dispatcher->getListenerPriority('post.foo', [$eventSubscriber, 'postFoo']));
+    }
+
+    public function testAddSubscriberWithNamedKeysAndMultipleListeners()
+    {
+        $this->dispatcher->addSubscriber(new TestEventSubscriberWithNamedKeysAndMultipleListeners());
+
+        $listeners = $this->dispatcher->getListeners('pre.foo');
+        $this->assertCount(3, $listeners);
+        $this->assertSame('preFoo3', $listeners[0][1]);
+        $this->assertSame('preFoo2', $listeners[1][1]);
+        $this->assertSame('preFoo1', $listeners[2][1]);
+    }
+
+    public function testRemoveSubscriberWithNamedKeys()
+    {
+        $eventSubscriber = new TestEventSubscriberWithNamedKeys();
+        $this->dispatcher->addSubscriber($eventSubscriber);
+        $this->assertTrue($this->dispatcher->hasListeners('pre.foo'));
+
+        $this->dispatcher->removeSubscriber($eventSubscriber);
+        $this->assertFalse($this->dispatcher->hasListeners('pre.foo'));
+        $this->assertFalse($this->dispatcher->hasListeners('post.foo'));
+    }
+
+    public function testRemoveSubscriberWithNamedKeysAndMultipleListeners()
+    {
+        $eventSubscriber = new TestEventSubscriberWithNamedKeysAndMultipleListeners();
+        $this->dispatcher->addSubscriber($eventSubscriber);
+        $this->assertCount(3, $this->dispatcher->getListeners('pre.foo'));
+
+        $this->dispatcher->removeSubscriber($eventSubscriber);
+        $this->assertFalse($this->dispatcher->hasListeners('pre.foo'));
+    }
+
     public function testAddSubscriberWithPriorities()
     {
         $eventSubscriber = new TestEventSubscriber();
@@ -350,6 +393,107 @@ class EventDispatcherTest extends TestCase
         $this->assertFalse($this->dispatcher->hasListeners('foo'));
     }
 
+    public function testRemoveKeepsLazyListenersLazy()
+    {
+        $called = 0;
+        $factory = static function () use (&$called) {
+            ++$called;
+
+            return new TestWithDispatcher();
+        };
+
+        $this->dispatcher->addListener('foo', [$factory, 'foo']);
+        $this->dispatcher->addListener('foo', $listener = static function () {});
+
+        $this->dispatcher->removeListener('foo', $listener);
+
+        $this->assertSame(0, $called);
+        $this->assertTrue($this->dispatcher->hasListeners('foo'));
+    }
+
+    public function testRemoveByObjectKeepsLazyListenersLazy()
+    {
+        $called = 0;
+        $test = new TestWithDispatcher();
+        $factory = static function () use (&$called, $test) {
+            ++$called;
+
+            return $test;
+        };
+
+        $this->dispatcher->addListener('foo', [$factory, 'foo']);
+        $this->dispatcher->addListener('foo', [static function () use (&$called) {
+            ++$called;
+
+            return new TestWithDispatcher();
+        }, 'foo']);
+
+        $this->dispatcher->removeListener('foo', [$test, 'foo']);
+        $this->assertSame(0, $called);
+
+        $this->assertCount(1, $this->dispatcher->getListeners('foo'));
+    }
+
+    public function testDispatchSkipsLazyListenerRemovedByObject()
+    {
+        $test = new TestWithDispatcher();
+        $factory = static fn () => $test;
+
+        $this->dispatcher->addListener('foo', [$factory, 'foo']);
+        $this->dispatcher->removeListener('foo', [$test, 'foo']);
+        $this->dispatcher->dispatch(new Event(), 'foo');
+
+        $this->assertNull($test->name);
+        $this->assertFalse($this->dispatcher->hasListeners('foo'));
+    }
+
+    public function testPriorityKeepsPendingRemovals()
+    {
+        $test = new TestWithDispatcher();
+        $factory = static fn () => $test;
+        $other = static function () {};
+
+        $this->dispatcher->addListener('foo', [$factory, 'foo'], 3);
+        $this->dispatcher->addListener('foo', $other, 5);
+        $this->dispatcher->removeListener('foo', [$test, 'foo']);
+
+        $this->assertSame(5, $this->dispatcher->getListenerPriority('foo', $other));
+        $this->assertSame([$other], $this->dispatcher->getListeners('foo'));
+    }
+
+    public function testRemoveSubscriberKeepsLazyListenersLazy()
+    {
+        $called = 0;
+        $subscriber = new TestEventSubscriber();
+        $factory = static function () use (&$called, $subscriber) {
+            ++$called;
+
+            return $subscriber;
+        };
+
+        $this->dispatcher->addListener('pre.foo', [$factory, 'preFoo']);
+        $this->dispatcher->removeSubscriber($subscriber);
+        $this->assertSame(0, $called);
+
+        $this->assertFalse($this->dispatcher->hasListeners('pre.foo'));
+    }
+
+    public function testPriorityKeepsLazyListenersLazy()
+    {
+        $called = 0;
+        $factory = static function () use (&$called) {
+            ++$called;
+
+            return new TestWithDispatcher();
+        };
+
+        $this->dispatcher->addListener('foo', [$factory, 'foo'], 3);
+        $this->dispatcher->addListener('foo', $listener = static function () {}, 5);
+
+        $this->assertSame(5, $this->dispatcher->getListenerPriority('foo', $listener));
+        $this->assertSame(0, $called);
+    }
+
     public function testPriorityFindsLazyListeners()
     {
         $test = new TestWithDispatcher();
@@ -374,6 +518,38 @@ class EventDispatcherTest extends TestCase
         $this->dispatcher->removeListener('foo', [$test, 'foo']);
         $this->dispatcher->addListener('bar', [$factory, 'foo'], 3);
         $this->assertSame(['bar' => [[$test, 'foo']]], $this->dispatcher->getListeners());
+    }
+
+    public function testGetListenersWhenLazyListenerAddsListeners()
+    {
+        $test1 = new TestWithDispatcher();
+        $test2 = new TestWithDispatcher();
+        $test3 = new TestWithDispatcher();
+        $test4 = new TestWithDispatcher();
+        $test1->name = '1';
+        $test2->name = '2';
+        $test3->name = '3';
+        $test4->name = '4';
+        $dispatcher = $this->dispatcher;
+        $factory = static function () use ($dispatcher, $test2, $test3, $test4) {
+            $dispatcher->addListener('foo', [$test3, 'foo'], 5);
+            $dispatcher->addListener('foo', [$test4, 'foo']);
+
+            return $test2;
+        };
+
+        $this->dispatcher->addListener('foo', [$test1, 'foo']);
+        $this->dispatcher->addListener('foo', [$factory, 'foo']);
+
+        $expected = [
+            [$test3, 'foo'],
+            [$test1, 'foo'],
+            [$test2, 'foo'],
+            [$test4, 'foo'],
+        ];
+
+        $this->assertSame($expected, $this->dispatcher->getListeners('foo'));
+        $this->assertSame($expected, $this->dispatcher->getListeners('foo'));
     }
 
     public function testMutatingWhilePropagationIsStopped()
@@ -505,6 +681,29 @@ class TestEventSubscriberWithMultipleListeners implements EventSubscriberInterfa
         return ['pre.foo' => [
             ['preFoo1'],
             ['preFoo2', 10],
+        ]];
+    }
+}
+
+class TestEventSubscriberWithNamedKeys implements EventSubscriberInterface
+{
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            'pre.foo' => ['method' => 'preFoo', 'priority' => 10],
+            'post.foo' => ['method' => 'postFoo'],
+        ];
+    }
+}
+
+class TestEventSubscriberWithNamedKeysAndMultipleListeners implements EventSubscriberInterface
+{
+    public static function getSubscribedEvents(): array
+    {
+        return ['pre.foo' => [
+            ['method' => 'preFoo1'],
+            ['method' => 'preFoo2', 'priority' => 10],
+            ['preFoo3', 20],
         ]];
     }
 }

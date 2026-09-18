@@ -22,6 +22,8 @@ use Symfony\Component\Messenger\Stamp\ReceivedStamp;
  */
 class HandlersLocator implements HandlersLocatorInterface
 {
+    private static array $typeCache = [];
+
     /**
      * @param HandlerDescriptor[][]|callable[][] $handlers
      */
@@ -61,9 +63,15 @@ class HandlersLocator implements HandlersLocatorInterface
      */
     public static function listTypes(Envelope $envelope): array
     {
-        $class = $envelope->getMessage()::class;
+        return self::listTypesForClass($envelope->getMessage()::class);
+    }
 
-        return [$class => $class]
+    /**
+     * @internal
+     */
+    public static function listTypesForClass(string $class): array
+    {
+        return self::$typeCache[$class] ??= [$class => $class]
             + class_parents($class)
             + class_implements($class)
             + self::listWildcards($class)

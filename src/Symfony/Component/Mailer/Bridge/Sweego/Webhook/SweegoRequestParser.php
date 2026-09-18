@@ -18,6 +18,7 @@ use Symfony\Component\HttpFoundation\RequestMatcher\IsJsonRequestMatcher;
 use Symfony\Component\HttpFoundation\RequestMatcher\MethodRequestMatcher;
 use Symfony\Component\HttpFoundation\RequestMatcherInterface;
 use Symfony\Component\Mailer\Bridge\Sweego\RemoteEvent\SweegoPayloadConverter;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\RemoteEvent\Event\Mailer\AbstractMailerEvent;
 use Symfony\Component\RemoteEvent\Exception\ParseException;
 use Symfony\Component\Webhook\Client\AbstractRequestParser;
@@ -25,6 +26,8 @@ use Symfony\Component\Webhook\Exception\RejectWebhookException;
 
 final class SweegoRequestParser extends AbstractRequestParser
 {
+    private const TIMESTAMP_TOLERANCE = 300;
+
     public function __construct(
         private readonly SweegoPayloadConverter $converter,
     ) {
@@ -41,6 +44,19 @@ final class SweegoRequestParser extends AbstractRequestParser
 
     protected function doParse(Request $request, #[\SensitiveParameter] string $secret): ?AbstractMailerEvent
     {
+        if (!$secret) {
+            throw new InvalidArgumentException('A non-empty secret is required.');
+        }
+
+        if (!$request->headers->get('webhook-id')
+            || !$request->headers->get('webhook-timestamp')
+            || !$request->headers->get('webhook-signature')
+        ) {
+            throw new RejectWebhookException(406, 'Signature is required.');
+        }
+
+        $this->validateSignature($request, $secret);
+
         $content = $request->toArray();
 
         if (
@@ -53,17 +69,6 @@ final class SweegoRequestParser extends AbstractRequestParser
             throw new RejectWebhookException(406, 'Payload is malformed.');
         }
 
-        if ($secret) {
-            if (!$request->headers->get('webhook-id')
-                && !$request->headers->get('webhook-timestamp')
-                && !$request->headers->get('webhook-signature')
-            ) {
-                throw new RejectWebhookException(406, 'Signature is required.');
-            }
-
-            $this->validateSignature($request, $secret);
-        }
-
         try {
             return $this->converter->convert($content);
         } catch (ParseException $e) {
@@ -71,12 +76,18 @@ final class SweegoRequestParser extends AbstractRequestParser
         }
     }
 
-    private function validateSignature(Request $request, string $secret): void
+    private function validateSignature(Request $request, #[\SensitiveParameter] string $secret): void
     {
+        $timestamp = $request->headers->get('webhook-timestamp');
+
+        if (abs(time() - (int) $timestamp) > self::TIMESTAMP_TOLERANCE) {
+            throw new RejectWebhookException(403, 'Timestamp is outside the allowed time window.');
+        }
+
         $contentToSign = \sprintf(
             '%s.%s.%s',
             $request->headers->get('webhook-id'),
-            $request->headers->get('webhook-timestamp'),
+            $timestamp,
             $request->getContent(),
         );
 

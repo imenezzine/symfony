@@ -4,10 +4,47 @@ CHANGELOG
 8.2
 ---
 
+ * Add the `user_checker_on_refresh` firewall option, running its user checker again when the user is refreshed from the session
+ * Deprecate passing an event dispatcher as the 2nd argument of `FirewallListener::__construct()`, which now takes the logout URL generator there
+ * Add the `re_authentication_entry_point` firewall option, pointing at a `ReAuthenticationEntryPointInterface` service used when `IS_AUTHENTICATED_RECENTLY` is denied
+ * Add the `recent_authentication_lifetime` option, the number of seconds an interactive authentication keeps granting `IS_AUTHENTICATED_RECENTLY`
+ * Add the `very_recent_authentication_lifetime` option, the number of seconds an interactive authentication keeps granting `IS_AUTHENTICATED_VERY_RECENTLY`
+ * Add the `security.expression_language_provider` service to evaluate the security functions outside of authorization expressions
+ * Add the `debug:roles` command to inspect the role hierarchy
  * Add `allowed_time_drift` option to the OIDC token handler configuration
+ * Default the `algorithms` option of the `oidc` token handler and of the `response_signature` option of the `oauth2` one to `RS256`, which OIDC Core 1.0 requires every provider to support
+ * Require OAuth2 scopes of the access token with an `OAUTH2_SCOPE(...)` attribute, and answer a denial with the RFC 6750 §3.1 `insufficient_scope` challenge
+ * Add the `http_client`, `issuer`, `audience`, `claim`, `allowed_time_drift`, `cache` and `response_signature` options to the `oauth2` token handler, whose configuration used to be ignored. The `audience` option takes a single identifier as a string or several as a list
+ * Add the `discovery` option to the `response_signature` of the `oauth2` token handler, to read its keys from the RFC 8414 authorization server metadata
+ * Fix the `oauth2` token handler, which could not reach any introspection endpoint: `oauth2: ~` made the container fail to compile, and the endpoint was requested with an empty URL
  * Allow disabling the redirection on successful logout by passing `null` to the `target` option
  * Deprecate the `remember_me` option of the `form_login`, `json_login`, `login_link`, and `access_token` authenticators, as it has no effect
  * Add the `ldap_users_only` option to the LDAP authenticators, to bind only `LdapUser` instances against the LDAP server
+ * Show the deauthentication reason and the responsible user providers in the security profiler panel
+ * Serve the CSRF token id of a firewall through the `csrf_token_manager` it configures, so that `csrf_token()` no longer mints a token the firewall rejects
+ * Add `path`, `enable_csrf`, `csrf_token_id`, `csrf_parameter` and `csrf_token_manager` options to the `switch_user` firewall configuration to restrict user switching to a dedicated (POST-only) route protected by a CSRF token
+ * Deprecate configuring an access control rule with many `roles`, use `allow_if` or role hierarchy instead
+ * Deprecate configuring both an access control rule `allow_if` and `roles`, update `allow_if` instead
+ * Add support for decorating custom authentication failure and success handlers
+ * Add role hierarchy graph to the profiler security panel
+ * Add `oidc_login` firewall authenticator for the OpenID Connect Authorization Code Flow, along with an `oidc` user provider for the users it builds from the OIDC claims
+ * Add the `id_token_signature` configuration (`required`, `algorithms`, `enforce_key_usage_verification`) to the `oidc_login` authenticator, which now verifies the ID token signature by default
+ * Add the required `client_authentication` option to the `oidc_login` authenticator, which says how the client authenticates at the token endpoint: `client_secret_basic` or `client_secret_post` with the client secret, `none` to declare a public client, or the `id` of a service implementing `ClientAuthenticationInterface` for a scheme Symfony does not ship. It replaces the `client_secret` and `token_endpoint_auth_method` options
+ * Add the `pkce` (`enabled`, `method`), `max_age` and `authorization_params` options to the `oidc_login` authenticator
+ * Add a `start_path` option to the `oidc_login` authenticator and declare a route there that starts the flow by redirecting to the provider, for login pages linking to it
+ * Add `user_data_source` and `user_identifier_claim` options to the `oidc_login` authenticator
+ * Add `enable_end_session` and `post_logout_redirect_path` options to the `oidc_login` authenticator for RP-Initiated Logout
+ * Add the `refresh_access_token` option to the `oidc_login` authenticator to renew the access token before it expires
+ * Allow passing a null user to `Security::isGrantedForUser()` and `Security::getAccessDecisionForUser()` to check guest permissions
+ * Show why an authenticator did not support the request in the security profiler panel
+ * Add the `enforce_at_jwt_type` option to the OIDC token handler configuration to reject the tokens whose `typ` header is not the `at+jwt` RFC 9068 requires from an access token
+ * Deprecate not setting the `enforce_at_jwt_type` option of the OIDC token handler, which defaults to `false` in 8.2 and will default to `true` in 9.0
+ * Add the `resource_metadata` option to the `access_token` authenticator to serve the RFC 9728 protected resource metadata document of the firewall and advertise its URL in the `WWW-Authenticate` header
+ * Pick an authenticator implementing `FallbackAuthenticationEntryPointInterface` as the firewall entry point only when no other authenticator provides one
+ * Add the `http_client` option to the `oidc_login` authenticator, naming the HTTP client its calls to the provider are made with
+ * Allow the `audience` option of the `oidc` token handler to name several identifiers as a list, as the `oauth2` one does
+ * Add the `client_secret_jwt` and `private_key_jwt` client authentication methods to the `oidc_login` authenticator, which authenticate the client at the token endpoint with a JWT assertion it signs itself (RFC 7523, OIDC Core 1.0 §9)
+ * Dispatch `OidcAuthorizationRequestEvent` from the `oidc_login` authenticator through the firewall event dispatcher, so that a listener can tailor the `authorization_params` of each authorization request
 
 8.1
 ---

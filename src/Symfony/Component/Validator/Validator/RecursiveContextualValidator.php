@@ -31,6 +31,7 @@ use Symfony\Component\Validator\Exception\UnsupportedMetadataException;
 use Symfony\Component\Validator\Exception\ValidatorException;
 use Symfony\Component\Validator\GroupSequenceProviderInterface;
 use Symfony\Component\Validator\Mapping\CascadingStrategy;
+use Symfony\Component\Validator\Mapping\ClassMetadata;
 use Symfony\Component\Validator\Mapping\ClassMetadataInterface;
 use Symfony\Component\Validator\Mapping\Factory\MetadataFactoryInterface;
 use Symfony\Component\Validator\Mapping\GenericMetadata;
@@ -448,7 +449,7 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
             // Replace the "Default" group by the group sequence defined
             // for the class, if applicable.
             // This is done after checking the cache, so that
-            // spl_object_hash() isn't called for this sequence and
+            // spl_object_id() isn't called for this sequence and
             // "Default" is used instead in the cache. This is useful
             // if the getters below return different group sequences in
             // every call.
@@ -473,7 +474,9 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
                     $defaultOverridden = true;
 
                     if (!$group instanceof GroupSequence) {
-                        $group = new GroupSequence($group);
+                        // a provider returning a plain array carries no flag of its own,
+                        // so the one declared on the class applies
+                        $group = new GroupSequence($group, $metadata instanceof ClassMetadata && $metadata->getCascadeCurrentGroup());
                     }
                 }
             }
@@ -506,7 +509,7 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
 
         // If no more groups should be validated for the property nodes,
         // we can safely quit
-        if (0 === \count($groups)) {
+        if (!$groups) {
             return;
         }
 
@@ -616,7 +619,7 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
             $this->validateInGroup($value, $cacheKey, $metadata, $group, $context);
         }
 
-        if (0 === \count($groups)) {
+        if (!$groups) {
             return;
         }
 
@@ -631,6 +634,13 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
             return;
         }
 
+        // A Valid constraint carrying groups only cascades when one of them is being validated
+        if ($metadata instanceof GenericMetadata && null !== $cascadeGroups = $metadata->getCascadeGroups()) {
+            if (!array_intersect($groups, $cascadeGroups)) {
+                return;
+            }
+        }
+
         // If no specific traversal strategy was requested when this method
         // was called, use the traversal strategy of the node's metadata
         if ($traversalStrategy & TraversalStrategy::IMPLICIT) {
@@ -640,7 +650,7 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
         // The $cascadedGroups property is set, if the "Default" group is
         // overridden by a group sequence
         // See validateClassNode()
-        $cascadedGroups = null !== $cascadedGroups && \count($cascadedGroups) > 0 ? $cascadedGroups : $groups;
+        $cascadedGroups = $cascadedGroups ?: $groups;
 
         if ($value instanceof LazyProperty) {
             $value = $value->getPropertyValue();
@@ -697,6 +707,12 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
         foreach ($groupSequence->groups as $groupInSequence) {
             $groups = (array) $groupInSequence;
 
+            // $cascadedGroup is non-null only when the sequence replaced the class's "Default" group
+            $stepCascadedGroups = $cascadedGroups;
+            if (null !== $cascadedGroup && $groupSequence->cascadeCurrentGroup) {
+                $stepCascadedGroups = array_values(array_unique([$cascadedGroup, ...array_filter($groups, \is_string(...))]));
+            }
+
             if ($metadata instanceof ClassMetadataInterface) {
                 $this->validateClassNode(
                     $value,
@@ -704,7 +720,7 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
                     $metadata,
                     $propertyPath,
                     $groups,
-                    $cascadedGroups,
+                    $stepCascadedGroups,
                     $traversalStrategy,
                     $context
                 );
@@ -716,7 +732,7 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
                     $metadata,
                     $propertyPath,
                     $groups,
-                    $cascadedGroups,
+                    $stepCascadedGroups,
                     $traversalStrategy,
                     $context
                 );
@@ -790,11 +806,11 @@ class RecursiveContextualValidator implements ContextualValidatorInterface
         if ($this->context instanceof ExecutionContext) {
             $cacheKey = $this->context->generateCacheKey($object);
         } else {
-            $cacheKey = spl_object_hash($object);
+            $cacheKey = spl_object_id($object);
         }
 
         if ($dependsOnPropertyPath) {
-            $cacheKey .= $this->context->getPropertyPath();
+            $cacheKey .= "\0".$this->context->getPropertyPath();
         }
 
         return $cacheKey;

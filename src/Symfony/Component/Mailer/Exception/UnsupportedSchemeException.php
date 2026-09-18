@@ -32,6 +32,10 @@ class UnsupportedSchemeException extends LogicException
             'class' => Bridge\Brevo\Transport\BrevoTransportFactory::class,
             'package' => 'symfony/brevo-mailer',
         ],
+        'cloudflare' => [
+            'class' => Bridge\Cloudflare\Transport\CloudflareTransportFactory::class,
+            'package' => 'symfony/cloudflare-mailer',
+        ],
         'gmail' => [
             'class' => Bridge\Google\Transport\GmailTransportFactory::class,
             'package' => 'symfony/google-mailer',
@@ -52,6 +56,10 @@ class UnsupportedSchemeException extends LogicException
             'class' => Bridge\Mailjet\Transport\MailjetTransportFactory::class,
             'package' => 'symfony/mailjet-mailer',
         ],
+        'mailkite' => [
+            'class' => Bridge\MailKite\Transport\MailKiteTransportFactory::class,
+            'package' => 'symfony/mail-kite-mailer',
+        ],
         'mailomat' => [
             'class' => Bridge\Mailomat\Transport\MailomatTransportFactory::class,
             'package' => 'symfony/mailomat-mailer',
@@ -71,6 +79,10 @@ class UnsupportedSchemeException extends LogicException
         'postmark' => [
             'class' => Bridge\Postmark\Transport\PostmarkTransportFactory::class,
             'package' => 'symfony/postmark-mailer',
+        ],
+        'pufferpost' => [
+            'class' => Bridge\PufferPost\Transport\PufferPostTransportFactory::class,
+            'package' => 'symfony/puffer-post-mailer',
         ],
         'mailtrap' => [
             'class' => Bridge\Mailtrap\Transport\MailtrapTransportFactory::class,
@@ -99,6 +111,10 @@ class UnsupportedSchemeException extends LogicException
         'sweego' => [
             'class' => Bridge\Sweego\Transport\SweegoTransportFactory::class,
             'package' => 'symfony/sweego-mailer',
+        ],
+        'turbosmtp' => [
+            'class' => Bridge\TurboSmtp\Transport\TurboSmtpTransportFactory::class,
+            'package' => 'symfony/turbo-smtp-mailer',
         ],
     ];
 

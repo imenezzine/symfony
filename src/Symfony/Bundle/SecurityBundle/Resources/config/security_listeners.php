@@ -139,6 +139,7 @@ return static function (ContainerConfigurator $container) {
                 service('security.access.denied_handler')->nullOnInvalid(),
                 service('logger')->nullOnInvalid(),
                 false, // Stateless
+                null, // Re-authentication entry point
             ])
             ->tag('monolog.logger', ['channel' => 'security'])
 
@@ -157,6 +158,11 @@ return static function (ContainerConfigurator $container) {
                 false, // Stateless
                 service('router')->nullOnInvalid(),
                 abstract_arg('Target Route'),
+                service('security.http_utils'),
+                null, // Path
+                null, // CSRF Token Manager
+                '_csrf_token', // CSRF Parameter
+                'switch_user', // CSRF Token ID
             ])
             ->tag('monolog.logger', ['channel' => 'security'])
 

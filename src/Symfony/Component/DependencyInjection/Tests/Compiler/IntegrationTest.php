@@ -31,6 +31,8 @@ use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
 use Symfony\Component\DependencyInjection\Loader\YamlFileLoader;
 use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\DependencyInjection\ServiceLocator;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\AbstractResourceTaggedWithCallable;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\AbstractResourceTaggedWithClosure;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\Attribute\CustomAnyAttribute;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\Attribute\CustomAutoconfiguration;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\Attribute\CustomMethodAttribute;
@@ -40,15 +42,30 @@ use Symfony\Component\DependencyInjection\Tests\Fixtures\AutoconfiguredInterface
 use Symfony\Component\DependencyInjection\Tests\Fixtures\AutoconfiguredService1;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\AutoconfiguredService2;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\AutowireLocatorConsumer;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\BarResourceTaggedWithCallable;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\BarResourceTaggedWithClosure;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\BarTagClass;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\BarTaggedWithCallable;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\BarTaggedWithClosure;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\EnumResourceTaggedWithCallable;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\FooBarTaggedClass;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\FooBarTaggedForDefaultPriorityClass;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\FooResourceTaggedWithCallable;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\FooResourceTaggedWithClosure;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\FooResourceTaggedWithClosureMarker;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\FooTagClass;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\FooTaggedWithCallable;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\FooTaggedWithClosure;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\NestedAutowireLocatorConsumer;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\PrivateConstructorResourceTaggedWithCallable;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\PrivateConstructorResourceTaggedWithClosure;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\PrivateConstructorTaggedWithCallable;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\ResourceTaggedWithCallableInterface;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\ResourceTaggedWithClosureInterface;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\ResourceTaggedWithClosureMarkerInterface;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\ServiceSubscriberWithAutowireLocator;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\StaticMethodTag;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\TaggedClassMapConsumer;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\TaggedConsumerWithExclude;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\TaggedIteratorConsumer;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\TaggedIteratorConsumerWithDefaultIndexMethod;
@@ -422,11 +439,112 @@ class IntegrationTest extends TestCase
             ->setPublic(true)
         ;
 
+        $container->register('private', PrivateConstructorTaggedWithCallable::class)->setAutoconfigured(true);
+
         (new RegisterAutoconfigureAttributesPass())->processClass($container, new \ReflectionClass(TaggedWithCallableInterface::class));
         (new ResolveInstanceofConditionalsPass())->process($container);
 
         $this->assertSame([['key' => 'foo']], $container->getDefinition('foo')->getTag('app.handler'));
         $this->assertSame([['key' => 'bar']], $container->getDefinition('bar')->getTag('app.handler'));
+        $this->assertSame([['key' => 'private']], $container->getDefinition('private')->getTag('app.handler'));
+    }
+
+    public function testAutoconfiguredResourceTagWithClosureAttributes()
+    {
+        if (\PHP_VERSION_ID < 80500) {
+            $this->markTestSkipped('Closures in constant expressions require PHP 8.5.');
+        }
+
+        $container = new ContainerBuilder();
+        $container->register('foo', FooResourceTaggedWithClosure::class)->setAutoconfigured(true);
+        $container->register('bar', BarResourceTaggedWithClosure::class)->setAutoconfigured(true);
+        $container->register('private', PrivateConstructorResourceTaggedWithClosure::class)->setAutoconfigured(true);
+        $container->register('abstract', AbstractResourceTaggedWithClosure::class)->setAutoconfigured(true);
+
+        (new RegisterAutoconfigureAttributesPass())->processClass($container, new \ReflectionClass(ResourceTaggedWithClosureInterface::class));
+        (new ResolveInstanceofConditionalsPass())->process($container);
+
+        $this->assertSame([['foo' => 'foo']], $container->getDefinition('foo')->getTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('foo')->hasTag('container.excluded'));
+        $this->assertSame([['foo' => 'bar']], $container->getDefinition('bar')->getTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('bar')->hasTag('container.excluded'));
+        $this->assertSame([['foo' => 'private']], $container->getDefinition('private')->getTag('foo_bar'));
+
+        // closures cannot be introspected: abstract classes are skipped, only the marker tag is added
+        $this->assertFalse($container->getDefinition('abstract')->hasTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('abstract')->hasTag('container.excluded'));
+    }
+
+    public function testAutoconfiguredResourceTagWithClosureAttributesOnMarkerInterface()
+    {
+        if (\PHP_VERSION_ID < 80500) {
+            $this->markTestSkipped('Closures in constant expressions require PHP 8.5.');
+        }
+
+        $container = new ContainerBuilder();
+        $container->register('foo', FooResourceTaggedWithClosureMarker::class)->setAutoconfigured(true);
+        $container->register('interface', ResourceTaggedWithClosureMarkerInterface::class)->setAutoconfigured(true);
+
+        (new RegisterAutoconfigureAttributesPass())->processClass($container, new \ReflectionClass(ResourceTaggedWithClosureMarkerInterface::class));
+        (new ResolveInstanceofConditionalsPass())->process($container);
+
+        $this->assertSame([['class' => FooResourceTaggedWithClosureMarker::class]], $container->getDefinition('foo')->getTag('foo_bar'));
+
+        // an interface without methods is not reported abstract by reflection, closures must not run on it either
+        $this->assertFalse($container->getDefinition('interface')->hasTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('interface')->hasTag('container.excluded'));
+    }
+
+    public function testAutoconfiguredResourceTagWithCallableArrayAttributes()
+    {
+        $container = new ContainerBuilder();
+        $container->register('foo', FooResourceTaggedWithCallable::class)->setAutoconfigured(true);
+        $container->register('bar', BarResourceTaggedWithCallable::class)->setAutoconfigured(true);
+        $container->register('private', PrivateConstructorResourceTaggedWithCallable::class)->setAutoconfigured(true);
+        $container->register('enum', EnumResourceTaggedWithCallable::class)->setAutoconfigured(true);
+        $container->register('abstract', AbstractResourceTaggedWithCallable::class)->setAutoconfigured(true);
+        $container->register('interface', ResourceTaggedWithCallableInterface::class)->setAutoconfigured(true);
+
+        (new RegisterAutoconfigureAttributesPass())->processClass($container, new \ReflectionClass(ResourceTaggedWithCallableInterface::class));
+        (new ResolveInstanceofConditionalsPass())->process($container);
+
+        $this->assertSame([['foo' => 'foo']], $container->getDefinition('foo')->getTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('foo')->hasTag('container.excluded'));
+        $this->assertSame([['foo' => 'bar']], $container->getDefinition('bar')->getTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('bar')->hasTag('container.excluded'));
+        $this->assertSame([['foo' => 'private']], $container->getDefinition('private')->getTag('foo_bar'));
+        $this->assertSame([['foo' => 'enum']], $container->getDefinition('enum')->getTag('foo_bar'));
+        $this->assertSame([['foo' => 'abstract']], $container->getDefinition('abstract')->getTag('foo_bar'));
+
+        // on the interface itself the method is abstract: the tag is skipped, only the marker tag is added
+        $this->assertFalse($container->getDefinition('interface')->hasTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('interface')->hasTag('container.excluded'));
+    }
+
+    public function testAutoconfiguredResourceTagWithCallableArrayAttributesViaClassMap()
+    {
+        $container = new ContainerBuilder();
+        $container->register(ResourceTaggedWithCallableInterface::class)
+            ->setAbstract(true)
+            ->setAutoconfigured(true)
+        ;
+        $container->register(FooResourceTaggedWithCallable::class, FooResourceTaggedWithCallable::class)
+            ->setAutoconfigured(true)
+        ;
+        $container->register(BarResourceTaggedWithCallable::class, BarResourceTaggedWithCallable::class)
+            ->setAutoconfigured(true)
+        ;
+        $container->register(TaggedClassMapConsumer::class)
+            ->setAutowired(true)
+            ->setPublic(true)
+        ;
+
+        $container->compile();
+
+        $this->assertSame([
+            'foo' => FooResourceTaggedWithCallable::class,
+            'bar' => BarResourceTaggedWithCallable::class,
+        ], $container->get(TaggedClassMapConsumer::class)->getParam());
     }
 
     public function testAutoconfiguredTagWithCallableArrayAttributesFromYaml()
@@ -439,6 +557,20 @@ class IntegrationTest extends TestCase
 
         $this->assertSame([['key' => 'foo']], $container->getDefinition('foo')->getTag('app.handler'));
         $this->assertSame([['key' => 'bar']], $container->getDefinition('bar')->getTag('app.handler'));
+    }
+
+    public function testAutoconfiguredResourceTagWithCallableArrayAttributesFromYaml()
+    {
+        $container = new ContainerBuilder();
+        $loader = new YamlFileLoader($container, new FileLocator(__DIR__.'/../Fixtures/yaml'));
+        $loader->load('services_with_callable_resource_tag_attributes.yml');
+
+        (new ResolveInstanceofConditionalsPass())->process($container);
+
+        $this->assertSame([['foo' => 'foo']], $container->getDefinition('foo')->getTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('foo')->hasTag('container.excluded'));
+        $this->assertSame([['foo' => 'bar']], $container->getDefinition('bar')->getTag('foo_bar'));
+        $this->assertTrue($container->getDefinition('bar')->hasTag('container.excluded'));
     }
 
     public function testAutoconfiguredTagAttributesCanComputePriority()
@@ -590,6 +722,71 @@ class IntegrationTest extends TestCase
         self::assertSame('foo', $s->locator->get('subscribed1'));
     }
 
+    public function testNestedLocatorConfiguredViaAttribute()
+    {
+        if (!property_exists(SubscribedService::class, 'attributes')) {
+            $this->markTestSkipped('Requires symfony/service-contracts >= 3.2');
+        }
+
+        $container = new ContainerBuilder();
+        $container->register(BarTagClass::class)
+            ->setPublic(true)
+            ->addTag('foo_bar', ['key' => 'bar'])
+        ;
+        $container->register(FooTagClass::class)
+            ->setPublic(true)
+            ->addTag('foo_bar', ['key' => 'foo'])
+        ;
+        $container->register(NestedAutowireLocatorConsumer::class)
+            ->setAutowired(true)
+            ->setPublic(true)
+        ;
+
+        $container->compile();
+
+        /** @var NestedAutowireLocatorConsumer $s */
+        $s = $container->get(NestedAutowireLocatorConsumer::class);
+
+        $nestedLocator = $s->locator->get('nested_locator');
+        self::assertSame(['bar', 'foo'], array_keys($nestedLocator->getProvidedServices()));
+        self::assertSame($container->get(BarTagClass::class), $nestedLocator->get('bar'));
+        self::assertSame($container->get(FooTagClass::class), $nestedLocator->get('foo'));
+
+        self::assertSame([$container->get(BarTagClass::class), $container->get(FooTagClass::class)], iterator_to_array($s->locator->get('nested_iterator')));
+    }
+
+    public function testSubscribedServiceWithAutowireLocatorAttribute()
+    {
+        if (!property_exists(SubscribedService::class, 'attributes')) {
+            $this->markTestSkipped('Requires symfony/service-contracts >= 3.2');
+        }
+
+        $container = new ContainerBuilder();
+        $container->register(BarTagClass::class)
+            ->setPublic(true)
+            ->addTag('foo_bar', ['key' => 'bar'])
+        ;
+        $container->register(FooTagClass::class)
+            ->setPublic(true)
+            ->addTag('foo_bar', ['key' => 'foo'])
+        ;
+        $container->register(ServiceSubscriberWithAutowireLocator::class)
+            ->setAutowired(true)
+            ->setPublic(true)
+            ->addTag('container.service_subscriber')
+        ;
+
+        $container->compile();
+
+        /** @var ServiceSubscriberWithAutowireLocator $s */
+        $s = $container->get(ServiceSubscriberWithAutowireLocator::class);
+
+        $nestedLocator = $s->container->get('nested_locator');
+        self::assertSame(['bar', 'foo'], array_keys($nestedLocator->getProvidedServices()));
+        self::assertSame($container->get(BarTagClass::class), $nestedLocator->get('bar'));
+        self::assertSame($container->get(FooTagClass::class), $nestedLocator->get('foo'));
+    }
+
     #[IgnoreDeprecations]
     #[Group('legacy')]
     public function testTaggedServiceWithIndexAttributeAndDefaultMethodConfiguredViaAttribute()
@@ -614,6 +811,27 @@ class IntegrationTest extends TestCase
 
         $param = iterator_to_array($s->getParam()->getIterator());
         $this->assertSame(['bar_tab_class_with_defaultmethod' => $container->get(BarTagClass::class), 'foo' => $container->get(FooTagClass::class)], $param);
+    }
+
+    public function testTaggedClassMapConfiguredViaAttribute()
+    {
+        $container = new ContainerBuilder();
+        $container->register(BarTagClass::class, BarTagClass::class)
+            ->addResourceTag('foo_bar', ['foo' => 'bar'])
+        ;
+        $container->register(FooTagClass::class, FooTagClass::class)
+            ->addResourceTag('foo_bar', ['foo' => 'foo'])
+        ;
+        $container->register(TaggedClassMapConsumer::class)
+            ->setAutowired(true)
+            ->setPublic(true)
+        ;
+
+        $container->compile();
+
+        $s = $container->get(TaggedClassMapConsumer::class);
+
+        $this->assertSame(['bar' => BarTagClass::class, 'foo' => FooTagClass::class], $s->getParam());
     }
 
     #[IgnoreDeprecations]

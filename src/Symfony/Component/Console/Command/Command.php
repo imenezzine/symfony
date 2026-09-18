@@ -19,12 +19,16 @@ use Symfony\Component\Console\Completion\Suggestion;
 use Symfony\Component\Console\Exception\ExceptionInterface;
 use Symfony\Component\Console\Exception\InvalidArgumentException;
 use Symfony\Component\Console\Exception\LogicException;
+use Symfony\Component\Console\Helper\DescriptorHelper;
+use Symfony\Component\Console\Helper\FormatterHelper;
 use Symfony\Component\Console\Helper\HelperInterface;
 use Symfony\Component\Console\Helper\HelperSet;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -107,6 +111,13 @@ class Command implements SignalableCommandInterface
         }
 
         $this->configure();
+
+        if (!$this->code) {
+            // the options listed in the attribute come last, after configure(), which a command with code gets from InvokableCommand
+            foreach ($attribute->options ?? [] as $option) {
+                $this->definition->addOption($option);
+            }
+        }
     }
 
     /**
@@ -186,6 +197,15 @@ class Command implements SignalableCommandInterface
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        if (null !== $this->name && ($application = $this->getApplication()) && $application->all($this->name)) {
+            // a command with sub-commands and no code of its own lists them, like a bare namespace
+            $buffer = new BufferedOutput($output->getVerbosity(), $output->isDecorated(), $output->getFormatter());
+            (new DescriptorHelper())->describe($buffer, $application, ['namespace' => $this->name]);
+            ($output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output)->write($buffer->fetch(), false, OutputInterface::OUTPUT_RAW);
+
+            return 1;
+        }
+
         throw new LogicException('You must override the execute() method in the concrete command class.');
     }
 
@@ -233,13 +253,24 @@ class Command implements SignalableCommandInterface
         // add the application arguments and options
         $this->mergeApplicationDefinition();
 
+        $inputDefinition = null;
+
         // bind the input against the command specific arguments/options
         try {
-            $input->bind($this->getDefinition());
+            $inputDefinition = $this->getDefinition();
+            $input->bind($inputDefinition);
         } catch (ExceptionInterface $e) {
             if (!$this->ignoreValidationErrors) {
                 throw $e;
             }
+        }
+
+        // The command name argument is often omitted when a command is executed directly with its run() method,
+        // and it may hold an abbreviation or an alias when the command was resolved from one (e.g. Application::find()).
+        // Normalize it to the command's actual name so it can be relied on afterwards, since it's required by the
+        // application, and so argument resolution during interact() below can already rely on it.
+        if ($input->hasArgument('command') && null !== $name = $this->getName()) {
+            $input->setArgument('command', $name);
         }
 
         $this->initialize($input, $output);
@@ -268,14 +299,11 @@ class Command implements SignalableCommandInterface
             }
         }
 
-        // The command name argument is often omitted when a command is executed directly with its run() method.
-        // It would fail the validation if we didn't make sure the command argument is present,
-        // since it's required by the application.
-        if ($input->hasArgument('command') && null === $input->getArgument('command')) {
-            $input->setArgument('command', $this->getName());
-        }
-
         $input->validate();
+
+        if ($inputDefinition) {
+            $this->writeDeprecationMessages($inputDefinition, $input, $output);
+        }
 
         if ($this->code) {
             return ($this->code)($input, $output);
@@ -346,6 +374,7 @@ class Command implements SignalableCommandInterface
         $this->fullDefinition = new InputDefinition();
         $this->fullDefinition->setOptions($this->definition->getOptions());
         $this->fullDefinition->addOptions($this->application->getDefinition()->getOptions());
+        $this->fullDefinition->setIgnoreExtraArguments($this->definition->ignoresExtraArguments());
 
         if ($mergeArgs) {
             $this->fullDefinition->setArguments($this->application->getDefinition()->getArguments());
@@ -403,8 +432,8 @@ class Command implements SignalableCommandInterface
     /**
      * Adds an argument.
      *
-     * @param                                                                               $mode            The argument mode: InputArgument::REQUIRED or InputArgument::OPTIONAL
-     * @param                                                                               $default         The default value (for InputArgument::OPTIONAL mode only)
+     * @param int-mask-of<InputArgument::*>|null                                            $mode            The argument mode: InputArgument::REQUIRED or InputArgument::OPTIONAL
+     * @param mixed                                                                         $default         The default value (for InputArgument::OPTIONAL mode only)
      * @param array|\Closure(CompletionInput,CompletionSuggestions):list<string|Suggestion> $suggestedValues The values used for input completion
      *
      * @return $this
@@ -422,9 +451,9 @@ class Command implements SignalableCommandInterface
     /**
      * Adds an option.
      *
-     * @param                                                                               $shortcut        The shortcuts, can be null, a string of shortcuts delimited by | or an array of shortcuts
-     * @param                                                                               $mode            The option mode: One of the InputOption::VALUE_* constants
-     * @param                                                                               $default         The default value (must be null for InputOption::VALUE_NONE)
+     * @param string|string[]|null                                                          $shortcut        The shortcuts, can be null, a string of shortcuts delimited by | or an array of shortcuts
+     * @param int-mask-of<InputOption::*>|null                                              $mode            The option mode: One of the InputOption::VALUE_* constants
+     * @param mixed                                                                         $default         The default value (must be null for InputOption::VALUE_NONE)
      * @param array|\Closure(CompletionInput,CompletionSuggestions):list<string|Suggestion> $suggestedValues The values used for input completion
      *
      * @return $this
@@ -660,6 +689,36 @@ class Command implements SignalableCommandInterface
         return $this->code?->handleSignal($signal, $previousExitCode) ?? false;
     }
 
+    private function writeDeprecationMessages(InputDefinition $definition, InputInterface $input, OutputInterface $output): void
+    {
+        $messages = [];
+
+        foreach ($definition->getOptions() as $option) {
+            if (!$option->isDeprecated()) {
+                continue;
+            }
+
+            $names = ['--'.$option->getName()];
+            if (null !== $option->getShortcut()) {
+                $names[] = '-'.$option->getShortcut();
+            }
+
+            if ($input->hasParameterOption($names, true)) {
+                $messages[] = \sprintf('The option "%s" is deprecated.', implode('|', $names));
+            }
+        }
+
+        if (!$messages) {
+            return;
+        }
+
+        if ($output instanceof ConsoleOutputInterface) {
+            $output = $output->getErrorOutput();
+        }
+
+        $output->writeln(new FormatterHelper()->formatBlock($messages, 'fg=black;bg=yellow', true));
+    }
+
     /**
      * Validates a command name.
      *
@@ -692,9 +751,35 @@ class Command implements SignalableCommandInterface
         /** @var AsCommand|null $attribute */
         $attribute = ($reflection->getAttributes(AsCommand::class)[0] ?? null)?->newInstance();
 
-        if (!$attribute && '__invoke' === $reflection->getName()) {
+        if ('__invoke' === $reflection->getName()) {
+            $classAttribute = $class->getAttributes(AsCommand::class)[0] ?? null;
+
+            if ($attribute && $classAttribute) {
+                throw new LogicException(\sprintf('The "%s" class and its "__invoke()" method cannot both have the "%s" attribute.', $class->getName(), AsCommand::class));
+            }
+
             /** @var AsCommand|null $attribute */
-            $attribute = ($class->getAttributes(AsCommand::class)[0] ?? null)?->newInstance();
+            $attribute ??= $classAttribute?->newInstance();
+        } elseif ($attribute && $prefix = ($class->getAttributes(AsCommand::class)[0] ?? null)?->newInstance()->name) {
+            // the class-level name prefixes the names declared on methods
+            $hidden = str_starts_with($prefix, '|');
+            if ($prefix = explode('|', ltrim($prefix, '|'))[0]) {
+                $names = explode('|', $attribute->name);
+                if ($hidden && '' !== $names[0]) {
+                    // the method commands of a hidden class-level command are hidden too
+                    array_unshift($names, '');
+                }
+                $attribute->name = implode('|', array_map(static function (string $name) use ($prefix, $class, $reflection) {
+                    if ('' === $name) {
+                        return $name;
+                    }
+                    if (str_starts_with($name, $prefix.':')) {
+                        throw new LogicException(\sprintf('The name "%s" of the command "%s::%s()" repeats the class-level name "%s": method-level names are relative to it, use "%s" instead.', $name, $class->getName(), $reflection->getName(), $prefix, substr($name, \strlen($prefix) + 1)));
+                    }
+
+                    return $prefix.':'.$name;
+                }, $names));
+            }
         }
 
         if (!$attribute) {

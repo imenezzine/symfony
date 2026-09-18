@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Add `CacheBundle`, which provides the `cache` configuration and the services previously provided by `FrameworkBundle` under `framework.cache`
+ * Add the `cache:pool:clear`, `cache:pool:delete`, `cache:pool:invalidate-tags`, `cache:pool:list` and `cache:pool:prune` commands, which `FrameworkBundle` used to provide
+ * Add `CacheWarmer\AbstractPhpFileCacheWarmer` and `CacheWarmer\CachePoolClearerCacheWarmer`, which `FrameworkBundle` used to provide
+ * Add `AbstractAdapter::createAdapter()` to create the adapter matching a connection
+ * Add `MongoDbAdapter` and `MongoDbTagAwareAdapter`
+ * Support the `mongodb:` and `mongodb+srv:` DSN in `AbstractAdapter::createConnection()`
+ * Implement `PruneableInterface` on `RedisTagAwareAdapter` to garbage-collect its tag Sets
+ * Add `PdoTagAwareAdapter`
+
 8.0
 ---
 

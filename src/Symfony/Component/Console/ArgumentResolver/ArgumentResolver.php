@@ -12,6 +12,7 @@
 namespace Symfony\Component\Console\ArgumentResolver;
 
 use Psr\Container\ContainerInterface;
+use Symfony\Component\Console\Application;
 use Symfony\Component\Console\ArgumentResolver\Exception\NearMissValueResolverException;
 use Symfony\Component\Console\ArgumentResolver\Exception\ResolverNotFoundException;
 use Symfony\Component\Console\ArgumentResolver\ValueResolver as Resolver;
@@ -21,6 +22,7 @@ use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Attribute\Reflection\ReflectionMember;
 use Symfony\Component\Console\Attribute\ValueResolver;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\CommandChain;
 use Symfony\Component\Console\Cursor;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\RawInputInterface;
@@ -35,6 +37,17 @@ use Symfony\Contracts\Service\ServiceProviderInterface;
  */
 final class ArgumentResolver implements ArgumentResolverInterface
 {
+    private const CORE_UTILITY_TYPES = [
+        InputInterface::class,
+        RawInputInterface::class,
+        OutputInterface::class,
+        SymfonyStyle::class,
+        Cursor::class,
+        Application::class,
+        CommandChain::class,
+        Command::class,
+    ];
+
     /**
      * @param iterable<mixed, ValueResolverInterface> $argumentValueResolvers
      */
@@ -56,6 +69,14 @@ final class ArgumentResolver implements ArgumentResolverInterface
         $arguments = [];
 
         foreach ($argumentReflectors as $argumentName => $member) {
+            $type = $member->getType();
+            $typeName = $type instanceof \ReflectionNamedType ? $type->getName() : null;
+
+            // core utilities are injected by InvokableCommand, so they must not yield an argument here
+            if ($typeName && \in_array($typeName, self::CORE_UTILITY_TYPES, true)) {
+                continue;
+            }
+
             $argumentValueResolvers = $this->argumentValueResolvers;
             $disabledResolvers = [];
 
@@ -112,24 +133,9 @@ final class ArgumentResolver implements ArgumentResolverInterface
                 continue;
             }
 
-            $type = $member->getType();
-            $typeName = $type instanceof \ReflectionNamedType ? $type->getName() : null;
-
-            if ($typeName && \in_array($typeName, [
-                InputInterface::class,
-                RawInputInterface::class,
-                OutputInterface::class,
-                SymfonyStyle::class,
-                Cursor::class,
-                \Symfony\Component\Console\Application::class,
-                Command::class,
-            ], true)) {
-                continue;
-            }
-
             $reasons = array_map(static fn (NearMissValueResolverException $e) => $e->getMessage(), $valueResolverExceptions);
             if (!$reasons) {
-                $reasons[] = \sprintf('The parameter has no #[Argument], #[Option], or #[MapInput] attribute, and its type "%s" cannot be auto-resolved.', $typeName ?? 'unknown');
+                $reasons[] = \sprintf('The parameter has no #[Argument], #[Option], or #[MapInput] attribute, and its type "%s" cannot be auto-resolved.', $typeName ?? self::formatType($type));
                 $reasons[] = 'Add an attribute to map this parameter to command input.';
             }
 
@@ -154,10 +160,20 @@ final class ArgumentResolver implements ArgumentResolverInterface
             new Resolver\UidValueResolver(),
             $inputFileResolver,
             $builtinTypeResolver,
-            new Resolver\MapInputValueResolver($builtinTypeResolver, $backedEnumResolver, $dateTimeResolver),
+            new Resolver\MapInputValueResolver($builtinTypeResolver, $backedEnumResolver, $dateTimeResolver, null, $inputFileResolver),
             $dateTimeResolver,
             new Resolver\DefaultValueResolver(),
             new Resolver\VariadicValueResolver(),
         ];
+    }
+
+    private static function formatType(?\ReflectionType $type): string
+    {
+        return match (true) {
+            $type instanceof \ReflectionNamedType => $type->getName(),
+            $type instanceof \ReflectionUnionType => implode('|', array_map(static fn ($t) => $t instanceof \ReflectionIntersectionType ? '('.self::formatType($t).')' : self::formatType($t), $type->getTypes())),
+            $type instanceof \ReflectionIntersectionType => implode('&', array_map(self::formatType(...), $type->getTypes())),
+            default => 'unknown',
+        };
     }
 }

@@ -7,13 +7,13 @@ DSN example
 -----------
 
 ```
-TELEGRAM_DSN=telegram://TOKEN@default?channel=CHAT_ID&sslmode=SSLMODE
+TELEGRAM_DSN=telegram://TOKEN@default?channel=CHAT_ID&ssl=SSL
 ```
 
 where:
  - `TOKEN` is your Telegram token
  - `CHAT_ID` is your Telegram chat id
- - `SSLMODE` https is used by default. It can be changed by setting value to `disable`, http will be used
+ - `SSL` https is used by default. It can be changed by setting value to `false`, http will be used
 
 Interacting with local API server instead of official Telegram API
 ------------------------------------------------------------------
@@ -25,7 +25,7 @@ can only accept `http` traffic.
 
 Example:
 ```
-TELEGRAM_DSN=telegram://TOKEN@localhost:5001?channel=CHAT_ID&sslmode=disable
+TELEGRAM_DSN=telegram://TOKEN@localhost:5001?channel=CHAT_ID&ssl=false
 ```
 
 Caution: Disabling the use of the `https` protocol can pose a security risk.
@@ -68,6 +68,28 @@ $chatMessage->options($telegramOptions);
 
 $chatter->send($chatMessage);
 ```
+
+An inline keyboard is a list of button rows. Every call to `inlineKeyboard()`
+appends one row, so call it once per row to spread the buttons over several
+lines:
+
+```php
+$telegramOptions = (new TelegramOptions())
+    ->chatId('@symfonynotifierdev')
+    ->replyMarkup((new InlineKeyboardMarkup())
+        ->inlineKeyboard([
+            (new InlineKeyboardButton('Yes'))->callbackData('yes'),
+            (new InlineKeyboardButton('No'))->callbackData('no'),
+        ])
+        ->inlineKeyboard([
+            (new InlineKeyboardButton('Visit symfony.com'))
+                ->url('https://symfony.com/'),
+        ])
+    );
+```
+
+The keyboard above shows "Yes" and "No" side by side on the first row, and the
+link alone on the second one.
 
 Adding files to a Message
 -------------------------
@@ -295,6 +317,35 @@ $telegramOptions = (new TelegramOptions())
             (new InlineKeyboardButton('Absolutely'))->callbackData('yes'),
         ])
     );
+```
+
+To edit a message that contains media, combine `edit()` with a media option
+(`photo()`, `video()`, `document()`, `audio()` or `animation()`). The media and
+its caption are replaced through the `editMessageMedia` API method.
+
+```php
+use Symfony\Component\Notifier\Bridge\Telegram\TelegramOptions;
+use Symfony\Component\Notifier\Message\ChatMessage;
+
+$chatMessage = new ChatMessage('My updated caption');
+$telegramOptions = (new TelegramOptions())
+    ->chatId($chatId)
+    ->edit($messageId)
+    ->photo('https://localhost/new-photo.png');
+```
+
+To update only the caption of an existing media message without re-sending the
+media, use `editCaption()`, which calls `editMessageCaption`. The subject of the
+message is used as the new caption.
+
+```php
+use Symfony\Component\Notifier\Bridge\Telegram\TelegramOptions;
+use Symfony\Component\Notifier\Message\ChatMessage;
+
+$chatMessage = new ChatMessage('My updated caption');
+$telegramOptions = (new TelegramOptions())
+    ->chatId($chatId)
+    ->editCaption($messageId);
 ```
 
 Answering Callback Queries

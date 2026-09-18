@@ -400,6 +400,40 @@ class TailwindStylesheetTest extends TestCase
         $this->assertSame('mini', $stylesheet->resolve($widget)->getFont());
     }
 
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function tailwindFontUtilityProvider(): iterable
+    {
+        yield 'thin' => ['font-thin'];
+        yield 'extralight' => ['font-extralight'];
+        yield 'light' => ['font-light'];
+        yield 'normal' => ['font-normal'];
+        yield 'medium' => ['font-medium'];
+        yield 'semibold' => ['font-semibold'];
+        yield 'bold' => ['font-bold'];
+        yield 'extrabold' => ['font-extrabold'];
+        yield 'black' => ['font-black'];
+        yield 'sans' => ['font-sans'];
+        yield 'serif' => ['font-serif'];
+        yield 'mono' => ['font-mono'];
+    }
+
+    #[DataProvider('tailwindFontUtilityProvider')]
+    public function testTailwindFontUtilityIsACssClassNotAFigletFont(string $class)
+    {
+        $stylesheet = new TailwindStylesheet();
+        $stylesheet->addRule('.'.$class, new Style()->withItalic());
+
+        $widget = new TextWidget('Hello');
+        $widget->addStyleClass($class);
+
+        $resolved = $stylesheet->resolve($widget);
+
+        $this->assertNull($resolved->getFont());
+        $this->assertTrue($resolved->getItalic());
+    }
+
     // --- Align ---
 
     /**
@@ -1095,5 +1129,39 @@ class TailwindStylesheetTest extends TestCase
         $this->assertTrue($resolved->getBold());
         $this->assertSame(Color::hex('#06b6d4')->toRgb(), $resolved->getColor()->toRgb());
         $this->assertSame(1, $resolved->getPadding()->top);
+    }
+
+    public function testArbitraryHexLengthsColorCannotUseAreIgnoredNotFatal()
+    {
+        // The bracket syntax only has meaning for the lengths Color::hex()
+        // accepts. Every other unparsable value is ignored, so a 4 or 5 digit
+        // typo must be ignored too rather than escaping as an exception.
+        $stylesheet = new TailwindStylesheet();
+
+        foreach (['bg', 'text', 'border'] as $prefix) {
+            foreach (['[#abcd]', '[#abcde]'] as $value) {
+                $widget = new TextWidget('Hello');
+                $widget->addStyleClass($prefix.'-'.$value);
+
+                $resolved = $stylesheet->resolve($widget);
+
+                $this->assertNull($resolved->getBackground());
+                $this->assertNull($resolved->getColor());
+            }
+        }
+    }
+
+    public function testArbitraryHexStillAcceptsTheSupportedLengths()
+    {
+        $stylesheet = new TailwindStylesheet();
+
+        foreach (['[#f50]' => '#f50', '[#ff5500]' => '#ff5500'] as $value => $hex) {
+            $widget = new TextWidget('Hello');
+            $widget->addStyleClass('bg-'.$value);
+
+            $resolved = $stylesheet->resolve($widget);
+
+            $this->assertSame(Color::hex($hex)->toRgb(), $resolved->getBackground()->toRgb());
+        }
     }
 }

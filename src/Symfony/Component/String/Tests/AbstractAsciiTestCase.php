@@ -524,6 +524,26 @@ abstract class AbstractAsciiTestCase extends TestCase
         ];
     }
 
+    #[DataProvider('provideLowerWithRegexp')]
+    public function testLowerWithRegexp(string $expected, string $origin, string $regexp)
+    {
+        $instance = static::createFromString($origin)->lower($regexp);
+
+        $this->assertNotSame(static::createFromString($origin), $instance);
+        $this->assertSame($expected, (string) $instance);
+    }
+
+    public static function provideLowerWithRegexp()
+    {
+        return [
+            ['hELLO WORLD', 'HELLO WORLD', '/^./'],
+            ['hello world', 'HELLO WORLD', '/./'],
+            ['hELLO wORLD', 'HELLO WORLD', '/\b./'],
+            ['HELLO WORLD', 'HELLO WORLD', '/^\d/'],
+            ['', '', '/^./'],
+        ];
+    }
+
     #[DataProvider('provideUpper')]
     public function testUpper(string $expected, string $origin)
     {
@@ -543,6 +563,26 @@ abstract class AbstractAsciiTestCase extends TestCase
             ['SYMFONY', 'symfony'],
             ['SYMFONY', 'Symfony'],
             ['SYMFONY', 'sYmFOny'],
+        ];
+    }
+
+    #[DataProvider('provideUpperWithRegexp')]
+    public function testUpperWithRegexp(string $expected, string $origin, string $regexp)
+    {
+        $instance = static::createFromString($origin)->upper($regexp);
+
+        $this->assertNotSame(static::createFromString($origin), $instance);
+        $this->assertSame($expected, (string) $instance);
+    }
+
+    public static function provideUpperWithRegexp()
+    {
+        return [
+            ['Hello world', 'hello world', '/^./'],
+            ['HELLO WORLD', 'hello world', '/./'],
+            ['HELLO world', 'hello world', '/^\w+/'],
+            ['hello world', 'hello world', '/^\d/'],
+            ['', '', '/^./'],
         ];
     }
 
@@ -567,6 +607,50 @@ abstract class AbstractAsciiTestCase extends TestCase
             ['Symfony', 'symfony', false],
             ['Symfony', 'Symfony', false],
             ['SYmFOny', 'sYmFOny', false],
+        ];
+    }
+
+    #[DataProvider('provideTitleWithRegexp')]
+    public function testTitleWithRegexp(string $expected, string $origin, string $regexp)
+    {
+        $instance = static::createFromString($origin)->title(false, $regexp);
+
+        $this->assertNotSame(static::createFromString($origin), $instance);
+        $this->assertSame($expected, (string) $instance);
+    }
+
+    public static function provideTitleWithRegexp()
+    {
+        return [
+            ['Hello world', 'hello world', '/^./'],
+            ['Hello World', 'hello world', '/\b./'],
+            ['Hello world', 'hELLO world', '/^\w+/'],
+            ['Hello World', 'hello world', '/.+/'],
+            ['Hello World', 'hELLO wORLD', '/.+/'],
+            [' hello world', ' hello world', '/^./'],
+            ['', '', '/^./'],
+        ];
+    }
+
+    public function testTitleWithRegexpIgnoresAllWords()
+    {
+        $this->assertSame('Hello World', (string) static::createFromString('hello world')->title(false, '/\b./'));
+        $this->assertSame('Hello world', (string) static::createFromString('hello world')->title(true, '/^./'));
+    }
+
+    #[DataProvider('provideCaseWithInvalidRegexp')]
+    public function testCaseWithInvalidRegexp(string $method)
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        static::createFromString('hello world')->$method('/[/');
+    }
+
+    public static function provideCaseWithInvalidRegexp()
+    {
+        return [
+            ['lower'],
+            ['upper'],
         ];
     }
 
@@ -994,6 +1078,9 @@ abstract class AbstractAsciiTestCase extends TestCase
             ['symfonyIsAGreatFramework', 'Symfony is a great framework'],
             ['symfonyIsGREAT', '*Symfony* is GREAT!!'],
             ['SYMFONY', 'SYMFONY'],
+            ['XMLHttpRequest', 'XMLHttpRequest'],
+            ['IOError', 'IOError'],
+            ['iPhone', 'iPhone'],
         ];
     }
 
@@ -1029,6 +1116,11 @@ abstract class AbstractAsciiTestCase extends TestCase
             ['symfonyisgreat', 'SYMFONY _ IS _ GREAT'],
             ['symfony_isgreat', 'Symfony IS GREAT!'],
             ['123_customer_with_special_name', '123-customer,with/special#name'],
+            ['xml_http_request', 'XMLHttpRequest'],
+            ['http_response', 'HTTPResponse'],
+            ['url_value', 'URLValue'],
+            ['io_error', 'IOError'],
+            ['symfony5', 'SYMFONY5'],
         ];
     }
 

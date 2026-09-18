@@ -26,8 +26,10 @@ use Symfony\Component\DependencyInjection\Alias;
 use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\EnvClosure;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\RewindableGenerator;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Attribute\AsTaggedItem;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\DependencyInjection\ChildDefinition;
@@ -54,13 +56,17 @@ use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
 use Symfony\Component\DependencyInjection\ParameterBag\ParameterBagInterface;
 use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\DependencyInjection\ServiceLocator;
+use Symfony\Component\DependencyInjection\Tests\Compiler\FinalLazyProxyImplementation;
 use Symfony\Component\DependencyInjection\Tests\Compiler\Foo;
+use Symfony\Component\DependencyInjection\Tests\Compiler\LazyProxyTestInterface;
 use Symfony\Component\DependencyInjection\Tests\Compiler\MyCallable;
 use Symfony\Component\DependencyInjection\Tests\Compiler\SingleMethodInterface;
 use Symfony\Component\DependencyInjection\Tests\Compiler\Wither;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\CaseSensitiveClass;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\CustomDefinition;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\FooWithAbstractArgument;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\Prototype\AbstractClass;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\Prototype\FooInterface;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\ProxyAndInheritance;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\ScalarFactory;
 use Symfony\Component\DependencyInjection\Tests\Fixtures\SimilarArgumentsDummy;
@@ -358,6 +364,160 @@ class ContainerBuilderTest extends TestCase
         $builder->get('foo');
     }
 
+    public function testGetEvictsSharedServiceWhenMethodCallFails()
+    {
+        FailingSetupService::$attempts = 0;
+        $builder = new ContainerBuilder();
+        $builder->register('foo', FailingSetupService::class)->addMethodCall('fail');
+
+        $first = null;
+        try {
+            $builder->get('foo');
+        } catch (\RuntimeException $first) {
+        }
+        $this->assertSame('Setup failed.', $first?->getMessage(), '->get() should throw when a method call fails');
+
+        $second = null;
+        try {
+            $builder->get('foo');
+        } catch (\RuntimeException $second) {
+        }
+        $this->assertSame('Setup failed.', $second?->getMessage(), '->get() should throw again instead of returning a partially-configured service');
+
+        $this->assertSame(2, FailingSetupService::$attempts);
+    }
+
+    public function testGetEvictsSharedServiceWhenPropertyInjectionFails()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('foo', FailingSetupService::class)->setProperty('count', 'not-a-number');
+
+        $first = null;
+        try {
+            $builder->get('foo');
+        } catch (\TypeError $first) {
+        }
+        $this->assertNotNull($first, '->get() should throw when injecting a property fails');
+
+        $second = null;
+        try {
+            $builder->get('foo');
+        } catch (\TypeError $second) {
+        }
+        $this->assertNotNull($second, '->get() should throw again instead of returning a partially-configured service');
+    }
+
+    public function testGetEvictsSharedServiceWhenConfiguratorFails()
+    {
+        FailingSetupService::$attempts = 0;
+        $builder = new ContainerBuilder();
+        $builder->register('foo', 'stdClass')->setConfigurator([FailingSetupService::class, 'failToConfigure']);
+
+        $first = null;
+        try {
+            $builder->get('foo');
+        } catch (\RuntimeException $first) {
+        }
+        $this->assertSame('Configuration failed.', $first?->getMessage(), '->get() should throw when the configurator fails');
+
+        $second = null;
+        try {
+            $builder->get('foo');
+        } catch (\RuntimeException $second) {
+        }
+        $this->assertSame('Configuration failed.', $second?->getMessage(), '->get() should throw again instead of returning a partially-configured service');
+
+        $this->assertSame(2, FailingSetupService::$attempts);
+    }
+
+    public function testGetEvictsSharedServiceWhenConfiguratorIsNotACallable()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('foo', 'stdClass')->setConfigurator('there_is_no_such_configurator_function');
+
+        $first = null;
+        try {
+            $builder->get('foo');
+        } catch (InvalidArgumentException $first) {
+        }
+        $this->assertNotNull($first, '->get() should throw when the configurator is not a callable');
+
+        $second = null;
+        try {
+            $builder->get('foo');
+        } catch (InvalidArgumentException $second) {
+        }
+        $this->assertNotNull($second, '->get() should throw again instead of returning a partially-configured service');
+    }
+
+    public function testGetEvictsWitherServiceWhenSetupFails()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('wither', WitherFailingSetup::class)
+            ->addMethodCall('withNothing', [], true)
+            ->addMethodCall('fail');
+
+        $first = null;
+        try {
+            $builder->get('wither');
+        } catch (\RuntimeException $first) {
+        }
+        $this->assertSame('Setup failed.', $first?->getMessage(), '->get() should throw when a method call fails after the last wither');
+
+        $second = null;
+        try {
+            $builder->get('wither');
+        } catch (\RuntimeException $second) {
+        }
+        $this->assertSame('Setup failed.', $second?->getMessage(), '->get() should throw again instead of returning a partially-configured service');
+    }
+
+    public function testGetEvictsPrivateSharedServiceWhenSetupFails()
+    {
+        FailingSetupService::$attempts = 0;
+        $builder = new ContainerBuilder();
+        $builder->register('failer', FailingSetupService::class)->addMethodCall('fail');
+        $builder->register('consumer1', 'stdClass')->setPublic(true)->setProperty('failer', new Reference('failer'));
+        $builder->register('consumer2', 'stdClass')->setPublic(true)->setProperty('failer', new Reference('failer'));
+        $builder->compile();
+
+        $first = null;
+        try {
+            $builder->get('consumer1');
+        } catch (\RuntimeException $first) {
+        }
+        $this->assertSame('Setup failed.', $first?->getMessage(), '->get() should throw when building a private dependency fails');
+
+        $second = null;
+        try {
+            $builder->get('consumer1');
+        } catch (\RuntimeException $second) {
+        }
+        $this->assertSame('Setup failed.', $second?->getMessage(), '->get() should throw again instead of returning a partially-configured service');
+
+        $this->assertSame(2, FailingSetupService::$attempts);
+    }
+
+    public function testCircularSetterInjectionRetriesAfterFailure()
+    {
+        FailsOnceConfigurator::$calls = 0;
+        $builder = new ContainerBuilder();
+        $builder->register('a', CircularSetterA::class)->setPublic(true)->addMethodCall('setB', [new Reference('b')]);
+        $builder->register('b', CircularSetterB::class)->addMethodCall('setA', [new Reference('a')])->setConfigurator([FailsOnceConfigurator::class, 'configure']);
+
+        $first = null;
+        try {
+            $builder->get('a');
+        } catch (\RuntimeException $first) {
+        }
+        $this->assertSame('First attempt fails.', $first?->getMessage(), '->get() should throw when configuring a service of the circular graph fails');
+
+        $a = $builder->get('a');
+
+        $this->assertInstanceOf(CircularSetterB::class, $a->b);
+        $this->assertSame($a, $a->b->a);
+    }
+
     public function testGetServiceIds()
     {
         $builder = new ContainerBuilder();
@@ -514,6 +674,18 @@ class ContainerBuilderTest extends TestCase
 
         $this->assertSame($foo1, $builder->get('foo1'), 'The same proxy is retrieved on multiple subsequent calls');
         $this->assertInstanceOf(\Bar\FooClass::class, $foo1);
+    }
+
+    public function testCreateLazyProxyForInlineDefinition()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('foo', 'Bar\FooClass')
+            ->setPublic(true)
+            ->setArguments([(new Definition('Bar\FooClass'))->setLazy(true)]);
+
+        $inline = $builder->get('foo')->arguments;
+
+        $this->assertInstanceOf(\Bar\FooClass::class, $inline);
     }
 
     public function testClosureProxy()
@@ -730,6 +902,63 @@ class ContainerBuilderTest extends TestCase
         $builder->get('foo');
     }
 
+    public function testResolveServicesWithLazyProxyArgument()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('bar', 'BarClass');
+
+        $proxy = $builder->resolveServices(new LazyProxyArgument(new Reference('bar')));
+
+        $this->assertInstanceOf(\BarClass::class, $proxy);
+        $this->assertFalse($builder->initialized('bar'), 'The proxied service is not instantiated upfront');
+
+        $builder->get('bar')->foo = 'mutated';
+
+        $this->assertSame('mutated', $proxy->foo, 'The proxy resolves to the shared service');
+    }
+
+    public function testResolveServicesWithLazyProxyArgumentAndExplicitInterface()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('bar', FinalLazyProxyImplementation::class);
+
+        $proxy = $builder->resolveServices(new LazyProxyArgument(new Reference('bar'), LazyProxyTestInterface::class));
+
+        $this->assertInstanceOf(LazyProxyTestInterface::class, $proxy);
+        $this->assertNotInstanceOf(FinalLazyProxyImplementation::class, $proxy);
+        $this->assertFalse($builder->initialized('bar'), 'The proxied service is not instantiated upfront');
+
+        $proxy->getSelf();
+
+        $this->assertTrue($builder->initialized('bar'), 'Using the proxy resolves the service');
+    }
+
+    public function testResolveServicesWithLazyProxyArgumentAndIgnoredMissingService()
+    {
+        $builder = new ContainerBuilder();
+
+        $this->assertNull($builder->resolveServices(new LazyProxyArgument(new Reference('bar', ContainerInterface::IGNORE_ON_INVALID_REFERENCE))));
+    }
+
+    public function testResolveServicesWithLazyProxyArgumentOnCompiledContainer()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('bar', 'BarClass')->setPublic(true);
+        $builder->register('foo', 'Bar\FooClass')
+            ->setPublic(true)
+            ->addArgument([new LazyProxyArgument(new Reference('bar'))]);
+        $builder->compile();
+
+        $proxy = $builder->get('foo')->arguments[0];
+
+        $this->assertInstanceOf(\BarClass::class, $proxy);
+        $this->assertFalse($builder->initialized('bar'), 'The proxied service is not instantiated upfront');
+
+        $builder->get('bar')->foo = 'mutated';
+
+        $this->assertSame('mutated', $proxy->foo, 'The proxy resolves to the shared service');
+    }
+
     public function testResolveServices()
     {
         $builder = new ContainerBuilder();
@@ -737,6 +966,18 @@ class ContainerBuilderTest extends TestCase
         $this->assertEquals($builder->get('foo'), $builder->resolveServices(new Reference('foo')), '->resolveServices() resolves service references to service instances');
         $this->assertEquals(['foo' => ['foo', $builder->get('foo')]], $builder->resolveServices(['foo' => ['foo', new Reference('foo')]]), '->resolveServices() resolves service references to service instances in nested arrays');
         $this->assertEquals($builder->get('foo'), $builder->resolveServices(new Expression('service("foo")')), '->resolveServices() resolves expressions');
+    }
+
+    public function testResolveServicesWithTaggedClassMapArgument()
+    {
+        $builder = new ContainerBuilder();
+        $argument = new TaggedClassMapArgument('foo');
+
+        $this->assertSame([], $builder->resolveServices($argument), '->resolveServices() resolves tagged class maps to their values');
+
+        $argument->setValues(['key' => 'Foo']);
+
+        $this->assertSame(['key' => 'Foo'], $builder->resolveServices($argument));
     }
 
     public function testResolveServicesWithDecoratedDefinition()
@@ -1149,6 +1390,40 @@ class ContainerBuilderTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('The resource "myservice" tagged "foo" is missing the "container.excluded" tag; did you mean to use "resource_tags" instead of "tags"?');
+        $builder->findTaggedResourceIds('foo');
+    }
+
+    public function testFindTaggedResourceIdsSkipsBaseTypes()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('concrete', 'Bar\FooClass')
+            ->addResourceTag('foo', ['foo' => 'concrete']);
+        $builder->register('.abstract.'.FooInterface::class, FooInterface::class)
+            ->setAbstract(true)
+            ->addResourceTag('foo', ['foo' => 'interface']);
+        $builder->register('.abstract.'.AbstractClass::class, AbstractClass::class)
+            ->setAbstract(true)
+            ->addResourceTag('foo', ['foo' => 'abstract']);
+
+        $this->assertSame(['concrete' => [['foo' => 'concrete']]], $builder->findTaggedResourceIds('foo'));
+
+        $expected = [
+            'concrete' => [['foo' => 'concrete']],
+            '.abstract.'.FooInterface::class => [['foo' => 'interface']],
+            '.abstract.'.AbstractClass::class => [['foo' => 'abstract']],
+        ];
+        $this->assertSame($expected, $builder->findTaggedResourceIds('foo', false));
+    }
+
+    public function testFindTaggedResourceIdsThrowsOnAbstractDefinitionWithConcreteClass()
+    {
+        $builder = new ContainerBuilder();
+        $builder->register('myservice', 'Bar\FooClass')
+            ->setAbstract(true)
+            ->addResourceTag('foo', ['foo' => 'foo']);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The resource "myservice" tagged "foo" must have a class and not be abstract.');
         $builder->findTaggedResourceIds('foo');
     }
 
@@ -2276,5 +2551,70 @@ class EnvRefreshConsumer
         #[Autowire('%dsn_template%')]
         public ?\Stringable $dsnFromParam = null,
     ) {
+    }
+}
+
+class FailingSetupService
+{
+    public static int $attempts = 0;
+    public int $count = 0;
+
+    public function fail(): void
+    {
+        ++self::$attempts;
+
+        throw new \RuntimeException('Setup failed.');
+    }
+
+    public static function failToConfigure(object $service): void
+    {
+        ++self::$attempts;
+
+        throw new \RuntimeException('Configuration failed.');
+    }
+}
+
+class WitherFailingSetup
+{
+    public function withNothing(): static
+    {
+        return clone $this;
+    }
+
+    public function fail(): void
+    {
+        throw new \RuntimeException('Setup failed.');
+    }
+}
+
+class CircularSetterA
+{
+    public ?object $b = null;
+
+    public function setB(object $b): void
+    {
+        $this->b = $b;
+    }
+}
+
+class CircularSetterB
+{
+    public ?object $a = null;
+
+    public function setA(object $a): void
+    {
+        $this->a = $a;
+    }
+}
+
+class FailsOnceConfigurator
+{
+    public static int $calls = 0;
+
+    public static function configure(object $service): void
+    {
+        if (1 === ++self::$calls) {
+            throw new \RuntimeException('First attempt fails.');
+        }
     }
 }

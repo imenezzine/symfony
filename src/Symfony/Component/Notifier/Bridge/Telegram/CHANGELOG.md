@@ -1,6 +1,12 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Add support for editing media messages via the `editMessageMedia` and `editMessageCaption` API methods
+ * Add the `ssl` DSN option to send requests over plain HTTP
+
 8.1
 ---
 

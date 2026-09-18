@@ -14,11 +14,15 @@ namespace Symfony\Component\Security\Http\Tests\Authenticator;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Security\Core\Authentication\AuthenticationMethod;
 use Symfony\Component\Security\Core\User\InMemoryUser;
 use Symfony\Component\Security\Core\User\InMemoryUserProvider;
+use Symfony\Component\Security\Http\Authenticator\Debug\UnsupportedReasons;
 use Symfony\Component\Security\Http\Authenticator\HttpBasicAuthenticator;
+use Symfony\Component\Security\Http\Authenticator\Passport\Badge\AuthenticationMethodBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\PasswordUpgradeBadge;
 use Symfony\Component\Security\Http\Authenticator\Passport\Credentials\PasswordCredentials;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 use Symfony\Component\Security\Http\Tests\Authenticator\Fixtures\PasswordUpgraderProvider;
 
 class HttpBasicAuthenticatorTest extends TestCase
@@ -43,6 +47,7 @@ class HttpBasicAuthenticatorTest extends TestCase
 
         $passport = $this->authenticator->authenticate($request);
         $this->assertEquals('ThePassword', $passport->getBadge(PasswordCredentials::class)->getPassword());
+        $this->assertSame([AuthenticationMethod::PASSWORD], $passport->getBadge(AuthenticationMethodBadge::class)->methods);
 
         $this->assertTrue($user->isEqualTo($passport->getUser()));
     }
@@ -78,5 +83,20 @@ class HttpBasicAuthenticatorTest extends TestCase
         $this->assertTrue($passport->hasBadge(PasswordUpgradeBadge::class));
         $badge = $passport->getBadge(PasswordUpgradeBadge::class);
         $this->assertEquals('ThePassword', $badge->getAndErasePlaintextPassword());
+    }
+
+    public function testUnsupportedReasons()
+    {
+        $request = new Request();
+        $request->attributes->set(SecurityRequestAttributes::UNSUPPORTED_REASONS, $reasons = new UnsupportedReasons());
+
+        $this->assertFalse($this->authenticator->supports($request));
+        $this->assertSame(['the request has no HTTP basic credentials, as "PHP_AUTH_USER" is not set'], $reasons->all());
+
+        $request = new Request([], [], [], [], [], ['PHP_AUTH_USER' => 'TheUsername', 'PHP_AUTH_PW' => 'ThePassword']);
+        $request->attributes->set(SecurityRequestAttributes::UNSUPPORTED_REASONS, $reasons = new UnsupportedReasons());
+
+        $this->assertTrue($this->authenticator->supports($request));
+        $this->assertSame([], $reasons->all());
     }
 }

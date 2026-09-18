@@ -534,7 +534,17 @@ final class Path
         if ('' === $root && '' !== $baseRoot) {
             // If base path is already in its root
             if ('' === $relativeBasePath) {
-                $relativePath = ltrim($relativePath, './'.\DIRECTORY_SEPARATOR);
+                // The base path is the root directory, so any number of leading
+                // "../" segments resolves to the root itself and "./" prefixes
+                // carry no information. Remove them as segments: a leading dot
+                // that is not one (e.g. ".htaccess") must survive.
+                while (str_starts_with($relativePath, './') || str_starts_with($relativePath, '../')) {
+                    $relativePath = substr($relativePath, str_starts_with($relativePath, '../') ? 3 : 2);
+                }
+
+                if ('..' === $relativePath) {
+                    $relativePath = '';
+                }
             }
 
             return $relativePath;
@@ -718,6 +728,10 @@ final class Path
      */
     public static function isBasePath(string $basePath, string $ofPath): bool
     {
+        if ('' === $basePath) {
+            trigger_deprecation('symfony/filesystem', '8.2', 'Passing an empty string as the base path to "%s()" is deprecated, pass "/" instead.', __METHOD__);
+        }
+
         $basePath = self::canonicalize($basePath);
         $ofPath = self::canonicalize($ofPath);
 
@@ -746,7 +760,7 @@ final class Path
 
             // Collapse ".." with the previous part, if one exists
             // Don't collapse ".." if the previous part is also ".."
-            if ('..' === $part && \count($canonicalParts) > 0 && '..' !== $canonicalParts[\count($canonicalParts) - 1]) {
+            if ('..' === $part && $canonicalParts && '..' !== $canonicalParts[\count($canonicalParts) - 1]) {
                 array_pop($canonicalParts);
 
                 continue;

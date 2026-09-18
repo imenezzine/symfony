@@ -18,7 +18,6 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Session\Session;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
-use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolverInterface;
 use Symfony\Component\Security\Core\Authentication\Token\AbstractToken;
@@ -32,6 +31,7 @@ use Symfony\Component\Security\Core\User\LegacyPasswordAuthenticatedUserInterfac
 use Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface;
 use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Core\User\UserProviderInterface;
+use Symfony\Component\Security\Http\Event\CheckRefreshedUserEvent;
 use Symfony\Component\Security\Http\Event\TokenDeauthenticatedEvent;
 use Symfony\Component\VarExporter\LazyObjectInterface;
 use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
@@ -47,7 +47,6 @@ use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 class ContextListener extends AbstractListener
 {
     private string $sessionKey;
-    private bool $registered = false;
     private AuthenticationTrustResolverInterface $trustResolver;
     private ?\Closure $sessionTrackerEnabler;
 
@@ -82,11 +81,6 @@ class ContextListener extends AbstractListener
      */
     public function authenticate(RequestEvent $event): void
     {
-        if (!$this->registered && null !== $this->dispatcher && $event->isMainRequest()) {
-            $this->dispatcher->addListener(KernelEvents::RESPONSE, $this->onKernelResponse(...));
-            $this->registered = true;
-        }
-
         $request = $event->getRequest();
         $session = $request->hasPreviousSession() ? $request->getSession() : null;
 
@@ -129,12 +123,13 @@ class ContextListener extends AbstractListener
             }
 
             $originalToken = $token;
-            $token = $this->refreshUser($token);
+            $refreshResult = $this->refreshUser($token);
+            $token = $refreshResult->token;
 
             if (!$token) {
                 $this->logger?->debug('Token was deauthenticated after trying to refresh it.');
 
-                $this->dispatcher?->dispatch(new TokenDeauthenticatedEvent($originalToken, $request));
+                $this->dispatcher?->dispatch(new TokenDeauthenticatedEvent($originalToken, $request, $refreshResult->deauthenticationReason, $refreshResult->providerClasses, $refreshResult->exception));
             }
         } elseif (null !== $token) {
             $this->logger?->warning('Expected a security token from the session, got something else.', ['key' => $this->sessionKey, 'received' => $token]);
@@ -164,8 +159,6 @@ class ContextListener extends AbstractListener
             return;
         }
 
-        $this->dispatcher?->removeListener(KernelEvents::RESPONSE, $this->onKernelResponse(...));
-        $this->registered = false;
         $session = $request->getSession();
         $sessionId = $session->getId();
         $usageIndexValue = $session instanceof Session ? $usageIndexReference = &$session->getUsageIndex() : null;
@@ -206,13 +199,22 @@ class ContextListener extends AbstractListener
      *
      * @throws \RuntimeException
      */
-    private function refreshUser(TokenInterface $token): ?TokenInterface
+    private function refreshUser(TokenInterface $token): RefreshUserResult
     {
+        if ($token instanceof SwitchUserToken && $token->getOriginalToken()->getUser()) {
+            $originalResult = $this->refreshUser($token->getOriginalToken());
+
+            if (!$originalResult->token) {
+                return $originalResult;
+            }
+        }
+
         $user = $token->getUser();
 
-        $userNotFoundByProvider = false;
-        $userDeauthenticated = false;
         $userClass = $user::class;
+        $userChangedBy = [];
+        $userNotFoundBy = [];
+        $userChangedBecause = null;
 
         foreach ($this->userProviders as $provider) {
             if (!$provider instanceof UserProviderInterface) {
@@ -227,8 +229,18 @@ class ContextListener extends AbstractListener
                 $refreshedUser = $provider->refreshUser($user);
 
                 // tokens can be deauthenticated if the user has been changed.
-                if ($token instanceof AbstractToken && self::hasUserChanged($token, $user, $refreshedUser)) {
-                    $userDeauthenticated = true;
+                $userChanged = $token instanceof AbstractToken && self::hasUserChanged($token, $user, $refreshedUser);
+
+                if (null !== $this->dispatcher) {
+                    $event = new CheckRefreshedUserEvent($token, $user, $refreshedUser, $userChanged);
+                    $this->dispatcher->dispatch($event);
+
+                    $userChanged = $event->isUserChanged();
+                    $userChangedBecause ??= $event->getException();
+                }
+
+                if ($userChanged) {
+                    $userChangedBy[] = $provider::class;
 
                     $this->logger?->debug('Cannot refresh token because user has changed.', ['username' => $refreshedUser->getUserIdentifier(), 'provider' => $provider::class]);
 
@@ -248,22 +260,24 @@ class ContextListener extends AbstractListener
                     $this->logger->debug('User was reloaded from a user provider.', $context);
                 }
 
-                return $token;
+                return new RefreshUserResult($token);
             } catch (UnsupportedUserException) {
                 // let's try the next user provider
             } catch (UserNotFoundException $e) {
                 $this->logger?->info('Username could not be found in the selected user provider.', ['username' => $e->getUserIdentifier(), 'provider' => $provider::class]);
 
-                $userNotFoundByProvider = true;
+                $userNotFoundBy[] = $provider::class;
             }
         }
 
-        if ($userDeauthenticated) {
-            return null;
+        if ($userChangedBy) {
+            $reason = $userChangedBecause ? ($userChangedBecause->getMessage() ?: $userChangedBecause->getMessageKey()) : 'the user has changed';
+
+            return new RefreshUserResult(null, $reason, $userChangedBy, $userChangedBecause);
         }
 
-        if ($userNotFoundByProvider) {
-            return null;
+        if ($userNotFoundBy) {
+            return new RefreshUserResult(null, 'the user could not be found by any user provider', $userNotFoundBy);
         }
 
         throw new \RuntimeException(\sprintf('There is no user provider for user "%s". Shouldn\'t the "supportsClass()" method of your user provider return true for this classname?', $userClass));

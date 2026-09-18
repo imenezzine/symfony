@@ -79,6 +79,18 @@ trait RouteTrait
     }
 
     /**
+     * Adds a condition, combined with the existing one using "and".
+     *
+     * @return $this
+     */
+    final public function addCondition(string $condition): static
+    {
+        $this->route->addCondition($condition);
+
+        return $this;
+    }
+
+    /**
      * Sets the pattern for the host.
      *
      * @return $this
@@ -166,6 +178,18 @@ trait RouteTrait
     final public function stateless(bool $stateless = true): static
     {
         $this->route->addDefaults(['_stateless' => $stateless]);
+
+        return $this;
+    }
+
+    /**
+     * Adds the "_firewall" entry to defaults.
+     *
+     * @return $this
+     */
+    final public function firewall(string $firewall): static
+    {
+        $this->route->addDefaults(['_firewall' => $firewall]);
 
         return $this;
     }

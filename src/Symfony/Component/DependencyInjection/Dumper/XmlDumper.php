@@ -16,8 +16,10 @@ use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\ArgumentInterface;
 use Symfony\Component\DependencyInjection\Argument\EnvClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\Definition;
@@ -314,6 +316,33 @@ class XmlDumper extends Dumper
                 continue;
             }
 
+            if ($value instanceof LazyProxyArgument) {
+                [$reference, $interfaces] = $value->getValues();
+
+                $xmlAttr .= \sprintf(' type="lazy_proxy" id="%s"', $this->encode((string) $reference));
+                $xmlAttr .= match ($reference->getInvalidBehavior()) {
+                    ContainerInterface::NULL_ON_INVALID_REFERENCE => ' on-invalid="null"',
+                    ContainerInterface::IGNORE_ON_INVALID_REFERENCE => ' on-invalid="ignore"',
+                    ContainerInterface::IGNORE_ON_UNINITIALIZED_REFERENCE => ' on-invalid="ignore_uninitialized"',
+                    default => '',
+                };
+                if (1 === \count($interfaces)) {
+                    $xmlAttr .= \sprintf(' interface="%s"', $this->encode($interfaces[0]));
+                }
+
+                if (1 < \count($interfaces)) {
+                    yield \sprintf('<%s%s>', $type, $xmlAttr);
+                    foreach ($interfaces as $interface) {
+                        yield \sprintf('  <interface>%s</interface>', $this->encode($interface, 0));
+                    }
+                    yield \sprintf('</%s>', $type);
+                } else {
+                    yield \sprintf('<%s%s/>', $type, $xmlAttr);
+                }
+
+                continue;
+            }
+
             if (($value instanceof TaggedIteratorArgument && $tag = $value)
                 || ($value instanceof ServiceLocatorArgument && $tag = $value->getTaggedIteratorArgument())
             ) {
@@ -337,6 +366,26 @@ class XmlDumper extends Dumper
                 }
                 if (!$tag->excludeSelf()) {
                     $xmlAttr .= ' exclude-self="false"';
+                }
+
+                if (1 < \count($excludes)) {
+                    yield \sprintf('<%s%s>', $type, $xmlAttr);
+                    foreach ($excludes as $exclude) {
+                        yield \sprintf('  <exclude>%s</exclude>', $this->encode($exclude, 0));
+                    }
+                    yield \sprintf('</%s>', $type);
+                } else {
+                    yield \sprintf('<%s%s/>', $type, $xmlAttr);
+                }
+            } elseif ($value instanceof TaggedClassMapArgument) {
+                $xmlAttr .= \sprintf(' type="tagged_class_map" tag="%s"', $this->encode($value->getTag()));
+
+                $defaultIndexAttribute = preg_match('/[^.]++$/', $value->getTag(), $matches) ? $matches[0] : $value->getTag();
+                if ($defaultIndexAttribute !== $value->getIndexAttribute()) {
+                    $xmlAttr .= \sprintf(' index-by="%s"', $this->encode($value->getIndexAttribute()));
+                }
+                if (1 === \count($excludes = $value->getExclude())) {
+                    $xmlAttr .= \sprintf(' exclude="%s"', $this->encode($excludes[0]));
                 }
 
                 if (1 < \count($excludes)) {

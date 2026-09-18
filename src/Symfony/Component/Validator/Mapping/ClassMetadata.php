@@ -52,6 +52,7 @@ class ClassMetadata extends GenericMetadata implements ClassMetadataInterface
     private ?GroupSequence $groupSequence = null;
     private bool $groupSequenceProvider = false;
     private ?string $groupProvider = null;
+    private bool $cascadeCurrentGroup = false;
 
     /**
      * The strategy for cascading objects.
@@ -94,6 +95,7 @@ class ClassMetadata extends GenericMetadata implements ClassMetadataInterface
             'groupSequence' => $this->groupSequence,
             'groupSequenceProvider' => $this->groupSequenceProvider,
             'groupProvider' => $this->groupProvider,
+            'cascadeCurrentGroup' => $this->cascadeCurrentGroup,
             'members' => $this->members,
             'name' => $this->name,
             'properties' => $this->properties,
@@ -327,6 +329,34 @@ class ClassMetadata extends GenericMetadata implements ClassMetadataInterface
         }
     }
 
+    /**
+     * Drops the auto-mapping placeholders the loaders left untouched, and moves
+     * the remaining ones last, where merging the parent's metadata would have put them.
+     *
+     * @param array<string, array{PropertyMetadata, int}> $placeholders
+     *
+     * @internal
+     */
+    public function removeUnusedAutoMappingPlaceholders(array $placeholders): void
+    {
+        foreach ($placeholders as $property => [$placeholder, $strategy]) {
+            if (!$placeholder->getConstraints() && $strategy === $placeholder->getAutoMappingStrategy() && CascadingStrategy::NONE === $placeholder->getCascadingStrategy()) {
+                $this->members[$property] = array_values(array_filter($this->members[$property], static fn (MemberMetadata $member) => $member !== $placeholder));
+
+                if ($placeholder === ($this->properties[$property] ?? null)) {
+                    unset($this->properties[$property]);
+                }
+            }
+
+            $members = $this->members[$property];
+            unset($this->members[$property]);
+
+            if ($members) {
+                $this->members[$property] = $members;
+            }
+        }
+    }
+
     public function hasPropertyMetadata(string $property): bool
     {
         return \array_key_exists($property, $this->members);
@@ -361,6 +391,17 @@ class ClassMetadata extends GenericMetadata implements ClassMetadataInterface
             $groupSequence = new GroupSequence($groupSequence);
         }
 
+        // the ::class constant of the annotated class is an alias of its group name
+        $groups = $groupSequence->groups;
+        foreach ($groups as $i => $group) {
+            if (\is_string($group) && $this->name === ltrim($group, '\\')) {
+                $groups[$i] = $this->getDefaultGroup();
+            }
+        }
+        if ($groups !== $groupSequence->groups) {
+            $groupSequence = new GroupSequence($groups);
+        }
+
         if (\in_array(Constraint::DEFAULT_GROUP, $groupSequence->groups, true)) {
             throw new GroupDefinitionException(\sprintf('The group "%s" is not allowed in group sequences.', Constraint::DEFAULT_GROUP));
         }
@@ -376,7 +417,7 @@ class ClassMetadata extends GenericMetadata implements ClassMetadataInterface
 
     public function hasGroupSequence(): bool
     {
-        return isset($this->groupSequence) && \count($this->groupSequence->groups) > 0;
+        return isset($this->groupSequence) && $this->groupSequence->groups;
     }
 
     public function getGroupSequence(): ?GroupSequence
@@ -423,6 +464,20 @@ class ClassMetadata extends GenericMetadata implements ClassMetadataInterface
     public function getGroupProvider(): ?string
     {
         return $this->groupProvider;
+    }
+
+    /**
+     * Sets whether the group being stepped through is cascaded to referenced objects,
+     * for a sequence returned by the group sequence provider as a plain array.
+     */
+    public function setCascadeCurrentGroup(bool $cascadeCurrentGroup): void
+    {
+        $this->cascadeCurrentGroup = $cascadeCurrentGroup;
+    }
+
+    public function getCascadeCurrentGroup(): bool
+    {
+        return $this->cascadeCurrentGroup;
     }
 
     public function getCascadingStrategy(): int

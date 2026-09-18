@@ -23,12 +23,38 @@ class ImportMapGenerator
 {
     public const IMPORT_MAP_CACHE_FILENAME = 'importmap.json';
     public const ENTRYPOINT_CACHE_FILENAME_PATTERN = 'entrypoint.%s.json';
+    public const ENTRYPOINT_REACHABLE_CACHE_FILENAME_PATTERN = 'entrypoint.reachable.%s.json';
 
+    public const ENTRIES_ALL = 'all';
+    public const ENTRIES_REACHABLE = 'reachable';
+
+    private const INTEGRITY_HASH_ALGORITHMS = ['sha256', 'sha384', 'sha512'];
+
+    /**
+     * @param self::ENTRIES_* $entries
+     */
     public function __construct(
         private readonly AssetMapperInterface $assetMapper,
         private readonly CompiledAssetMapperConfigReader $compiledConfigReader,
         private readonly ImportMapConfigReader $importMapConfigReader,
+        private readonly array $integrityHashAlgorithms = [],
+        private readonly string $entries = self::ENTRIES_ALL,
     ) {
+        if ($unsupportedAlgorithms = array_diff($this->integrityHashAlgorithms, self::INTEGRITY_HASH_ALGORITHMS)) {
+            throw new LogicException(\sprintf('Unsupported integrity hash algorithm "%s". Supported ones are "%s".', implode('", "', $unsupportedAlgorithms), implode('", "', self::INTEGRITY_HASH_ALGORITHMS)));
+        }
+
+        if (!\in_array($this->entries, [self::ENTRIES_ALL, self::ENTRIES_REACHABLE], true)) {
+            throw new LogicException(\sprintf('Unsupported import map entries "%s". Supported ones are "%s" and "%s".', $this->entries, self::ENTRIES_ALL, self::ENTRIES_REACHABLE));
+        }
+    }
+
+    /**
+     * @internal
+     */
+    public function isLimitedToReachableEntries(): bool
+    {
+        return self::ENTRIES_REACHABLE === $this->entries;
     }
 
     /**
@@ -50,11 +76,11 @@ class ImportMapGenerator
     /**
      * @param string[] $entrypointNames
      *
-     * @return array<string, array{path: string, type: string, preload?: bool}>
+     * @return array<string, array{path: string, type: string, preload?: bool, integrity?: string}>
      *
      * @internal
      */
-    public function getImportMapData(array $entrypointNames): array
+    public function getImportMapData(array $entrypointNames, ?string $polyfillImportName = null): array
     {
         $rawImportMapData = $this->getRawImportMapData();
         $finalImportMapData = [];
@@ -77,13 +103,24 @@ class ImportMapGenerator
             }
         }
 
+        if (self::ENTRIES_REACHABLE === $this->entries) {
+            $reachableImports = null === $polyfillImportName ? [] : [$polyfillImportName => true];
+            foreach ($entrypointNames as $entrypointName) {
+                foreach ($this->findReachableEntrypointImports($entrypointName) as $import) {
+                    $reachableImports[$import] = true;
+                }
+            }
+
+            $rawImportMapData = array_intersect_key($rawImportMapData, $reachableImports);
+        }
+
         return array_merge($finalImportMapData, $rawImportMapData);
     }
 
     /**
      * @internal
      *
-     * @return array<string, array{path: string, type: string}>
+     * @return array<string, array{path: string, type: string, integrity?: string}>
      */
     public function getRawImportMapData(): array
     {
@@ -107,6 +144,9 @@ class ImportMapGenerator
 
             $path = $asset->publicPath;
             $data = ['path' => $path, 'type' => $entry->type->value];
+            if (null !== $integrity = $this->getIntegrity($asset)) {
+                $data['integrity'] = $integrity;
+            }
             $rawImportMapData[$entry->importName] = $data;
         }
 
@@ -126,6 +166,27 @@ class ImportMapGenerator
             return $this->compiledConfigReader->loadConfig(\sprintf(self::ENTRYPOINT_CACHE_FILENAME_PATTERN, $entryName));
         }
 
+        return $this->findImports($this->getEntrypointAsset($entryName), false);
+    }
+
+    /**
+     * Given an importmap entry name, finds all the module imports in its chain, the lazy ones included.
+     *
+     * @internal
+     *
+     * @return array<string> The array of import names
+     */
+    public function findReachableEntrypointImports(string $entryName): array
+    {
+        if ($this->compiledConfigReader->configExists(\sprintf(self::ENTRYPOINT_REACHABLE_CACHE_FILENAME_PATTERN, $entryName))) {
+            return $this->compiledConfigReader->loadConfig(\sprintf(self::ENTRYPOINT_REACHABLE_CACHE_FILENAME_PATTERN, $entryName));
+        }
+
+        return $this->findImports($this->getEntrypointAsset($entryName), true);
+    }
+
+    private function getEntrypointAsset(string $entryName): MappedAsset
+    {
         $rootImportEntries = $this->importMapConfigReader->getEntries();
         if (!$rootImportEntries->has($entryName)) {
             throw new \InvalidArgumentException(\sprintf('The entrypoint "%s" does not exist in "importmap.php".', $entryName));
@@ -144,7 +205,7 @@ class ImportMapGenerator
             throw new \InvalidArgumentException(\sprintf('The path "%s" of the entrypoint "%s" mentioned in "importmap.php" cannot be found in any asset map paths.', $rootImportEntries->get($entryName)->path, $entryName));
         }
 
-        return $this->findEagerImports($asset);
+        return $asset;
     }
 
     /**
@@ -225,18 +286,18 @@ class ImportMapGenerator
     }
 
     /**
-     * Finds recursively all the non-lazy modules imported by an asset.
+     * Finds recursively all the modules imported by an asset, the lazy ones included or not.
      *
      * @return array<string> The array of deduplicated import names
      */
-    private function findEagerImports(MappedAsset $asset): array
+    private function findImports(MappedAsset $asset, bool $includeLazy): array
     {
         $dependencies = [];
         $queue = [$asset];
 
         while ($asset = array_shift($queue)) {
             foreach ($asset->getJavaScriptImports() as $javaScriptImport) {
-                if ($javaScriptImport->isLazy) {
+                if (!$includeLazy && $javaScriptImport->isLazy) {
                     continue;
                 }
                 if (isset($dependencies[$javaScriptImport->importName])) {
@@ -267,5 +328,20 @@ class ImportMapGenerator
         }
 
         throw new LogicException(\sprintf('The asset "%s" cannot be found in any asset map paths.', $entry->path));
+    }
+
+    /**
+     * Computes the subresource integrity of an asset that lands in the import map.
+     */
+    private function getIntegrity(MappedAsset $asset): ?string
+    {
+        $integrity = null;
+
+        foreach ($this->integrityHashAlgorithms as $algorithm) {
+            $hash = null !== $asset->content ? hash($algorithm, $asset->content, true) : hash_file($algorithm, $asset->sourcePath, true);
+            $integrity .= \sprintf('%s%s-%s', $integrity ? ' ' : '', $algorithm, base64_encode($hash));
+        }
+
+        return $integrity;
     }
 }

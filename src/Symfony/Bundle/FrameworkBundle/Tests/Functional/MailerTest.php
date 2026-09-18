@@ -12,7 +12,6 @@
 namespace Symfony\Bundle\FrameworkBundle\Tests\Functional;
 
 use Psr\Log\LoggerInterface;
-use Symfony\Bundle\FullStack;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\Mailer\Mailer;
 use Symfony\Component\Mailer\SentMessage;
@@ -78,19 +77,14 @@ class MailerTest extends AbstractWebTestCase
         $client->request('GET', '/send_email');
 
         $this->assertEmailCount(2);
-        $first = 0;
-        $second = 1;
-        if (!class_exists(FullStack::class)) {
-            $this->assertQueuedEmailCount(2);
-            $first = 1;
-            $second = 3;
-            $this->assertEmailIsQueued($this->getMailerEvent(0));
-            $this->assertEmailIsQueued($this->getMailerEvent(2));
-        }
-        $this->assertEmailIsNotQueued($this->getMailerEvent($first));
-        $this->assertEmailIsNotQueued($this->getMailerEvent($second));
+        $this->assertQueuedEmailCount(2);
+        $this->assertEmailIsQueued($this->getMailerEvent(0));
+        $this->assertEmailIsQueued($this->getMailerEvent(2));
+        $this->assertEmailIsNotQueued($this->getMailerEvent(1));
+        $this->assertEmailIsNotQueued($this->getMailerEvent(3));
 
-        $email = $this->getMailerMessage($first);
+        // queued and sent emails are reported by two events but by a single message
+        $email = $this->getMailerMessage(0);
         $this->assertEmailHasHeader($email, 'To');
         $this->assertEmailHeaderSame($email, 'To', 'fabien@symfony.com');
         $this->assertEmailHeaderNotSame($email, 'To', 'helene@symfony.com');
@@ -101,7 +95,7 @@ class MailerTest extends AbstractWebTestCase
         $this->assertEmailAttachmentCount($email, 1);
         $this->assertEmailAddressNotContains($email, 'To', 'thomas@symfony.com');
 
-        $email = $this->getMailerMessage($second);
+        $email = $this->getMailerMessage(1);
         $this->assertEmailSubjectContains($email, 'Foo');
         $this->assertEmailSubjectNotContains($email, 'Bar');
         $this->assertEmailAddressContains($email, 'To', 'fabien@symfony.com');

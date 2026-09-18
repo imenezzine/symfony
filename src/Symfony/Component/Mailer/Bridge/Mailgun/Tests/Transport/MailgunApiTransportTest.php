@@ -12,7 +12,10 @@
 namespace Symfony\Component\Mailer\Bridge\Mailgun\Tests\Transport;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bridge\PhpUnit\ExpectUserDeprecationMessageTrait;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\JsonMockResponse;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -21,12 +24,17 @@ use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
+use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class MailgunApiTransportTest extends TestCase
 {
+    use ExpectUserDeprecationMessageTrait;
+
     #[DataProvider('getTransportData')]
     public function testToString(MailgunApiTransport $transport, string $expected)
     {
@@ -55,6 +63,56 @@ class MailgunApiTransportTest extends TestCase
         ];
     }
 
+    public function testRemoteTemplate()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('order-confirmation', ['firstName' => 'Fabien']);
+        $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
+
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'symfony');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('order-confirmation', $payload['template']);
+        $this->assertSame('{"firstName":"Fabien"}', $payload['t:variables']);
+        $this->assertArrayNotHasKey('subject', $payload);
+        $this->assertArrayNotHasKey('text', $payload);
+        $this->assertArrayNotHasKey('html', $payload);
+    }
+
+    public function testRemoteTemplateWithSubject()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->subject('Hello!')
+            ->template('order-confirmation');
+        $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
+
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'symfony');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('Hello!', $payload['subject']);
+        $this->assertSame('order-confirmation', $payload['template']);
+        $this->assertArrayNotHasKey('t:variables', $payload);
+    }
+
+    #[IgnoreDeprecations]
+    #[Group('legacy')]
+    public function testDeprecatedTemplateHeader()
+    {
+        $this->expectUserDeprecationMessage(\sprintf('Since symfony/mailgun-mailer 8.2: Using the "template" email header to select a Mailgun template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class));
+
+        $email = (new Email())->subject('Hello!');
+        $email->getHeaders()->addTextHeader('template', 'order-confirmation');
+        $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
+
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'symfony');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('order-confirmation', $payload['template']);
+    }
+
     public function testCustomHeader()
     {
         $json = json_encode(['foo' => 'bar']);
@@ -68,7 +126,6 @@ class MailgunApiTransportTest extends TestCase
         $email->getHeaders()->addTextHeader('t:text', 'text-value');
         $email->getHeaders()->addTextHeader('o:deliverytime', $deliveryTime);
         $email->getHeaders()->addTextHeader('v:version', 'version-value');
-        $email->getHeaders()->addTextHeader('template', 'template-value');
         $email->getHeaders()->addTextHeader('recipient-variables', 'recipient-variables-value');
         $email->getHeaders()->addTextHeader('amp-html', 'amp-html-value');
 
@@ -89,8 +146,6 @@ class MailgunApiTransportTest extends TestCase
         $this->assertEquals($deliveryTime, $payload['o:deliverytime']);
         $this->assertArrayHasKey('v:version', $payload);
         $this->assertEquals('version-value', $payload['v:version']);
-        $this->assertArrayHasKey('template', $payload);
-        $this->assertEquals('template-value', $payload['template']);
         $this->assertArrayHasKey('recipient-variables', $payload);
         $this->assertEquals('recipient-variables-value', $payload['recipient-variables']);
         $this->assertArrayHasKey('amp-html', $payload);
@@ -177,6 +232,37 @@ class MailgunApiTransportTest extends TestCase
         $message = $transport->send($mail);
 
         $this->assertSame('foobar2', $message->getMessageId());
+    }
+
+    public function testSendWithInlineAttachmentsSharingANamePrefix()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $content = '';
+            while ($chunk = $options['body']()) {
+                $content .= $chunk;
+            }
+
+            $this->assertStringContainsString("name=\"inline[0]\"; filename=\"b\"\r\n", $content);
+            $this->assertStringContainsString("name=\"inline[1]\"; filename=\"c\"\r\n", $content);
+            $this->assertStringContainsString("\r\n\r\n<img src=\"cid:b\"><img src=\"cid:c\">\r\n", $content);
+
+            return new JsonMockResponse(['id' => 'foobar'], [
+                'http_code' => 200,
+            ]);
+        });
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'symfony', 'us-east-1', $client);
+
+        $mail = new Email();
+        $mail->subject('Hello!')
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->html('<img src="cid:a/b"><img src="cid:a/b/c">')
+            ->addPart((new DataPart('image', 'a/b', 'image/png'))->asInline())
+            ->addPart((new DataPart('nested-image', 'a/b/c', 'image/png'))->asInline());
+
+        $message = $transport->send($mail);
+
+        $this->assertSame('foobar', $message->getMessageId());
     }
 
     public function testSendThrowsForErrorResponse()
@@ -273,5 +359,76 @@ class MailgunApiTransportTest extends TestCase
 
         $this->assertArrayHasKey('h:Sender', $payload);
         $this->assertSame('=?utf-8?Q?=C5=BDlu=C5=A5ou=C4=8Dk=C3=BD_K=C5=AF=C5=88?= <alice@system.com>', $payload['h:Sender']);
+    }
+
+    public function testTrackingHeader()
+    {
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'DOMAIN');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $enabled = new Email();
+        $enabled->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+        $enabledPayload = $method->invoke($transport, $enabled, $envelope);
+        $this->assertSame('yes', $enabledPayload['o:tracking-opens']);
+        $this->assertSame('yes', $enabledPayload['o:tracking-clicks']);
+
+        $disabled = new Email();
+        $disabled->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+        $disabledPayload = $method->invoke($transport, $disabled, $envelope);
+        $this->assertSame('no', $disabledPayload['o:tracking-opens']);
+        $this->assertSame('no', $disabledPayload['o:tracking-clicks']);
+    }
+
+    public function testTrackingHeaderControlsOpensAndClicksIndependently()
+    {
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'DOMAIN');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: false));
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('no', $payload['o:tracking-opens']);
+        $this->assertArrayNotHasKey('o:tracking-clicks', $payload);
+    }
+
+    public function testExplicitMailgunTrackingHeaderOverridesTrackingHeaderRegardlessOfOrder()
+    {
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'DOMAIN');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $trackingHeaderFirst = new Email();
+        $trackingHeaderFirst->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+        $trackingHeaderFirst->getHeaders()->addTextHeader('o:tracking-clicks', 'no');
+
+        $payload = $method->invoke($transport, $trackingHeaderFirst, $envelope);
+        $this->assertSame('yes', $payload['o:tracking-opens']);
+        $this->assertSame('no', $payload['o:tracking-clicks']);
+
+        $nativeHeaderFirst = new Email();
+        $nativeHeaderFirst->getHeaders()->addTextHeader('o:tracking-clicks', 'no');
+        $nativeHeaderFirst->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+
+        $payload = $method->invoke($transport, $nativeHeaderFirst, $envelope);
+        $this->assertSame('yes', $payload['o:tracking-opens']);
+        $this->assertSame('no', $payload['o:tracking-clicks']);
+    }
+
+    public function testPlainTextTrackingHeaderIsResolved()
+    {
+        $transport = new MailgunApiTransport('ACCESS_KEY', 'DOMAIN');
+        $method = new \ReflectionMethod(MailgunApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->addTextHeader('X-Track', 'opens=false; clicks=default');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame('no', $payload['o:tracking-opens']);
+        $this->assertArrayNotHasKey('o:tracking-clicks', $payload);
+        $this->assertArrayNotHasKey('h:X-Track', $payload);
     }
 }

@@ -47,6 +47,15 @@ class UriSignerTest extends TestCase
         $this->assertStringContainsString('&foo=', $signer->sign('http://example.com/foo?foo=bar'));
     }
 
+    public function testCheckWithExpirationAtTheUnixEpoch()
+    {
+        $signer = new UriSigner('foobar');
+
+        // "0" is a real expiration date, not the absence of one
+        $this->assertFalse($signer->check($signer->sign('http://example.com/foo', 0)));
+        $this->assertFalse($signer->check($signer->sign('http://example.com/foo', new \DateTimeImmutable('@0'))));
+    }
+
     public function testCheck()
     {
         $signer = new UriSigner('foobar');
@@ -79,6 +88,23 @@ class UriSignerTest extends TestCase
         $this->assertTrue($signer->check($signer->sign('http://example.com/foo?foo=bar&0=integer')));
 
         $this->assertSame($signer->sign('http://example.com/foo?foo=bar&bar=foo'), $signer->sign('http://example.com/foo?bar=foo&foo=bar'));
+    }
+
+    public function testCheckWithNonStringHash()
+    {
+        $signer = new UriSigner('foobar');
+
+        $this->assertFalse($signer->check('http://example.com/foo?_hash[]=y'));
+        $this->assertFalse($signer->check('http://example.com/foo?_hash[k]=y'));
+        $this->assertFalse($signer->check('http://example.com/foo?foo=bar&_hash[]='));
+    }
+
+    public function testCheckRequestWithNonStringHash()
+    {
+        $signer = new UriSigner('foobar');
+
+        $this->assertFalse($signer->checkRequest(Request::create('http://example.com/foo?_path=x&_hash[]=y')));
+        $this->assertFalse($signer->checkRequest(Request::create('http://example.com/foo?_hash[k]=y')));
     }
 
     public function testCheckWithDifferentArgSeparator()

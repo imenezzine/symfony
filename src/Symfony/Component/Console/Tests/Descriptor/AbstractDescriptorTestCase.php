@@ -19,6 +19,7 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Tests\Fixtures\DescriptorCommand5;
 
 abstract class AbstractDescriptorTestCase extends TestCase
 {
@@ -44,6 +45,13 @@ abstract class AbstractDescriptorTestCase extends TestCase
     public function testDescribeCommand(Command $command, $expectedDescription)
     {
         $this->assertDescription($expectedDescription, $command);
+    }
+
+    public function testDescribeCommandWithHiddenOptions()
+    {
+        [$command, $expectedDescription] = static::getDescriptionTestData(['command_5_with_hidden_options' => new DescriptorCommand5()])[0];
+
+        $this->assertDescription($expectedDescription, $command, ['show-hidden-options' => true]);
     }
 
     #[DataProvider('getDescribeApplicationTestData')]
@@ -98,7 +106,7 @@ abstract class AbstractDescriptorTestCase extends TestCase
     protected function assertDescription($expectedDescription, $describedObject, array $options = [])
     {
         $output = new BufferedOutput(BufferedOutput::VERBOSITY_NORMAL, true);
-        $this->getDescriptor()->describe($output, $describedObject, $options + ['raw_output' => true]);
+        $this->getDescriptor()->describe($output, $describedObject, $options + ['raw_output' => true, 'terminal_width' => \PHP_INT_MAX]);
         $this->assertEquals($this->normalizeOutput($expectedDescription), $this->normalizeOutput($output->fetch()));
     }
 

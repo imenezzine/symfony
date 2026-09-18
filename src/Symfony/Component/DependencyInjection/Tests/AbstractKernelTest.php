@@ -136,6 +136,20 @@ class AbstractKernelTest extends TestCase
         $this->assertSame([], $container->getParameter('kernel.bundles_metadata'));
     }
 
+    public function testProjectDirContainingAPercentSign()
+    {
+        // two percent signs are required: "%2Fother%" is what the parameter bag reads as a reference
+        $this->varDir = str_replace('\\', '/', sys_get_temp_dir()).'/sf_percent_my%2Fother%2Fbranch';
+        @mkdir($this->varDir, 0o777, true);
+
+        $kernel = new PercentProjectDirKernel('percent', true, $this->varDir);
+        $kernel->boot();
+
+        $container = $kernel->getContainer();
+        $this->assertSame(realpath($this->varDir), $container->getParameter('kernel.project_dir'));
+        $this->assertSame(realpath($this->varDir).'/config', $container->getParameter('percent.interpolated'));
+    }
+
     public function testKernelIsSyntheticService()
     {
         $kernel = $this->createKernel();
@@ -184,7 +198,7 @@ class AbstractKernelTest extends TestCase
         $bundle = $this->createMock(BundleInterface::class);
         $bundle->method('getName')->willReturn('TestBundle');
         $bundle->expects($this->once())->method('shutdown');
-        $bundle->expects($this->atLeast(2))
+        $bundle->expects($this->exactly(2))
             ->method('setContainer')
             ->willReturnCallback(function ($container) {
                 if (null !== $container) {
@@ -358,7 +372,7 @@ class AbstractKernelTest extends TestCase
 
         $kernel = $this->createKernel();
         @mkdir($kernel->getBuildDir(), 0o777, true);
-        file_put_contents($kernel->getBuildDir().'/'.$kernel->getTestContainerClass().'.bundles.php', '<?php return [\'TestAbstractBundle\' => new \Symfony\Component\DependencyInjection\Tests\TestAbstractBundle()];');
+        file_put_contents($kernel->getBuildDir().'/'.$kernel->getTestContainerClass().'.bundles.php', '<?php return [[\'TestAbstractBundle\' => \'Symfony\\\\Component\\\\DependencyInjection\\\\Tests\\\\TestAbstractBundle\'], []];');
 
         $kernel->boot();
 
@@ -369,6 +383,98 @@ class AbstractKernelTest extends TestCase
         $kernel->boot();
 
         $this->assertCount(1, $kernel->getBundles());
+        $this->assertSame([TestAbstractBundle::class], array_values($kernel->getContainer()->getParameter('kernel.bundles')));
+    }
+
+    public function testBundlesCacheDumpedByAnOlderVersionIsIgnored()
+    {
+        $dir = $this->varDir;
+        @mkdir($dir.'/config', 0o777, true);
+        file_put_contents($dir.'/config/bundles.php', '<?php return ['.TestAbstractBundle::class.'::class => [\'all\' => true]];');
+        touch($dir.'/config/bundles.php', time() - 10);
+
+        $kernel = $this->createKernel();
+        @mkdir($kernel->getBuildDir(), 0o777, true);
+        file_put_contents($kernel->getBuildDir().'/'.$kernel->getTestContainerClass().'.bundles.php', '<?php return [\'TestAbstractBundle\' => new \\'.TestAbstractBundle::class.'()];');
+
+        $kernel->boot();
+
+        $this->assertSame(['TestAbstractBundle'], array_keys($kernel->getBundles()));
+    }
+
+    public function testBundlesWithNothingToDoAtRuntimeAreInstantiatedOnDemand()
+    {
+        $this->writeBundlesFile([LazyBundle::class, BootingBundle::class]);
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+        $kernel->shutdown();
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+
+        $this->assertSame(['BootingBundle'], array_keys($kernel->getInstantiatedBundles()));
+        $this->assertSame(['LazyBundle', 'BootingBundle'], array_keys($kernel->getBundles()));
+        $this->assertInstanceOf(LazyBundle::class, $kernel->getBundles()['LazyBundle']);
+    }
+
+    public function testBundlesWithSomethingToDoAtRuntimeAreInstantiatedOnBoot()
+    {
+        $this->writeBundlesFile([LazyBundle::class, BootingBundle::class, ShuttingDownBundle::class, ContainerAwareBundle::class, ConstructedBundle::class]);
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+        $kernel->shutdown();
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+
+        $this->assertSame(['BootingBundle', 'ShuttingDownBundle', 'ContainerAwareBundle', 'ConstructedBundle'], array_keys($kernel->getInstantiatedBundles()));
+    }
+
+    public function testCachedBundlesFileOnlyInstantiatesWhatIsNeededAtRuntime()
+    {
+        $this->writeBundlesFile([LazyBundle::class, BootingBundle::class]);
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+
+        $code = file_get_contents($kernel->getBuildDir().'/'.$kernel->getTestContainerClass().'.bundles.php');
+
+        $this->assertStringContainsString(\sprintf("'BootingBundle' => new \\%s(),", BootingBundle::class), $code);
+        $this->assertStringNotContainsString('new \\'.LazyBundle::class, $code);
+        $this->assertStringContainsString(var_export(LazyBundle::class, true), $code);
+    }
+
+    public function testLazyBundleIsGivenTheContainerAndKeptAround()
+    {
+        $this->writeBundlesFile([LazyBundle::class]);
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+        $kernel->shutdown();
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+
+        $bundle = $kernel->getBundle('LazyBundle');
+
+        $this->assertSame($kernel->getContainer(), $bundle->getBoundContainer());
+        $this->assertSame($bundle, $kernel->getBundle('LazyBundle'));
+        $this->assertSame($bundle, $kernel->getBundles()['LazyBundle']);
+    }
+
+    public function testLazyBundleIsRegisteredInTheContainerParameters()
+    {
+        $this->writeBundlesFile([LazyBundle::class]);
+
+        $kernel = $this->createKernel('test', false);
+        $kernel->boot();
+
+        $container = $kernel->getContainer();
+
+        $this->assertSame(['LazyBundle' => LazyBundle::class], $container->getParameter('kernel.bundles'));
+        $this->assertArrayHasKey('path', $container->getParameter('kernel.bundles_metadata')['LazyBundle']);
     }
 
     public function testConfigureContainerHook()
@@ -478,6 +584,13 @@ class AbstractKernelTest extends TestCase
         $this->assertSame(['IgnoreOnInvalidBundle'], array_keys($kernel->getBundles()));
     }
 
+    private function writeBundlesFile(array $classes): void
+    {
+        @mkdir($this->varDir.'/config', 0o777, true);
+        $code = array_map(static fn ($class) => var_export($class, true)." => ['all' => true]", $classes);
+        file_put_contents($this->varDir.'/config/bundles.php', '<?php return ['.implode(', ', $code).'];');
+    }
+
     private function createKernel(string $env = 'test', bool $debug = true): TestKernel
     {
         return new TestKernel($env, $debug, $this->varDir);
@@ -514,6 +627,11 @@ class TestKernel extends AbstractKernel
     {
         return $this->getContainerClass();
     }
+
+    public function getInstantiatedBundles(): array
+    {
+        return $this->bundles;
+    }
 }
 
 class BuildHookKernel extends TestKernel
@@ -521,6 +639,14 @@ class BuildHookKernel extends TestKernel
     protected function build(ContainerBuilder $container): void
     {
         $container->setParameter('build_hook_called', true);
+    }
+}
+
+class PercentProjectDirKernel extends TestKernel
+{
+    protected function build(ContainerBuilder $container): void
+    {
+        $container->setParameter('percent.interpolated', '%kernel.project_dir%/config');
     }
 }
 
@@ -561,6 +687,43 @@ class BundleTestKernel extends AbstractKernel
 
 class TestAbstractBundle extends AbstractBundle
 {
+}
+
+class LazyBundle extends AbstractBundle
+{
+    public function getBoundContainer(): ?ContainerInterface
+    {
+        return $this->container ?? null;
+    }
+}
+
+class BootingBundle extends AbstractBundle
+{
+    public function boot(): void
+    {
+    }
+}
+
+class ShuttingDownBundle extends AbstractBundle
+{
+    public function shutdown(): void
+    {
+    }
+}
+
+class ContainerAwareBundle extends AbstractBundle
+{
+    public function setContainer(?ContainerInterface $container): void
+    {
+        $this->container = $container;
+    }
+}
+
+class ConstructedBundle extends AbstractBundle
+{
+    public function __construct()
+    {
+    }
 }
 
 class ExtensionBundle extends AbstractBundle

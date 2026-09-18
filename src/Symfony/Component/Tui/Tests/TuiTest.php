@@ -11,7 +11,9 @@
 
 namespace Symfony\Component\Tui\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Tui\Ansi\AnsiUtils;
 use Symfony\Component\Tui\Event\InputEvent;
 use Symfony\Component\Tui\Event\TickEvent;
@@ -21,6 +23,7 @@ use Symfony\Component\Tui\Input\Keybindings;
 use Symfony\Component\Tui\Render\Renderer;
 use Symfony\Component\Tui\Style\Style;
 use Symfony\Component\Tui\Style\StyleSheet;
+use Symfony\Component\Tui\Terminal\ScreenBuffer;
 use Symfony\Component\Tui\Terminal\VirtualTerminal;
 use Symfony\Component\Tui\Tui;
 use Symfony\Component\Tui\Widget\ContainerWidget;
@@ -29,6 +32,17 @@ use Symfony\Component\Tui\Widget\TextWidget;
 
 class TuiTest extends TestCase
 {
+    public function testRejectsTerminalUsingDifferentEventDispatcher()
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The terminal must use the TUI event dispatcher.');
+
+        new Tui(
+            terminal: new VirtualTerminal(),
+            eventDispatcher: new EventDispatcher(),
+        );
+    }
+
     public function testBasicRender()
     {
         $terminal = new VirtualTerminal(40, 10);
@@ -212,7 +226,7 @@ class TuiTest extends TestCase
         $root->add(new TextWidget('This is a longer text that should wrap properly.')->setStyle(Style::padding([0, 1])));
         $root->add(new TextWidget('End'));
 
-        $lines = $renderer->render($root, 40, 24);
+        $lines = $renderer->renderFrame($root, 40, 24)->toArray();
 
         foreach ($lines as $i => $line) {
             $width = AnsiUtils::visibleWidth($line);
@@ -302,6 +316,53 @@ class TuiTest extends TestCase
         }
 
         $this->assertSame(0, $headerLineIndex, 'Content should be on the first line by default (top-aligned)');
+    }
+
+    /**
+     * @return iterable<string, array{int, int}>
+     */
+    public static function frameHeightProvider(): iterable
+    {
+        // [terminal rows, rendered lines]
+        yield 'frame shorter than the screen' => [6, 3];
+        yield 'frame one line short of the screen' => [6, 5];
+        yield 'frame filling the screen' => [6, 6];
+    }
+
+    /**
+     * stop() must leave the cursor on the line directly below the frame.
+     * One line further leaves a blank line behind and, once the frame is
+     * tall enough, scrolls the top of it off the screen.
+     */
+    #[DataProvider('frameHeightProvider')]
+    public function testStopLeavesCursorOnTheLineBelowTheFrame(int $rows, int $lines)
+    {
+        $terminal = new VirtualTerminal(40, $rows);
+        $tui = new Tui(terminal: $terminal);
+        for ($i = 1; $i <= $lines; ++$i) {
+            $tui->add(new TextWidget("line $i"));
+        }
+
+        $tui->start();
+        $tui->processRender();
+        $tui->stop();
+
+        $screen = new ScreenBuffer(40, $rows);
+        $screen->write($terminal->getOutput());
+        // Stands in for the shell prompt printed once the process exits
+        $screen->write('PROMPT');
+
+        $screenLines = array_map(rtrim(...), explode("\n", $screen->getScreen()));
+
+        // The frame and the prompt need $lines + 1 rows, so a frame filling the
+        // screen legitimately scrolls by one line — but never by more than that
+        $scrolled = max(0, $lines + 1 - $rows);
+
+        for ($i = $scrolled + 1; $i <= $lines; ++$i) {
+            $this->assertSame("line $i", $screenLines[$i - 1 - $scrolled]);
+        }
+
+        $this->assertSame('PROMPT', $screenLines[$lines - $scrolled], 'The prompt should follow the frame without a blank line in between');
     }
 
     public function testSimulateResizeTriggersRender()
@@ -555,7 +616,9 @@ class TuiTest extends TestCase
 
         $received = null;
         $listener = new class($received) {
-            public function __construct(private mixed &$received) {}
+            public function __construct(private mixed &$received)
+            {
+            }
 
             public function __invoke(InputEvent $event): void
             {

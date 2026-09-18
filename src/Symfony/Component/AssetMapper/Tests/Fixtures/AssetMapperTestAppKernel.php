@@ -13,6 +13,7 @@ namespace Symfony\Component\AssetMapper\Tests\Fixtures;
 
 use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
+use Symfony\Component\AssetMapper\Event\PreAssetsCompileEvent;
 use Symfony\Component\Config\Loader\LoaderInterface;
 use Symfony\Component\DependencyInjection\Alias;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -34,14 +35,21 @@ class AssetMapperTestAppKernel extends Kernel
 
     public function registerContainerConfiguration(LoaderInterface $loader): void
     {
-        $loader->load(static function (ContainerBuilder $container) {
+        $loader->load(function (ContainerBuilder $container) {
+            $assetMapper = [
+                'paths' => ['dir1', 'dir2', 'non_ascii', 'assets'],
+                'public_prefix' => 'assets',
+                'metadata_dir' => '%kernel.project_dir%/public/assets',
+            ];
+
+            if ('reachable_entries' === $this->getEnvironment()) {
+                $assetMapper['importmap_entries'] = 'reachable';
+            }
+
             $container->loadFromExtension('framework', [
                 'http_client' => true,
                 'assets' => null,
-                'asset_mapper' => [
-                    'paths' => ['dir1', 'dir2', 'non_ascii', 'assets'],
-                    'public_prefix' => 'assets',
-                ],
+                'asset_mapper' => $assetMapper,
                 'test' => true,
             ]);
 
@@ -52,5 +60,8 @@ class AssetMapperTestAppKernel extends Kernel
     protected function build(ContainerBuilder $container): void
     {
         $container->register('logger', NullLogger::class);
+        $container->register('pre_assets_compile_listener', PreAssetsCompileListener::class)
+            ->setPublic(true)
+            ->addTag('kernel.event_listener', ['event' => PreAssetsCompileEvent::class]);
     }
 }

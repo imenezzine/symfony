@@ -51,7 +51,7 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *     shared?: bool,
  *     lazy?: bool|string,
  *     public?: bool,
- *     properties?: array<string, mixed>,
+ *%A   properties?: array<string, mixed>,
  *     configurator?: CallbackType,
  *     calls?: list<CallType>,
  *     tags?: TagsType,
@@ -132,6 +132,8 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         count?: int|Param,
  *     },
  *     fromBundle?: bool|Param, // Default: false
+ *     app_alias?: AppConfig, // Deprecated: The child node "app_alias" at path "test.app_alias" is deprecated.
+ *     unknown_alias?: mixed,
  * }
  * @psalm-type AppConfig = bool|Param
  * @psalm-type PrototypedConfigConfig = array<string, array{ // Default: []
@@ -214,11 +216,12 @@ namespace Symfony\Component\Routing\Loader\Configurator;
  *     host?: string|array<string,string>,
  *     schemes?: string|list<string>,
  *     condition?: string,
+ *     add_condition?: string,
  *     locale?: string,
  *     format?: string,
  *     utf8?: bool,
  *     stateless?: bool,
- * }
+ * %A}
  * @psalm-type ImportConfig = array{
  *     resource: string,
  *     type?: string,
@@ -234,11 +237,12 @@ namespace Symfony\Component\Routing\Loader\Configurator;
  *     host?: string|array<string,string>,
  *     schemes?: string|list<string>,
  *     condition?: string,
+ *     add_condition?: string,
  *     locale?: string,
  *     format?: string,
  *     utf8?: bool,
  *     stateless?: bool,
- * }
+ * %A}
  * @psalm-type AliasConfig = array{
  *     alias: string,
  *     deprecated?: array{package:string, version:string, message?:string},

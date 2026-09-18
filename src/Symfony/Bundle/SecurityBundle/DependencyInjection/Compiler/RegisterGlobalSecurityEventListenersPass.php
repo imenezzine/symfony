@@ -17,10 +17,12 @@ use Symfony\Component\Security\Core\AuthenticationEvents;
 use Symfony\Component\Security\Core\Event\AuthenticationSuccessEvent;
 use Symfony\Component\Security\Http\Event\AuthenticationTokenCreatedEvent;
 use Symfony\Component\Security\Http\Event\CheckPassportEvent;
+use Symfony\Component\Security\Http\Event\CheckRefreshedUserEvent;
 use Symfony\Component\Security\Http\Event\InteractiveLoginEvent;
 use Symfony\Component\Security\Http\Event\LoginFailureEvent;
 use Symfony\Component\Security\Http\Event\LoginSuccessEvent;
 use Symfony\Component\Security\Http\Event\LogoutEvent;
+use Symfony\Component\Security\Http\Event\OidcAuthorizationRequestEvent;
 use Symfony\Component\Security\Http\Event\TokenDeauthenticatedEvent;
 use Symfony\Component\Security\Http\SecurityEvents;
 
@@ -45,7 +47,9 @@ class RegisterGlobalSecurityEventListenersPass implements CompilerPassInterface
         AuthenticationTokenCreatedEvent::class,
         AuthenticationSuccessEvent::class,
         InteractiveLoginEvent::class,
+        CheckRefreshedUserEvent::class,
         TokenDeauthenticatedEvent::class,
+        OidcAuthorizationRequestEvent::class,
 
         // When events are registered by their name
         AuthenticationEvents::AUTHENTICATION_SUCCESS,

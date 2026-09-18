@@ -11,11 +11,17 @@
 
 namespace Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler;
 
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Cache\Marshaller\MarshallerInterface;
 use Symfony\Component\HttpFoundation\Session\Storage\Handler\AbstractSessionHandler;
+use Symfony\Component\HttpFoundation\Session\Storage\Handler\ClearableSessionHandlerInterface;
 use Symfony\Component\HttpFoundation\Session\Storage\Handler\MarshallingSessionHandler;
+
+abstract class ClearableAbstractSessionHandler extends AbstractSessionHandler implements ClearableSessionHandlerInterface
+{
+}
 
 /**
  * @author Ahmed TAILOULOUTE <ahmed.tailouloute@gmail.com>
@@ -83,6 +89,20 @@ class MarshallingSessionHandlerTest extends TestCase
         $this->assertEquals('unmarshalled_data', $result);
     }
 
+    public function testReadReturnsEmptyStringWhenUnmarshallingFails()
+    {
+        $marshaller = $this->createMock(MarshallerInterface::class);
+        $marshallingSessionHandler = new MarshallingSessionHandler($this->handler, $marshaller);
+
+        $this->handler->expects($this->once())->method('read')->with('session_id')
+            ->willReturn('data');
+        $marshaller->expects($this->once())->method('unmarshall')->with('data')
+            ->willThrowException(new \DomainException('Failed to decrypt value.'))
+        ;
+
+        $this->assertSame('', $marshallingSessionHandler->read('session_id'));
+    }
+
     public function testWrite()
     {
         $marshaller = $this->createMock(MarshallerInterface::class);
@@ -117,5 +137,25 @@ class MarshallingSessionHandlerTest extends TestCase
             ->with('session_id', 'data')->willReturn(true);
 
         $marshallingSessionHandler->updateTimestamp('session_id', 'data');
+    }
+
+    #[AllowMockObjectsWithoutExpectations]
+    public function testClearForwardsToInnerHandler()
+    {
+        $clearableHandler = $this->createMock(ClearableAbstractSessionHandler::class);
+        $clearableHandler->expects($this->once())->method('clear');
+        $marshallingSessionHandler = new MarshallingSessionHandler($clearableHandler, $this->createStub(MarshallerInterface::class));
+
+        $marshallingSessionHandler->clear();
+    }
+
+    #[AllowMockObjectsWithoutExpectations]
+    public function testClearThrowsWhenInnerHandlerNotClearable()
+    {
+        $nonClearableHandler = $this->createStub(AbstractSessionHandler::class);
+        $marshallingSessionHandler = new MarshallingSessionHandler($nonClearableHandler, $this->createStub(MarshallerInterface::class));
+
+        $this->expectException(\LogicException::class);
+        $marshallingSessionHandler->clear();
     }
 }

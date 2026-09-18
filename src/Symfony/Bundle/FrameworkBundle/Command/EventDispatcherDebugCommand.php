@@ -22,7 +22,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
-use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use Symfony\Contracts\EventDispatcher\ListenerIntrospectionInterface;
 use Symfony\Contracts\Service\ServiceProviderInterface;
 
 /**
@@ -106,7 +106,7 @@ class EventDispatcherDebugCommand extends Command
             } else {
                 // if there is no direct match, try find partial matches
                 $events = $this->searchForEvent($dispatcher, $event);
-                if (0 === \count($events)) {
+                if (!$events) {
                     $io->getErrorStyle()->warning(\sprintf('The event "%s" does not have any registered listeners.', $event));
 
                     return 0;
@@ -157,7 +157,7 @@ class EventDispatcherDebugCommand extends Command
         }
     }
 
-    private function searchForEvent(EventDispatcherInterface $dispatcher, string $needle): array
+    private function searchForEvent(ListenerIntrospectionInterface $dispatcher, string $needle): array
     {
         $output = [];
         $lcNeedle = strtolower($needle);

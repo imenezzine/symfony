@@ -41,6 +41,8 @@ class TransportFactory implements TransportFactoryInterface
         $packageSuggestion = '';
         if (str_starts_with($dsn, 'amqp://') || str_starts_with($dsn, 'amqps://')) {
             $packageSuggestion = ' Run "composer require symfony/amqp-messenger" to install AMQP transport.';
+        } elseif (str_starts_with($dsn, 'amp-sqlite://') || str_starts_with($dsn, 'amp-mysql://') || str_starts_with($dsn, 'amp-postgres://')) {
+            $packageSuggestion = ' Run "composer require symfony/amp-sql-messenger" to install AMPHP SQL transport.';
         } elseif (str_starts_with($dsn, 'doctrine://')) {
             $packageSuggestion = ' Run "composer require symfony/doctrine-messenger" to install Doctrine transport.';
         } elseif (str_starts_with($dsn, 'redis://') || str_starts_with($dsn, 'rediss://')) {
@@ -51,6 +53,8 @@ class TransportFactory implements TransportFactoryInterface
             $packageSuggestion = ' Run "composer require symfony/amazon-sqs-messenger" to install Amazon SQS transport.';
         } elseif (str_starts_with($dsn, 'beanstalkd://')) {
             $packageSuggestion = ' Run "composer require symfony/beanstalkd-messenger" to install Beanstalkd transport.';
+        } elseif (str_starts_with($dsn, 'mongodb://') || str_starts_with($dsn, 'mongodb+srv://')) {
+            $packageSuggestion = ' Run "composer require symfony/mongodb-messenger" to install MongoDB transport.';
         }
 
         if ($dsn = $this->santitizeDsn($dsn)) {

@@ -28,6 +28,7 @@ use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
 use Symfony\Component\HttpKernel\Event\ControllerArgumentsEvent;
 use Symfony\Component\HttpKernel\Event\ControllerEvent;
 use Symfony\Component\HttpKernel\EventListener\ControllerAttributesListener;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NearMissValueResolverException;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -36,6 +37,7 @@ use Symfony\Component\HttpKernel\Tests\Fixtures\Attribute\Buz;
 use Symfony\Component\HttpKernel\Tests\Fixtures\Controller\BasicTypesController;
 use Symfony\Component\HttpKernel\Tests\Fixtures\Controller\ControllerAttributesController;
 use Symfony\Component\PropertyInfo\Extractor\ReflectionExtractor;
+use Symfony\Component\Serializer\Encoder\DecoderInterface;
 use Symfony\Component\Serializer\Encoder\JsonEncoder;
 use Symfony\Component\Serializer\Encoder\XmlEncoder;
 use Symfony\Component\Serializer\Exception\ExtraAttributesException;
@@ -332,6 +334,7 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('title: This value should be of type string.', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertSame(422, $e->getStatusCode());
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
@@ -429,6 +432,7 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('email: This value should be of type string.', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
             $this->assertSame('This value should be of type string.', $validationFailedException->getViolations()[0]->getMessage());
@@ -593,10 +597,96 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('price: This value should be of type float.', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
             $this->assertSame('This value should be of type float.', $validationFailedException->getViolations()[0]->getMessage());
         }
+    }
+
+    public function testQueryStringKeyDeserializesJsonPayload()
+    {
+        $serializer = new Serializer([new ObjectNormalizer(null, null, null, new ReflectionExtractor())], ['json' => new JsonEncoder()]);
+        $resolver = new RequestPayloadValueResolver($serializer);
+
+        $argument = new ArgumentMetadata('valid', NestedQueryPayload::class, false, false, null, false, [
+            MapQueryString::class => new MapQueryString(key: 'foo'),
+        ]);
+
+        $request = Request::create('/', 'GET', ['foo' => '{"poo":1}']);
+
+        $kernel = $this->createStub(HttpKernelInterface::class);
+        $arguments = $resolver->resolve($request, $argument);
+        $event = new ControllerArgumentsEvent($kernel, static fn () => null, $arguments, $request, HttpKernelInterface::MAIN_REQUEST);
+
+        $resolver->onKernelControllerArguments($event);
+
+        $resolved = $event->getArguments()[0];
+        $this->assertInstanceOf(NestedQueryPayload::class, $resolved);
+        $this->assertSame(1, $resolved->poo);
+    }
+
+    public function testQueryStringKeyJsonAndBracketNotationAreEquivalent()
+    {
+        $serializer = new Serializer([new ObjectNormalizer(null, null, null, new ReflectionExtractor())], ['json' => new JsonEncoder()]);
+        $resolver = new RequestPayloadValueResolver($serializer);
+
+        $argument = new ArgumentMetadata('valid', NestedQueryPayload::class, false, false, null, false, [
+            MapQueryString::class => new MapQueryString(key: 'foo'),
+        ]);
+
+        $kernel = $this->createStub(HttpKernelInterface::class);
+
+        $resolve = static function (array $query) use ($resolver, $argument, $kernel) {
+            $request = Request::create('/', 'GET', $query);
+            $event = new ControllerArgumentsEvent($kernel, static fn () => null, $resolver->resolve($request, $argument), $request, HttpKernelInterface::MAIN_REQUEST);
+            $resolver->onKernelControllerArguments($event);
+
+            return $event->getArguments();
+        };
+
+        $this->assertEquals($resolve(['foo' => ['poo' => '1']]), $resolve(['foo' => '{"poo":1}']));
+    }
+
+    public function testQueryStringKeyWithInvalidJson()
+    {
+        $serializer = new Serializer([new ObjectNormalizer(null, null, null, new ReflectionExtractor())], ['json' => new JsonEncoder()]);
+        $resolver = new RequestPayloadValueResolver($serializer);
+
+        $argument = new ArgumentMetadata('valid', NestedQueryPayload::class, false, false, null, false, [
+            MapQueryString::class => new MapQueryString(key: 'foo'),
+        ]);
+
+        $request = Request::create('/', 'GET', ['foo' => '{"poo":1']);
+
+        $kernel = $this->createStub(HttpKernelInterface::class);
+        $arguments = $resolver->resolve($request, $argument);
+        $event = new ControllerArgumentsEvent($kernel, static fn () => null, $arguments, $request, HttpKernelInterface::MAIN_REQUEST);
+
+        $this->expectException(BadRequestHttpException::class);
+        $this->expectExceptionMessage('Query parameter "foo" contains invalid "json" data.');
+
+        $resolver->onKernelControllerArguments($event);
+    }
+
+    public function testQueryStringWithoutKeyIgnoresJsonLookingValues()
+    {
+        $serializer = new Serializer([new ObjectNormalizer(null, null, null, new ReflectionExtractor())], ['json' => new JsonEncoder()]);
+        $resolver = new RequestPayloadValueResolver($serializer);
+
+        $argument = new ArgumentMetadata('valid', QueryPayloadWithStringProperty::class, false, false, null, false, [
+            MapQueryString::class => new MapQueryString(),
+        ]);
+
+        $request = Request::create('/', 'GET', ['foo' => '{"poo":1}']);
+
+        $kernel = $this->createStub(HttpKernelInterface::class);
+        $arguments = $resolver->resolve($request, $argument);
+        $event = new ControllerArgumentsEvent($kernel, static fn () => null, $arguments, $request, HttpKernelInterface::MAIN_REQUEST);
+
+        $resolver->onKernelControllerArguments($event);
+
+        $this->assertSame('{"poo":1}', $event->getArguments()[0]->foo);
     }
 
     public function testRequestInputValidationPassed()
@@ -687,6 +777,7 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('price: This value should be of type float.', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
             $this->assertSame('This value should be of type float.', $validationFailedException->getViolations()[0]->getMessage());
@@ -869,6 +960,92 @@ class RequestPayloadValueResolverTest extends TestCase
         ];
     }
 
+    #[DataProvider('provideStructuredSuffixContext')]
+    public function testPayloadWithStructuredSuffixMediaTypeUsesSuffixFormat(mixed $acceptFormat, string $contentType, string $content)
+    {
+        $encoders = ['json' => new JsonEncoder(), 'xml' => new XmlEncoder()];
+        $serializer = new Serializer([new ObjectNormalizer()], $encoders);
+        $validator = (new ValidatorBuilder())->getValidator();
+        $resolver = new RequestPayloadValueResolver($serializer, $validator);
+
+        $request = Request::create('/', 'POST', [], [], [], ['CONTENT_TYPE' => $contentType], $content);
+
+        $argument = new ArgumentMetadata('valid', RequestPayload::class, false, false, null, false, [
+            MapRequestPayload::class => new MapRequestPayload(acceptFormat: $acceptFormat),
+        ]);
+
+        $kernel = $this->createStub(HttpKernelInterface::class);
+        $arguments = $resolver->resolve($request, $argument);
+        $event = new ControllerArgumentsEvent($kernel, static function () {}, $arguments, $request, HttpKernelInterface::MAIN_REQUEST);
+
+        $resolver->onKernelControllerArguments($event);
+
+        $this->assertEquals([new RequestPayload(50)], $event->getArguments());
+    }
+
+    public static function provideStructuredSuffixContext(): iterable
+    {
+        yield 'registered +json alias uses the json encoder' => [
+            'acceptFormat' => null,
+            'contentType' => 'application/vnd.api+json',
+            'content' => '{"price": 50}',
+        ];
+
+        yield 'unregistered +json media type uses the json encoder' => [
+            'acceptFormat' => null,
+            'contentType' => 'application/vnd.acme.error+json',
+            'content' => '{"price": 50}',
+        ];
+
+        yield 'registered +xml alias uses the xml encoder' => [
+            'acceptFormat' => null,
+            'contentType' => 'application/hal+xml',
+            'content' => '<?xml version="1.0"?><request><price>50</price></request>',
+        ];
+
+        yield 'acceptFormat matches the alias before normalization' => [
+            'acceptFormat' => 'jsonapi',
+            'contentType' => 'application/vnd.api+json',
+            'content' => '{"price": 50}',
+        ];
+    }
+
+    public function testPayloadFormatSupportedByTheSerializerIsNotNormalized()
+    {
+        $jsonapiDecoder = new class implements DecoderInterface {
+            public function decode(string $data, string $format, array $context = []): mixed
+            {
+                $decoded = json_decode($data, true);
+                $decoded['price'] *= 21;
+
+                return $decoded;
+            }
+
+            public function supportsDecoding(string $format): bool
+            {
+                return 'jsonapi' === $format;
+            }
+        };
+
+        $serializer = new Serializer([new ObjectNormalizer()], ['json' => new JsonEncoder(), 'jsonapi' => $jsonapiDecoder]);
+        $validator = (new ValidatorBuilder())->getValidator();
+        $resolver = new RequestPayloadValueResolver($serializer, $validator);
+
+        $request = Request::create('/', 'POST', [], [], [], ['CONTENT_TYPE' => 'application/vnd.api+json'], '{"price": 50}');
+
+        $argument = new ArgumentMetadata('valid', RequestPayload::class, false, false, null, false, [
+            MapRequestPayload::class => new MapRequestPayload(),
+        ]);
+
+        $kernel = $this->createStub(HttpKernelInterface::class);
+        $arguments = $resolver->resolve($request, $argument);
+        $event = new ControllerArgumentsEvent($kernel, static function () {}, $arguments, $request, HttpKernelInterface::MAIN_REQUEST);
+
+        $resolver->onKernelControllerArguments($event);
+
+        $this->assertEquals([new RequestPayload(1050)], $event->getArguments());
+    }
+
     #[DataProvider('provideValidationGroupsOnManyTypes')]
     public function testValidationGroupsPassed(string $method, ValueResolver $attribute)
     {
@@ -918,6 +1095,7 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('title: This value is too short. It should have 10 characters or more.', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
             $this->assertSame('title', $validationFailedException->getViolations()[0]->getPropertyPath());
@@ -983,6 +1161,7 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('Page is invalid', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertSame(400, $e->getStatusCode());
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
@@ -1014,6 +1193,7 @@ class RequestPayloadValueResolverTest extends TestCase
             $resolver->onKernelControllerArguments($event);
             $this->fail(\sprintf('Expected "%s" to be thrown.', HttpException::class));
         } catch (HttpException $e) {
+            $this->assertSame('title: This value should be of type string.', $e->getMessage());
             $validationFailedException = $e->getPrevious();
             $this->assertSame(400, $e->getStatusCode());
             $this->assertInstanceOf(ValidationFailedException::class, $validationFailedException);
@@ -1526,6 +1706,20 @@ interface SerializerDenormalizer extends SerializerInterface, DenormalizerInterf
 class QueryPayload
 {
     public function __construct(public readonly float $page)
+    {
+    }
+}
+
+class NestedQueryPayload
+{
+    public function __construct(public readonly int $poo)
+    {
+    }
+}
+
+class QueryPayloadWithStringProperty
+{
+    public function __construct(public readonly string $foo)
     {
     }
 }

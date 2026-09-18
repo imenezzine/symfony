@@ -22,6 +22,7 @@ use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Kernel\ServicesBundle;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Security\Http\HttpUtils;
 
 class AddSessionDomainConstraintPassTest extends TestCase
 {
@@ -93,12 +94,23 @@ class AddSessionDomainConstraintPassTest extends TestCase
         $utils = $container->get('security.http_utils');
         $request = Request::create('/', 'get');
 
-        $this->assertTrue($utils->createRedirectResponse($request, 'https://symfony.com/blog')->isRedirect('https://symfony.com/blog'));
-        $this->assertTrue($utils->createRedirectResponse($request, 'https://www.symfony.com/blog')->isRedirect('https://www.symfony.com/blog'));
+        $this->assertTrue($utils->createRedirectResponse($request, 'https://symfony.com/blog')->isRedirect('http://localhost/'));
+        $this->assertTrue($utils->createRedirectResponse($request, 'https://www.symfony.com/blog')->isRedirect('http://localhost/'));
         $this->assertTrue($utils->createRedirectResponse($request, 'https://localhost/foo')->isRedirect('https://localhost/foo'));
-        $this->assertTrue($utils->createRedirectResponse($request, 'https://www.localhost/foo')->isRedirect('https://www.localhost/foo'));
-        $this->assertTrue($utils->createRedirectResponse($request, 'http://symfony.com/blog')->isRedirect('http://symfony.com/blog'));
-        $this->assertTrue($utils->createRedirectResponse($request, 'http://pirate.com/foo')->isRedirect('http://pirate.com/foo'));
+        $this->assertTrue($utils->createRedirectResponse($request, 'http://localhost/foo')->isRedirect('http://localhost/foo'));
+        $this->assertTrue($utils->createRedirectResponse($request, 'https://www.localhost/foo')->isRedirect('http://localhost/'));
+        $this->assertTrue($utils->createRedirectResponse($request, 'http://symfony.com/blog')->isRedirect('http://localhost/'));
+        $this->assertTrue($utils->createRedirectResponse($request, 'http://pirate.com/foo')->isRedirect('http://localhost/'));
+    }
+
+    public function testNoSessionInjectsCurrentHostConstraint()
+    {
+        $container = new ContainerBuilder();
+        $container->register('security.http_utils', HttpUtils::class);
+
+        (new AddSessionDomainConstraintPass())->process($container);
+
+        $this->assertSame(['{^https?://%%s$}i', null], $container->getDefinition('security.http_utils')->getArguments());
     }
 
     public function testSessionAutoSecure()
@@ -138,19 +150,22 @@ class AddSessionDomainConstraintPassTest extends TestCase
         $container->setParameter('request_listener.http_port', 80);
         $container->setParameter('request_listener.https_port', 443);
 
-        $config = [
-            'framework' => [
-                'csrf_protection' => false,
-                'router' => ['resource' => 'dummy'],
-            ],
-        ];
-
         if (class_exists(ServicesBundle::class)) {
             new ServicesBundle()->getContainerExtension()->load([], $container);
         }
 
+        $config = ['csrf_protection' => false];
+
+        // the router lives in its own bundle since 8.2, and loading FrameworkExtension by hand does not
+        // forward to it; named as a string because the lowest framework-bundle this bundle accepts predates it
+        if (class_exists($routerBundle = 'Symfony\\Component\\Routing\\RouterBundle')) {
+            new $routerBundle()->getContainerExtension()->load([['resource' => 'dummy']], $container);
+        } else {
+            $config['router'] = ['resource' => 'dummy'];
+        }
+
         $ext = new FrameworkExtension();
-        $ext->load($config, $container);
+        $ext->load([$config], $container);
 
         $config = [
             'security' => [

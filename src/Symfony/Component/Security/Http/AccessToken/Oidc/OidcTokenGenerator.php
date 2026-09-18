@@ -21,14 +21,39 @@ use Symfony\Component\Clock\Clock;
 
 class OidcTokenGenerator
 {
+    /**
+     * @var string|list<string>
+     */
+    private readonly string|array $audience;
+
+    /**
+     * RFC 7519 §4.1.3 allows "aud" to hold a single string or a list: the token names every
+     * identifier declared here, and keeps the single-string form when only one is declared,
+     * which is the form providers emit.
+     *
+     * @param string|list<string> $audience The identifiers of the resource server the token is minted for
+     */
     public function __construct(
         private readonly AlgorithmManager $algorithmManager,
         private readonly JWKSet $jwkset,
-        private readonly string $audience,
+        string|array $audience,
         private readonly array $issuers,
         private readonly string $claim = 'sub',
         private readonly ClockInterface $clock = new Clock(),
     ) {
+        $audiences = \is_array($audience) ? array_values($audience) : [$audience];
+
+        if (!$audiences) {
+            throw new \InvalidArgumentException(\sprintf('The "$audience" argument of "%s()" cannot be an empty list.', __METHOD__));
+        }
+
+        foreach ($audiences as $value) {
+            if (!\is_string($value) || '' === $value) {
+                throw new \InvalidArgumentException(\sprintf('The "$audience" argument of "%s()" must be a non-empty string or a list of non-empty strings.', __METHOD__));
+            }
+        }
+
+        $this->audience = 1 === \count($audiences) ? $audiences[0] : $audiences;
     }
 
     public function generate(string $userIdentifier, ?string $algorithmAlias = null, ?string $issuer = null, ?int $ttl = null, ?\DateTimeImmutable $notBefore = null): string
@@ -60,9 +85,8 @@ class OidcTokenGenerator
         }
 
         $jws = $jwsBuilder
-            ->create()
             ->withPayload(json_encode($payload, flags: \JSON_THROW_ON_ERROR))
-            ->addSignature($jwk, ['alg' => $algorithm->name()])
+            ->addSignature($jwk, ['alg' => $algorithm->name(), 'typ' => 'at+jwt']) // https://datatracker.ietf.org/doc/html/rfc9068#section-2.1
             ->build();
 
         $serializer = new CompactSerializer();

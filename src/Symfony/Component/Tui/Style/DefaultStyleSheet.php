@@ -12,12 +12,15 @@
 namespace Symfony\Component\Tui\Style;
 
 use Symfony\Component\Tui\Widget\CancellableLoaderWidget;
+use Symfony\Component\Tui\Widget\CollapsibleWidget;
 use Symfony\Component\Tui\Widget\EditorWidget;
 use Symfony\Component\Tui\Widget\InputWidget;
+use Symfony\Component\Tui\Widget\KeyBindingWidget;
 use Symfony\Component\Tui\Widget\LoaderWidget;
 use Symfony\Component\Tui\Widget\MarkdownWidget;
 use Symfony\Component\Tui\Widget\SelectListWidget;
 use Symfony\Component\Tui\Widget\SettingsListWidget;
+use Symfony\Component\Tui\Widget\TabsWidget;
 
 /**
  * Default TUI stylesheet with base styling rules.
@@ -51,8 +54,20 @@ final class DefaultStyleSheet
             '.columns' => new Style(direction: Direction::Horizontal, gap: 2),
             '.column' => new Style(),
 
+            // KeyBindingWidget
+            KeyBindingWidget::class => new Style(padding: Padding::from([0, 1]), border: Border::all(1)),
+            KeyBindingWidget::class.'::key' => new Style(background: 'gray', bold: true),
+            KeyBindingWidget::class.'::action' => new Style(color: 'gray'),
+            KeyBindingWidget::class.'::global-key' => new Style(background: 'blue', bold: true),
+            KeyBindingWidget::class.'::global-action' => new Style(color: 'gray'),
+
             // CancellableLoaderWidget
             CancellableLoaderWidget::class.':focus' => new Style()->withBold(),
+
+            // CollapsibleWidget
+            CollapsibleWidget::class.'::symbol:focus' => new Style()->withReverse(),
+            CollapsibleWidget::class.'::summary:focus' => new Style()->withReverse(),
+            CollapsibleWidget::class.'::description' => new Style()->withColor('gray'),
 
             // LoaderWidget
             LoaderWidget::class.'::spinner' => new Style()->withColor('cyan'),
@@ -80,6 +95,13 @@ final class DefaultStyleSheet
             SettingsListWidget::class.'::value-selected:focus' => new Style()->withColor('cyan'),
             SettingsListWidget::class.'::description' => new Style()->withColor('gray'),
             SettingsListWidget::class.'::hint' => new Style()->withColor('gray'),
+
+            // TabsWidget
+            TabsWidget::class.'::tab' => new Style()->withColor('gray'),
+            TabsWidget::class.'::tab-active' => new Style()->withBold()->withColor('cyan'),
+            TabsWidget::class.'::tab:focus' => new Style(background: '#253041'),
+            TabsWidget::class.'::tab-active:focus' => new Style()->withBold()->withColor('cyan')->withBackground('#253041'),
+            TabsWidget::class.'::separator' => new Style()->withColor('gray'),
 
             // MarkdownWidget
             MarkdownWidget::class.'::heading' => new Style()->withColor('cyan')->withBold(),

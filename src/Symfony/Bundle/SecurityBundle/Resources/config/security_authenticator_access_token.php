@@ -33,6 +33,8 @@ use Jose\Component\Signature\Algorithm\PS512;
 use Jose\Component\Signature\Algorithm\RS256;
 use Jose\Component\Signature\Algorithm\RS384;
 use Jose\Component\Signature\Algorithm\RS512;
+use Symfony\Bundle\SecurityBundle\Controller\ProtectedResourceMetadataController;
+use Symfony\Bundle\SecurityBundle\Routing\ProtectedResourceMetadataRouteLoader;
 use Symfony\Component\Security\Http\AccessToken\ChainAccessTokenExtractor;
 use Symfony\Component\Security\Http\AccessToken\FormEncodedBodyExtractor;
 use Symfony\Component\Security\Http\AccessToken\HeaderAccessTokenExtractor;
@@ -42,9 +44,17 @@ use Symfony\Component\Security\Http\AccessToken\Oidc\OidcTokenHandler;
 use Symfony\Component\Security\Http\AccessToken\Oidc\OidcUserInfoTokenHandler;
 use Symfony\Component\Security\Http\AccessToken\QueryAccessTokenExtractor;
 use Symfony\Component\Security\Http\Authenticator\AccessTokenAuthenticator;
+use Symfony\Component\Security\Http\Authorization\InsufficientScopeAccessDeniedHandler;
+use Symfony\Component\Security\Http\Authorization\OAuth2ScopeVoter;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 return static function (ContainerConfigurator $container) {
+    $container->parameters()
+        // the protected resource metadata route loader is wired on this parameter, which the
+        // "access_token" firewall factory fills in; it stays empty when no firewall declares one
+        ->set('security.access_token.resource_metadata_paths', [])
+    ;
+
     $container->services()
         ->set('security.access_token_extractor.header', HeaderAccessTokenExtractor::class)
         ->set('security.access_token_extractor.query_string', QueryAccessTokenExtractor::class)
@@ -59,6 +69,31 @@ return static function (ContainerConfigurator $container) {
                 null,
                 null,
                 null,
+                null,
+            ])
+
+        ->set('security.authenticator.access_token.protected_resource_metadata_controller', ProtectedResourceMetadataController::class)
+            ->public()
+            ->args([
+                [],
+            ])
+
+        ->set('security.authenticator.access_token.route_loader', ProtectedResourceMetadataRouteLoader::class)
+            ->args([
+                '%security.access_token.resource_metadata_paths%',
+                'security.access_token.resource_metadata_paths',
+            ])
+            ->tag('routing.route_loader')
+
+        ->set('security.access.oauth2_scope_voter', OAuth2ScopeVoter::class)
+            ->tag('security.voter', ['priority' => 245])
+
+        ->set('security.access_token.access_denied_handler', InsufficientScopeAccessDeniedHandler::class)
+            ->abstract()
+            ->args([
+                abstract_arg('realm'),
+                service('security.access.denied_handler')->nullOnInvalid(),
+                abstract_arg('resource metadata uri'),
             ])
 
         ->set('security.authenticator.access_token.chain_extractor', ChainAccessTokenExtractor::class)
@@ -92,6 +127,7 @@ return static function (ContainerConfigurator $container) {
                 service('logger')->nullOnInvalid(),
                 service('clock'),
                 0,
+                false,
             ])
 
         ->set('security.access_token_handler.oidc_discovery.http_client', HttpClientInterface::class)
@@ -201,6 +237,11 @@ return static function (ContainerConfigurator $container) {
             ->args([
                 service('http_client'),
                 service('logger')->nullOnInvalid(),
+                abstract_arg('audiences'),
+                abstract_arg('issuer'),
+                abstract_arg('claim'),
+                service('clock'),
+                abstract_arg('allowed time drift'),
             ])
 
         ->set('security.access_token_handler.oidc.generator', OidcTokenGenerator::class)

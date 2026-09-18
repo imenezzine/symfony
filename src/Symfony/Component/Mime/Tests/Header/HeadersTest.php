@@ -11,8 +11,11 @@
 
 namespace Symfony\Component\Mime\Tests\Header;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Mime\Exception\RfcComplianceException;
 use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\Group;
 use Symfony\Component\Mime\Header\DateHeader;
 use Symfony\Component\Mime\Header\Headers;
 use Symfony\Component\Mime\Header\IdentificationHeader;
@@ -27,6 +30,23 @@ class HeadersTest extends TestCase
         $headers = new Headers();
         $headers->addMailboxListHeader('From', ['person@domain']);
         $this->assertNotNull($headers->get('From'));
+    }
+
+    public function testAddMailboxListHeaderTakesGroupsAndStrings()
+    {
+        $headers = new Headers();
+        $headers->addMailboxListHeader('To', [$board = new Group('Board', ['chair@example.com']), 'observer@example.com']);
+
+        $this->assertEquals([$board, new Address('observer@example.com')], $headers->get('To')->getAddressList());
+        $this->assertSame('To: Board: chair@example.com;, observer@example.com', $headers->get('To')->toString());
+    }
+
+    public function testAddHeaderTakesAGroup()
+    {
+        $headers = new Headers();
+        $headers->addHeader('To', $group = new Group('undisclosed-recipients'));
+
+        $this->assertEquals([$group], $headers->get('To')->getAddressList());
     }
 
     public function testAddDateHeaderDelegatesToFactory()
@@ -353,5 +373,25 @@ class HeadersTest extends TestCase
 
         $headers->addPathHeader('Return-Path', new Address('some@path', 'any ignored name'));
         $this->assertSame('<some@path>', $headers->get('Return-Path')->getBodyAsString());
+    }
+
+    #[DataProvider('provideHeaderMethods')]
+    public function testInvalidHeaderNameIsRejected(string $method, array $arguments)
+    {
+        $this->expectException(RfcComplianceException::class);
+
+        (new Headers())->$method("X-A\r\nX-Injected: value", ...$arguments);
+    }
+
+    public static function provideHeaderMethods()
+    {
+        yield ['addTextHeader', ['value']];
+        yield ['addParameterizedHeader', ['value', ['param' => 'foo']]];
+        yield ['addMailboxListHeader', [['fabien@symfony.com']]];
+        yield ['addMailboxHeader', ['fabien@symfony.com']];
+        yield ['addPathHeader', ['fabien@symfony.com']];
+        yield ['addDateHeader', [new \DateTimeImmutable()]];
+        yield ['addIdHeader', ['some@id']];
+        yield ['addHeader', ['value']];
     }
 }

@@ -71,6 +71,22 @@ abstract class AbstractNormalizerContextBuilder implements ContextBuilderInterfa
     }
 
     /**
+     * Configures groups whose attributes are excluded, whichever groups are allowed.
+     *
+     * Eg: ['internal']
+     *
+     * @param list<string>|string|null $ignoredGroups
+     */
+    public function withIgnoredGroups(array|string|null $ignoredGroups): static
+    {
+        if (null === $ignoredGroups) {
+            return $this->with(AbstractNormalizer::IGNORED_GROUPS, null);
+        }
+
+        return $this->with(AbstractNormalizer::IGNORED_GROUPS, (array) $ignoredGroups);
+    }
+
+    /**
      * Configures attributes to (de)normalize.
      *
      * For nested structures, this list needs to reflect the object tree.
@@ -172,5 +188,14 @@ abstract class AbstractNormalizerContextBuilder implements ContextBuilderInterfa
     public function withRequireAllProperties(?bool $requireAllProperties = true): static
     {
         return $this->with(AbstractNormalizer::REQUIRE_ALL_PROPERTIES, $requireAllProperties);
+    }
+
+    /**
+     * Configures whether 'Default' and class-short-name groups are added when no
+     * custom group is specified.
+     */
+    public function withEnableDefaultGroups(?bool $enableDefaultGroups): static
+    {
+        return $this->with(AbstractNormalizer::ENABLE_DEFAULT_GROUPS, $enableDefaultGroups);
     }
 }

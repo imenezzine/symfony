@@ -69,6 +69,17 @@ class ConfigDebugCommandTest extends AbstractWebTestCase
 
     #[TestWith([true])]
     #[TestWith([false])]
+    public function testDumpWithBundleRegisteringServicesInBuild(bool $debug)
+    {
+        $tester = $this->createCommandTester($debug);
+        $ret = $tester->execute(['name' => 'framework']);
+
+        $this->assertSame(0, $ret, 'Returns 0 in case of success');
+        $this->assertStringContainsString('secret: test', $tester->getDisplay());
+    }
+
+    #[TestWith([true])]
+    #[TestWith([false])]
     public function testDumpBundleOption(bool $debug)
     {
         $tester = $this->createCommandTester($debug);
@@ -76,6 +87,39 @@ class ConfigDebugCommandTest extends AbstractWebTestCase
 
         $this->assertSame(0, $ret, 'Returns 0 in case of success');
         $this->assertStringContainsString('foo', $tester->getDisplay());
+    }
+
+    #[TestWith([true])]
+    #[TestWith([false])]
+    public function testDumpBundleOptionWithDotInKey(bool $debug)
+    {
+        $tester = $this->createCommandTester($debug);
+        $ret = $tester->execute(['name' => 'TestBundle', 'path' => 'options.option.main']);
+
+        $this->assertSame(0, $ret, 'Returns 0 in case of success');
+        $this->assertStringContainsString('data: foo', $tester->getDisplay());
+    }
+
+    #[TestWith([true])]
+    #[TestWith([false])]
+    public function testDumpBundleOptionWithDotInKeyResolvesEachKey(bool $debug)
+    {
+        $tester = $this->createCommandTester($debug);
+        $ret = $tester->execute(['name' => 'TestBundle', 'path' => 'options.option.sub.data']);
+
+        $this->assertSame(0, $ret, 'Returns 0 in case of success');
+        $this->assertStringContainsString('bar', $tester->getDisplay());
+    }
+
+    #[TestWith([true])]
+    #[TestWith([false])]
+    public function testDumpBundleOptionWithUnknownDottedKey(bool $debug)
+    {
+        $tester = $this->createCommandTester($debug);
+        $ret = $tester->execute(['name' => 'TestBundle', 'path' => 'options.option.nope']);
+
+        $this->assertSame(1, $ret);
+        $this->assertStringContainsString('Unable to find configuration for "test.options.option.nope"', $tester->getDisplay());
     }
 
     #[TestWith([true])]
@@ -226,7 +270,9 @@ class ConfigDebugCommandTest extends AbstractWebTestCase
         yield 'name, no debug' => [false, [''], $name];
         yield 'name, debug' => [true, [''], $name];
 
-        $nameWithPath = ['secret', 'router.resource', 'router.utf8', 'router.enabled', 'validation.enabled', 'default_locale'];
+        // the forwarded keys are unset from the framework configuration, so "debug:config framework"
+        // no longer offers them; they are reachable under their own extension name instead
+        $nameWithPath = ['secret', 'session.enabled', 'default_locale'];
         yield 'name with existing path, no debug' => [false, ['framework', ''], $nameWithPath];
         yield 'name with existing path, debug' => [true, ['framework', ''], $nameWithPath];
 

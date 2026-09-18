@@ -35,6 +35,7 @@ class InputDefinition
     private array $options = [];
     private array $negations = [];
     private array $shortcuts = [];
+    private bool $ignoreExtraArguments = false;
 
     /**
      * @param array $definition An array of InputArgument and InputOption instance
@@ -352,6 +353,23 @@ class InputDefinition
     }
 
     /**
+     * Makes the parser stop on the first extra argument instead of throwing,
+     * leaving it and the following tokens available through ArgvInput::getUnparsedTokens().
+     *
+     * On a command, set the flag in configure(): the definition merged with the
+     * application's one is rebuilt from the command's own definition on every run.
+     */
+    public function setIgnoreExtraArguments(bool $ignore = true): void
+    {
+        $this->ignoreExtraArguments = $ignore;
+    }
+
+    public function ignoresExtraArguments(): bool
+    {
+        return $this->ignoreExtraArguments;
+    }
+
+    /**
      * Gets the synopsis.
      */
     public function getSynopsis(bool $short = false): string
@@ -362,6 +380,9 @@ class InputDefinition
             $elements[] = '[options]';
         } elseif (!$short) {
             foreach ($this->getOptions() as $option) {
+                if ($option->isHidden()) {
+                    continue;
+                }
                 $value = '';
                 if ($option->acceptValue()) {
                     $value = \sprintf(
@@ -378,7 +399,7 @@ class InputDefinition
             }
         }
 
-        if (\count($elements) && $this->getArguments()) {
+        if ($elements && $this->getArguments()) {
             $elements[] = '[--]';
         }
 

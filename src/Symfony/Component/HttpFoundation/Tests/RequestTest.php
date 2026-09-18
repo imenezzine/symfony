@@ -39,7 +39,10 @@ class RequestTest extends TestCase
         Request::setTrustedHosts([]);
         Request::setAllowedHttpMethodOverride(null);
         Request::setFactory(null);
-        \Closure::bind(static fn () => self::$formats = null, null, Request::class)();
+        \Closure::bind(static function () {
+            self::$formats = null;
+            self::$trustedHosts = [];
+        }, null, Request::class)();
     }
 
     public function testInitialize()
@@ -622,6 +625,28 @@ b'])]
         ];
     }
 
+    #[DataProvider('getStructuredSuffixFormatProvider')]
+    public function testGetStructuredSuffixFormat(?string $expectedFormat, ?string $mimeType)
+    {
+        $this->assertSame($expectedFormat, Request::getStructuredSuffixFormat($mimeType));
+    }
+
+    public static function getStructuredSuffixFormatProvider()
+    {
+        return [
+            'registered alias resolves to its suffix format' => ['json', 'application/vnd.api+json'],
+            'unregistered media type resolves to its suffix format' => ['json', 'application/vnd.acme.error+json'],
+            'xml suffix' => ['xml', 'application/hal+xml'],
+            'last suffix wins' => ['xml', 'application/foo+bar+xml'],
+            'parameters are ignored' => ['json', 'application/vnd.api+json; charset=utf-8'],
+            'no suffix' => [null, 'application/json'],
+            'unknown suffix' => [null, 'application/foo+bar'],
+            'non-application type' => [null, 'image/svg+xml'],
+            'empty mime type' => [null, ''],
+            'null mime type' => [null, null],
+        ];
+    }
+
     public function testGetUri()
     {
         $server = [];
@@ -1139,6 +1164,10 @@ b'])]
             [['192.0.2.60'],                             '::1',       'for=192.0.2.60;proto=http;by=203.0.113.43',          ['::1']],
             [['2620:0:1cfe:face:b00c::3', '192.0.2.43'], '::1',       'for=192.0.2.43, for="[2620:0:1cfe:face:b00c::3]"',   ['::1']],
             [['2001:db8:cafe::17'],                      '::1',       'for="[2001:db8:cafe::17]:4711',                      ['::1']],
+            [['::ffff:8.8.8.8', '192.0.2.43'],           '::1',       'for=192.0.2.43, for="[::ffff:8.8.8.8]"',             ['::1']],
+            [['::ffff:8.8.8.8', '192.0.2.43'],           '::1',       'for=192.0.2.43, for="[::ffff:8.8.8.8]:4711"',        ['::1']],
+            [['::ffff:8.8.8.8'],                         '::1',       'for="[::ffff:8.8.8.8]"',                             ['::1']],
+            [['::ffff:8.8.8.8'],                         '::1',       'for="[::ffff:8.8.8.8]:4711"',                        ['::1']],
         ];
     }
 
@@ -1190,6 +1219,16 @@ b'])]
 
             // client IP with port
             [['88.88.88.88'], '127.0.0.1', '88.88.88.88:12345, 127.0.0.1', ['127.0.0.1']],
+            // client IPv6 with brackets and port
+            [['2001:db8::1'], '127.0.0.1', '[2001:db8::1]:8080', ['127.0.0.1']],
+
+            // IPv4-mapped IPv6 addresses, with or without brackets and port
+            [['::ffff:8.8.8.8', '88.88.88.88'], '127.0.0.1', '88.88.88.88, [::ffff:8.8.8.8]', ['127.0.0.1']],
+            [['::ffff:8.8.8.8', '88.88.88.88'], '127.0.0.1', '88.88.88.88, [::ffff:8.8.8.8]:4711', ['127.0.0.1']],
+            [['0:0:0:0:0:ffff:8.8.8.8', '88.88.88.88'], '127.0.0.1', '88.88.88.88, 0:0:0:0:0:ffff:8.8.8.8', ['127.0.0.1']],
+            [['::ffff:8.8.8.8'], '127.0.0.1', '[::ffff:8.8.8.8]', ['127.0.0.1']],
+            [['::ffff:8.8.8.8'], '127.0.0.1', '[::ffff:8.8.8.8]:4711', ['127.0.0.1']],
+            [['0:0:0:0:0:ffff:8.8.8.8'], '127.0.0.1', '0:0:0:0:0:ffff:8.8.8.8', ['127.0.0.1']],
 
             // invalid forwarded IP is ignored
             [['88.88.88.88'], '127.0.0.1', 'unknown,88.88.88.88', ['127.0.0.1']],
@@ -2248,6 +2287,105 @@ b'])]
         $this->assertSame('localhost', $request->getHost());
     }
 
+    public function testSetTrustedHostsKeepsPatternsIndependent()
+    {
+        Request::setTrustedHosts(['^(a)\.example\.com$', '^(b)\.\1\.example\.com$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'b.b.example.com');
+        $this->assertSame('b.b.example.com', $request->getHost());
+    }
+
+    public function testTrustedHostsAreNotAccumulated()
+    {
+        Request::setTrustedHosts(['^[a-z]+\.example\.com$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'a.example.com');
+        $this->assertSame('a.example.com', $request->getHost());
+        $request->headers->set('host', 'b.example.com');
+        $this->assertSame('b.example.com', $request->getHost());
+
+        $this->assertSame([], (new \ReflectionProperty(Request::class, 'trustedHosts'))->getValue());
+    }
+
+    public function testTrustedHostsAreNotMatchedLoosely()
+    {
+        Request::setTrustedHosts(['^123$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', '123');
+        $this->assertSame('123', $request->getHost());
+
+        $request = Request::create('/');
+        $request->headers->set('host', '0123');
+
+        $this->expectException(SuspiciousOperationException::class);
+        $this->expectExceptionMessage('Untrusted Host "0123".');
+
+        $request->getHost();
+    }
+
+    public function testTrustedHostsWithManyPatterns()
+    {
+        $hostPatterns = [];
+        for ($i = 0; $i < 5000; ++$i) {
+            $hostPatterns[] = '^customer-'.$i.'\.[a-z]+\.example\.com$';
+        }
+        Request::setTrustedHosts($hostPatterns);
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'customer-0.eu.example.com');
+        $this->assertSame('customer-0.eu.example.com', $request->getHost());
+        $request->headers->set('host', 'customer-4999.eu.example.com');
+        $this->assertSame('customer-4999.eu.example.com', $request->getHost());
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'evil.com');
+
+        $this->expectException(SuspiciousOperationException::class);
+        $this->expectExceptionMessage('Untrusted Host "evil.com".');
+
+        $request->getHost();
+    }
+
+    public function testTrustedHostsWithManyConstantPatterns()
+    {
+        $hostPatterns = [];
+        for ($i = 0; $i < 5000; ++$i) {
+            $hostPatterns[] = '^customer-'.$i.'\.example\.com$';
+        }
+        Request::setTrustedHosts($hostPatterns);
+
+        $trustedHostsRegexps = new \ReflectionProperty(Request::class, 'trustedHostsRegexps');
+        $this->assertSame([], $trustedHostsRegexps->getValue());
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'customer-0.example.com');
+        $this->assertSame('customer-0.example.com', $request->getHost());
+        $request->headers->set('host', 'CUSTOMER-4999.EXAMPLE.COM');
+        $this->assertSame('customer-4999.example.com', $request->getHost());
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'evil.com');
+
+        $this->expectException(SuspiciousOperationException::class);
+        $this->expectExceptionMessage('Untrusted Host "evil.com".');
+
+        $request->getHost();
+    }
+
+    public function testTrustedHostsWithMetaCharactersAreMatchedAsRegexps()
+    {
+        Request::setTrustedHosts(['^a.example\.com$', '^customer-\d+\.example\.org$']);
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'axexample.com');
+        $this->assertSame('axexample.com', $request->getHost());
+        $request->headers->set('host', 'customer-42.example.org');
+        $this->assertSame('customer-42.example.org', $request->getHost());
+    }
+
     public function testFactory()
     {
         Request::setFactory(static fn (array $query = [], array $request = [], array $attributes = [], array $cookies = [], array $files = [], array $server = [], $content = null) => new NewRequest());
@@ -3042,6 +3180,21 @@ b'])]
         $this->expectUserDeprecationMessage('Since symfony/http-foundation 8.1: Directly setting property "query" of "Symfony\Component\HttpFoundation\Tests\NewRequest" is deprecated; pass query parameters as a constructor argument or call "initialize()" instead.');
 
         $request->query = new InputBag(['k' => 'v']);
+    }
+
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testPopulatingTrustedHostsIsDeprecated()
+    {
+        Request::setTrustedHosts(['^trusted\.com$']);
+        \Closure::bind(static fn () => self::$trustedHosts = ['untrusted.com'], null, Request::class)();
+
+        $request = Request::create('/');
+        $request->headers->set('host', 'trusted.com');
+
+        $this->expectUserDeprecationMessage('Since symfony/http-foundation 8.2: Populating the "Symfony\Component\HttpFoundation\Request::$trustedHosts" property is deprecated; it has no effect anymore.');
+
+        $this->assertSame('trusted.com', $request->getHost());
     }
 }
 

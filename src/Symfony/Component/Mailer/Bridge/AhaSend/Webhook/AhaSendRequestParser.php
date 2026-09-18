@@ -17,6 +17,7 @@ use Symfony\Component\HttpFoundation\RequestMatcher\IsJsonRequestMatcher;
 use Symfony\Component\HttpFoundation\RequestMatcher\MethodRequestMatcher;
 use Symfony\Component\HttpFoundation\RequestMatcherInterface;
 use Symfony\Component\Mailer\Bridge\AhaSend\RemoteEvent\AhaSendPayloadConverter;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\RemoteEvent\Event\Mailer\AbstractMailerEvent;
 use Symfony\Component\RemoteEvent\Exception\ParseException;
 use Symfony\Component\Webhook\Client\AbstractRequestParser;
@@ -24,6 +25,8 @@ use Symfony\Component\Webhook\Exception\RejectWebhookException;
 
 final class AhaSendRequestParser extends AbstractRequestParser
 {
+    private const TIMESTAMP_TOLERANCE = 300;
+
     public function __construct(
         private readonly AhaSendPayloadConverter $converter,
     ) {
@@ -39,7 +42,10 @@ final class AhaSendRequestParser extends AbstractRequestParser
 
     protected function doParse(Request $request, #[\SensitiveParameter] string $secret): ?AbstractMailerEvent
     {
-        $payload = $request->toArray();
+        if (!$secret) {
+            throw new InvalidArgumentException('A non-empty secret is required.');
+        }
+
         $eventID = $request->headers->get('webhook-id');
         $signature = $request->headers->get('webhook-signature');
         $timestamp = $request->headers->get('webhook-timestamp');
@@ -49,10 +55,14 @@ final class AhaSendRequestParser extends AbstractRequestParser
         if (!is_numeric($timestamp) || \is_float($timestamp + 0) || (int) $timestamp != $timestamp || (int) $timestamp <= 0) {
             throw new RejectWebhookException(406, 'Invalid timestamp.');
         }
+        if (abs(time() - (int) $timestamp) > self::TIMESTAMP_TOLERANCE) {
+            throw new RejectWebhookException(406, 'Timestamp is outside the allowed time window.');
+        }
         $expectedSignature = $this->sign($eventID, $timestamp, $request->getContent(), $secret);
         if (!hash_equals($expectedSignature, $signature)) {
             throw new RejectWebhookException(406, 'Invalid signature');
         }
+        $payload = $request->toArray();
         if (!isset($payload['type']) || !isset($payload['timestamp']) || !(isset($payload['data']))) {
             throw new RejectWebhookException(406, 'Payload is malformed.');
         }
@@ -64,7 +74,7 @@ final class AhaSendRequestParser extends AbstractRequestParser
         }
     }
 
-    private function sign(string $eventID, string $timestamp, string $payload, $secret): string
+    private function sign(string $eventID, string $timestamp, string $payload, #[\SensitiveParameter] string $secret): string
     {
         $signaturePayload = "{$eventID}.{$timestamp}.{$payload}";
         $hash = hash_hmac('sha256', $signaturePayload, $secret);

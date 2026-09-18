@@ -58,9 +58,9 @@ use Symfony\Component\Tui\Widget\Figlet\FigletRenderer;
  *  - InputWidget::setPrompt()
  *
  * Sanitizing widgets (which call StringUtils::stripControlBytes on input):
- * InputWidget::setValue, EditorWidget/EditorDocument, MarkdownWidget,
- * SettingItem::$currentValue, ProgressBarWidget::setMessage,
- * LoaderWidget::setMessage.
+ * InputWidget::setValue and pasted content, EditorWidget/EditorDocument,
+ * MarkdownWidget, SettingItem::$currentValue,
+ * ProgressBarWidget::setMessage, LoaderWidget::setMessage.
  *
  * @experimental
  *
@@ -121,8 +121,7 @@ class TextWidget extends AbstractWidget
      */
     private function renderText(RenderContext $context): array
     {
-        // Replace tabs with 3 spaces
-        $normalizedText = str_replace("\t", '   ', $this->text);
+        $normalizedText = str_replace("\t", str_repeat(' ', AnsiUtils::TAB_WIDTH), $this->text);
 
         // Context already has inner dimensions (chrome subtracted by the Renderer)
         $contentColumns = $context->getColumns();

@@ -48,6 +48,7 @@ class PassConfig
                 new AttributeAutoconfigurationPass(),
                 new ResolveInstanceofConditionalsPass(),
                 new RegisterEnvVarProcessorsPass(),
+                new RemoveMissingDependenciesPass(),
             ],
             -1000 => [new ExtensionCompilerPass()],
         ];
@@ -71,7 +72,9 @@ class PassConfig
             new CheckDefinitionValidityPass(),
             new AutowirePass(false),
             new ServiceLocatorTagPass(),
+            new ResolveLazyProxyPass(),
             new ResolveTaggedIteratorArgumentPass(),
+            new ResolveTaggedClassMapArgumentPass(),
             new ResolveServiceSubscribersPass(),
             new ResolveReferencesToAliasesPass(),
             new ResolveInvalidReferencesPass(),
@@ -265,7 +268,7 @@ class PassConfig
      */
     private function sortPasses(array $passes): array
     {
-        if (0 === \count($passes)) {
+        if (!$passes) {
             return [];
         }
 

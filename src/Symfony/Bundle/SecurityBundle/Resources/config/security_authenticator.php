@@ -21,9 +21,11 @@ use Symfony\Component\Security\Http\Authenticator\JsonLoginAuthenticator;
 use Symfony\Component\Security\Http\Authenticator\RemoteUserAuthenticator;
 use Symfony\Component\Security\Http\Authenticator\X509Authenticator;
 use Symfony\Component\Security\Http\Event\CheckPassportEvent;
+use Symfony\Component\Security\Http\EventListener\AuthenticationProofsListener;
 use Symfony\Component\Security\Http\EventListener\CheckCredentialsListener;
 use Symfony\Component\Security\Http\EventListener\LoginThrottlingListener;
 use Symfony\Component\Security\Http\EventListener\PasswordMigratingListener;
+use Symfony\Component\Security\Http\EventListener\RefreshedUserCheckerListener;
 use Symfony\Component\Security\Http\EventListener\SessionStrategyListener;
 use Symfony\Component\Security\Http\EventListener\UserCheckerListener;
 use Symfony\Component\Security\Http\EventListener\UserProviderListener;
@@ -92,6 +94,18 @@ return static function (ContainerConfigurator $container) {
             ->abstract()
             ->args([
                 abstract_arg('user checker'),
+            ])
+
+        ->set('security.listener.user_checker_on_refresh', RefreshedUserCheckerListener::class)
+            ->abstract()
+            ->args([
+                abstract_arg('user checker'),
+            ])
+
+        ->set('security.listener.authentication_proofs', AuthenticationProofsListener::class)
+            ->abstract()
+            ->args([
+                service('clock')->nullOnInvalid(),
             ])
 
         ->set('security.listener.session', SessionStrategyListener::class)

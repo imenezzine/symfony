@@ -16,12 +16,15 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\ArgumentResolver\ArgumentResolver;
+use Symfony\Component\Console\ArgumentResolver\ValueResolver\ServiceValueResolver;
 use Symfony\Component\Console\ArgumentResolver\ValueResolver\ValueResolverInterface;
 use Symfony\Component\Console\Attribute\Argument;
+use Symfony\Component\Console\Attribute\Ask;
 use Symfony\Component\Console\Attribute\MapDateTime;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Attribute\Reflection\ReflectionMember;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Command\SignalableCommandInterface;
 use Symfony\Component\Console\Completion\CompletionInput;
 use Symfony\Component\Console\Completion\CompletionSuggestions;
 use Symfony\Component\Console\Completion\Suggestion;
@@ -34,10 +37,14 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\Console\Tester\ApplicationTester;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Console\Tests\Fixtures\InvokableTestCommand;
 use Symfony\Component\Console\Tests\Fixtures\InvokableWithCustomValidatorTestCommand;
 use Symfony\Component\Console\Tests\Fixtures\InvokableWithInputFileAndConstraintsTestCommand;
+use Symfony\Component\Console\Tests\Fixtures\InvokableWithInputFilesVariadicTestCommand;
+use Symfony\Component\Console\Tests\Fixtures\InvokableWithServiceArgumentDuringInteractTestCommand;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 
 class InvokableCommandTest extends TestCase
 {
@@ -91,6 +98,31 @@ class InvokableCommandTest extends TestCase
         self::assertSame(['ROLE_ADMIN', 'ROLE_USER'], array_map(static fn (Suggestion $s) => $s->getValue(), $suggestions->getValueSuggestions()));
     }
 
+    public function testCommandInputDescriptionFromCallable()
+    {
+        $command = new Command('foo');
+        $command->setCode(static fn (
+            #[Argument(description: [self::class, 'generateBioDescription'])] string $bio = '',
+            #[Option(description: [self::class, 'generateBioDescription'])] string $summary = '',
+        ): int => 0);
+
+        self::assertSame('Generated bio description', $command->getDefinition()->getArgument('bio')->getDescription());
+        self::assertSame('Generated bio description', $command->getDefinition()->getOption('summary')->getDescription());
+    }
+
+    public function testCommandInputDescriptionIsNeverResolvedAsCallable()
+    {
+        $command = new Command('foo');
+        $command->setCode(static fn (
+            // "define" is the name of a PHP function, it must still be taken as a plain description
+            #[Argument(description: 'define')] string $bio = '',
+            #[Option(description: 'define')] string $summary = '',
+        ): int => 0);
+
+        self::assertSame('define', $command->getDefinition()->getArgument('bio')->getDescription());
+        self::assertSame('define', $command->getDefinition()->getOption('summary')->getDescription());
+    }
+
     public function testCommandInputOptionDefinition()
     {
         $command = new Command('foo');
@@ -101,6 +133,8 @@ class InvokableCommandTest extends TestCase
             #[Option(description: 'User groups')] array $groups = [],
             #[Option(suggestedValues: [self::class, 'getSuggestedRoles'])] array $roles = ['ROLE_USER'],
             #[Option] string|bool $opt = false,
+            #[Option(deprecated: true)] bool $old = false,
+            #[Option(hidden: true)] ?string $secret = null,
         ): int {
             \assert(null !== $this); // so PHP CS Fixer knows this callback is actually coupled with `$this` and `static_lambda` rule shall not be applied
 
@@ -153,6 +187,14 @@ class InvokableCommandTest extends TestCase
         self::assertTrue($optInputOption->isValueOptional());
         self::assertFalse($optInputOption->isNegatable());
         self::assertFalse($optInputOption->getDefault());
+
+        $oldInputOption = $command->getDefinition()->getOption('old');
+        self::assertTrue($oldInputOption->isDeprecated());
+        self::assertFalse($oldInputOption->isHidden());
+
+        $secretInputOption = $command->getDefinition()->getOption('secret');
+        self::assertFalse($secretInputOption->isDeprecated());
+        self::assertTrue($secretInputOption->isHidden());
     }
 
     public function testEnumArgument()
@@ -235,6 +277,59 @@ class InvokableCommandTest extends TestCase
         self::expectExceptionMessage('The value "incorrect" is not valid for the "enum" option. Supported values are "image", "video".');
 
         $command->run(new ArrayInput(['--enum' => 'incorrect']), new NullOutput());
+    }
+
+    public function testNumericArgumentIsConvertedOrRejected()
+    {
+        $command = new Command('foo');
+        $command->setCode(static function (#[Argument] int $count, #[Argument] float $ratio = 1.0) use (&$received): int {
+            $received = [$count, $ratio];
+
+            return Command::SUCCESS;
+        });
+
+        $command->run(new ArrayInput(['count' => '3', 'ratio' => '1.5']), new NullOutput());
+
+        self::assertSame([3, 1.5], $received);
+
+        $command->run(new ArrayInput(['count' => '007', 'ratio' => '1e3']), new NullOutput());
+
+        self::assertSame([7, 1000.0], $received);
+
+        self::expectException(InvalidArgumentException::class);
+        self::expectExceptionMessage('The value "abc" is not valid for the "count" argument. Expected a value of type "int".');
+
+        $command->run(new ArrayInput(['count' => 'abc']), new NullOutput());
+    }
+
+    public function testNumericOptionIsConvertedOrRejected()
+    {
+        $command = new Command('foo');
+        $command->setCode(static function (#[Option] float $ratio = 1.0) use (&$received): int {
+            $received = $ratio;
+
+            return Command::SUCCESS;
+        });
+
+        $command->run(new ArrayInput(['--ratio' => '1.5']), new NullOutput());
+
+        self::assertSame(1.5, $received);
+
+        self::expectException(InvalidOptionException::class);
+        self::expectExceptionMessage('The value "half" is not valid for the "ratio" option. Expected a value of type "float".');
+
+        $command->run(new ArrayInput(['--ratio' => 'half']), new NullOutput());
+    }
+
+    public function testAskDefaultIsRejectedForArrayArgument()
+    {
+        $command = new Command('foo');
+        $command->setCode(static function (#[Argument] #[Ask('Add a value', default: 0)] array $values) {});
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The "Symfony\Component\Console\Attribute\Ask::$default" value is not supported for the array "$values"');
+
+        $command->getDefinition();
     }
 
     public function testExecuteHasPriorityOverInvokeMethod()
@@ -481,6 +576,119 @@ class InvokableCommandTest extends TestCase
         $command->run(new ArrayInput([]), new NullOutput());
     }
 
+    public function testServiceArgumentIsResolvedWhenCommandIsInvokedByAbbreviation()
+    {
+        $service = new \stdClass();
+
+        $application = new Application();
+        $application->setArgumentResolver(new ArgumentResolver([
+            new ServiceValueResolver(new ServiceLocator([
+                'test:method' => static fn () => new ServiceLocator([
+                    's' => static fn () => $service,
+                ]),
+            ])),
+        ]));
+
+        $command = new Command('test:method');
+        $command->setCode(static function (\stdClass $s) use ($service): int {
+            Assert::assertSame($service, $s);
+
+            return 0;
+        });
+
+        $application->addCommand($command);
+        $application->setAutoExit(false);
+
+        // "t:m" is an abbreviation resolved by Application::find() to "test:method"; the service locator
+        // registered by RegisterCommandArgumentLocatorsPass is only keyed by the canonical command name,
+        // so the resolver must not key its lookup off the raw, still-abbreviated user input.
+        $tester = new ApplicationTester($application);
+        $tester->run(['command' => 't:m']);
+
+        $tester->assertCommandIsSuccessful();
+    }
+
+    public function testServiceArgumentIsResolvedDuringInteractWhenCommandIsInvokedByAbbreviation()
+    {
+        $application = new Application();
+        $application->setArgumentResolver(new ArgumentResolver([
+            new ServiceValueResolver(new ServiceLocator([
+                'test:method' => static fn () => new ServiceLocator([
+                    's' => static fn () => new \stdClass(),
+                ]),
+            ])),
+        ]));
+
+        $command = new Command('test:method');
+        $command->setCode(new InvokableWithServiceArgumentDuringInteractTestCommand());
+
+        $application->addCommand($command);
+        $application->setAutoExit(false);
+
+        // The #[Interact] method runs before Command::run() gets a chance to validate its input, so the
+        // "command" argument normalization must happen early enough to also cover this resolution pass.
+        $tester = new ApplicationTester($application);
+        $tester->run(['command' => 't:m'], ['interactive' => true]);
+
+        $tester->assertCommandIsSuccessful();
+    }
+
+    public function testNullableHelpersInjection()
+    {
+        $application = new Application();
+
+        $command = new Command('foo');
+        $command->setCode(static function (
+            ?InputInterface $input,
+            ?OutputInterface $output,
+            ?Cursor $cursor,
+            ?SymfonyStyle $io,
+            ?Application $app,
+            ?Command $cmd,
+            #[Argument] ?string $name = null,
+            #[Option] ?string $format = null,
+        ) use ($command, $application): int {
+            Assert::assertInstanceOf(InputInterface::class, $input);
+            Assert::assertInstanceOf(OutputInterface::class, $output);
+            Assert::assertInstanceOf(Cursor::class, $cursor);
+            Assert::assertInstanceOf(SymfonyStyle::class, $io);
+            Assert::assertSame($application, $app);
+            Assert::assertSame($command, $cmd);
+            Assert::assertSame('test', $name);
+            Assert::assertSame('json', $format);
+
+            return 0;
+        });
+
+        $application->addCommand($command);
+
+        $tester = new CommandTester($command);
+        $tester->execute(['name' => 'test', '--format' => 'json']);
+
+        $tester->assertCommandIsSuccessful();
+    }
+
+    public function testNullableApplicationInjectionWithoutApplication()
+    {
+        $command = new Command('foo');
+        $command->setCode(static function (
+            ?Application $app,
+            #[Argument] ?string $name = null,
+            #[Option] ?string $format = null,
+        ): int {
+            Assert::assertNull($app);
+            Assert::assertSame('test', $name);
+            Assert::assertSame('json', $format);
+
+            return 0;
+        });
+
+        $tester = new CommandTester($command);
+        $tester->execute(['name' => 'test', '--format' => 'json']);
+
+        $tester->assertCommandIsSuccessful();
+    }
+
     public function testDefaultArgumentResolversWithoutApplication()
     {
         $command = new Command('foo');
@@ -578,6 +786,11 @@ class InvokableCommandTest extends TestCase
         return ['ROLE_ADMIN', 'ROLE_USER'];
     }
 
+    public static function generateBioDescription(): string
+    {
+        return 'Generated bio description';
+    }
+
     public function testAskWithInputFileAndConstraints()
     {
         if (!\extension_loaded('fileinfo')) {
@@ -602,6 +815,28 @@ class InvokableCommandTest extends TestCase
         }
     }
 
+    public function testAskWithVariadicInputFilesCollectsAndStacks()
+    {
+        $a = sys_get_temp_dir().'/sf_input_files_a_'.uniqid().'.txt';
+        $b = sys_get_temp_dir().'/sf_input_files_b_'.uniqid().'.txt';
+        file_put_contents($a, 'a');
+        file_put_contents($b, 'b');
+
+        try {
+            $tester = new CommandTester(new InvokableWithInputFilesVariadicTestCommand());
+            // First answer drops two files at once, the second stacks one more, an empty answer ends.
+            $tester->setInputs(["$a $b", $a, '']);
+            $tester->execute([], ['interactive' => true]);
+            $tester->assertCommandIsSuccessful();
+
+            self::assertStringContainsString('Provide files:', $tester->getDisplay());
+            self::assertStringContainsString('Count: 3', $tester->getDisplay());
+        } finally {
+            @unlink($a);
+            @unlink($b);
+        }
+    }
+
     public function testAskWithCustomValidatorIsNotOverwritten()
     {
         $tester = new CommandTester(new InvokableWithCustomValidatorTestCommand());
@@ -612,6 +847,59 @@ class InvokableCommandTest extends TestCase
         self::assertStringContainsString('Enter a value:', $tester->getDisplay());
         self::assertStringContainsString('Value must be "valid"', $tester->getDisplay());
         self::assertStringContainsString('Value: valid', $tester->getDisplay());
+    }
+
+    public function testSignalsOfAnInvokableWrappedInAClosure()
+    {
+        $invokable = new class implements SignalableCommandInterface {
+            public array $handled = [];
+
+            public function __invoke(): int
+            {
+                return 0;
+            }
+
+            public function run(): int
+            {
+                return 0;
+            }
+
+            public function getSubscribedSignals(): array
+            {
+                return [1, 2];
+            }
+
+            public function handleSignal(int $signal, int|false $previousExitCode = 0): int|false
+            {
+                $this->handled[] = $signal;
+
+                return 3;
+            }
+        };
+
+        foreach ([\Closure::fromCallable($invokable), \Closure::fromCallable([$invokable, 'run']), $invokable->run(...)] as $code) {
+            $command = new Command('signal');
+            $command->setCode($code);
+
+            $this->assertSame([1, 2], $command->getSubscribedSignals());
+            $this->assertSame(3, $command->handleSignal(1));
+        }
+
+        $this->assertSame([1, 1, 1], $invokable->handled);
+    }
+
+    public function testAClosureBoundToTheCommandDoesNotHandleItsSignals()
+    {
+        $command = new class('signal') extends Command {
+            public function __construct(string $name)
+            {
+                parent::__construct($name);
+                $this->setCode(static fn () => 0);
+            }
+        };
+
+        $this->assertSame([], $command->getSubscribedSignals());
+        $this->assertFalse($command->handleSignal(1));
     }
 }
 

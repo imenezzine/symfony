@@ -22,6 +22,7 @@ use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolverInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
+use Symfony\Component\Security\Core\Authorization\Voter\AuthenticatedVoter;
 use Symfony\Component\Security\Core\Exception\AccessDeniedException;
 use Symfony\Component\Security\Core\Exception\AccountStatusException;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
@@ -31,6 +32,8 @@ use Symfony\Component\Security\Core\Exception\LogoutException;
 use Symfony\Component\Security\Http\Authorization\AccessDeniedHandlerInterface;
 use Symfony\Component\Security\Http\EntryPoint\AuthenticationEntryPointInterface;
 use Symfony\Component\Security\Http\EntryPoint\Exception\NotAnEntryPointException;
+use Symfony\Component\Security\Http\EntryPoint\FallbackAuthenticationEntryPointInterface;
+use Symfony\Component\Security\Http\EntryPoint\ReAuthenticationEntryPointInterface;
 use Symfony\Component\Security\Http\HttpUtils;
 use Symfony\Component\Security\Http\SecurityRequestAttributes;
 use Symfony\Component\Security\Http\Util\TargetPathTrait;
@@ -57,22 +60,31 @@ class ExceptionListener
         private ?AccessDeniedHandlerInterface $accessDeniedHandler = null,
         private ?LoggerInterface $logger = null,
         private bool $stateless = false,
+        private ?ReAuthenticationEntryPointInterface $reAuthenticationEntryPoint = null,
     ) {
     }
 
     /**
      * Registers a onKernelException listener to take care of security exceptions.
+     *
+     * @deprecated since Symfony 8.2, register "onKernelException()" on the "kernel.exception" event instead
      */
     public function register(EventDispatcherInterface $dispatcher): void
     {
+        trigger_deprecation('symfony/security-http', '8.2', 'The "%s()" method is deprecated and will be removed in 9.0, register "onKernelException()" on the "kernel.exception" event instead.', __METHOD__);
+
         $dispatcher->addListener(KernelEvents::EXCEPTION, $this->onKernelException(...), 1);
     }
 
     /**
      * Unregisters the dispatcher.
+     *
+     * @deprecated since Symfony 8.2, register "onKernelException()" on the "kernel.exception" event instead
      */
     public function unregister(EventDispatcherInterface $dispatcher): void
     {
+        trigger_deprecation('symfony/security-http', '8.2', 'The "%s()" method is deprecated and will be removed in 9.0, register "onKernelException()" on the "kernel.exception" event instead.', __METHOD__);
+
         $dispatcher->removeListener(KernelEvents::EXCEPTION, $this->onKernelException(...));
     }
 
@@ -143,6 +155,31 @@ class ExceptionListener
             return;
         }
 
+        // Matching the whole attribute list rather than searching it is deliberate: an
+        // access_control rule is decided on all of its roles at once, so a denial of
+        // [ROLE_ADMIN, IS_AUTHENTICATED_RECENTLY] does not say which one failed, and
+        // re-authenticating would not help a user who simply lacks the role.
+        // a firewall entry point that already knows how to force a fresh proof is used
+        // without any configuration; one that only starts an ordinary login cannot be,
+        // which is exactly what implementing the interface asserts
+        $reAuthenticationEntryPoint = $this->reAuthenticationEntryPoint
+            ?? ($this->authenticationEntryPoint instanceof ReAuthenticationEntryPointInterface ? $this->authenticationEntryPoint : null);
+
+        if (null !== $token
+            && null !== $reAuthenticationEntryPoint
+            && \in_array($exception->getAttributes(), [[AuthenticatedVoter::IS_AUTHENTICATED_RECENTLY], [AuthenticatedVoter::IS_AUTHENTICATED_VERY_RECENTLY]], true)
+        ) {
+            $this->logger?->debug('The authentication is not recent enough, starting re-authentication.', ['entry_point' => $reAuthenticationEntryPoint]);
+
+            if (!$this->stateless) {
+                $this->setTargetPath($event->getRequest());
+            }
+
+            $event->setResponse($reAuthenticationEntryPoint->startReAuthentication($event->getRequest(), $token));
+
+            return;
+        }
+
         $this->logger?->debug('Access denied, the user is neither anonymous, nor remember-me.', ['exception' => $exception]);
 
         try {
@@ -181,7 +218,9 @@ class ExceptionListener
 
         $this->logger?->debug('Calling Authentication entry point.', ['entry_point' => $this->authenticationEntryPoint]);
 
-        if (!$this->stateless) {
+        // an entry point that only stands in has no authentication to start, so there is
+        // nothing for the user to come back to and no reason to start a session for it
+        if (!$this->stateless && !$this->authenticationEntryPoint instanceof FallbackAuthenticationEntryPointInterface) {
             $this->setTargetPath($request);
         }
 
