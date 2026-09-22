@@ -19,8 +19,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\DependencyInjection\Alias;
 use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
@@ -59,6 +61,7 @@ class TextDescriptor extends Descriptor
     {
         $showAliases = $options['show_aliases'] ?? false;
         $showControllers = $options['show_controllers'] ?? false;
+        $rawOutput = isset($options['raw_text']) && $options['raw_text'];
 
         $tableRows = [];
         $shouldShowScheme = false;
@@ -81,7 +84,8 @@ class TextDescriptor extends Descriptor
             ];
 
             if ($showControllers) {
-                $row['Controller'] = $controller ? $this->formatControllerLink($controller, $this->formatCallable($controller), $options['container'] ?? null) : '';
+                $controllerText = $controller ? $this->formatCallable($controller) : '';
+                $row['Controller'] = $controller && !$rawOutput ? $this->formatControllerLink($controller, $controllerText, $options['container'] ?? null) : $controllerText;
             }
 
             if ($showAliases) {
@@ -126,9 +130,12 @@ class TextDescriptor extends Descriptor
 
     protected function describeRoute(Route $route, array $options = []): void
     {
+        $rawOutput = isset($options['raw_text']) && $options['raw_text'];
+
         $defaults = $route->getDefaults();
         if (isset($defaults['_controller'])) {
-            $defaults['_controller'] = $this->formatControllerLink($defaults['_controller'], $this->formatCallable($defaults['_controller']), $options['container'] ?? null);
+            $controllerText = $this->formatCallable($defaults['_controller']);
+            $defaults['_controller'] = $rawOutput ? $controllerText : $this->formatControllerLink($defaults['_controller'], $controllerText, $options['container'] ?? null);
         }
 
         $tableHeaders = ['Property', 'Value'];
@@ -231,11 +238,10 @@ class TextDescriptor extends Descriptor
 
         $options['output']->title($title);
 
+        $services = [];
         if (isset($options['tag']) && $options['tag']) {
-            $services = [];
-            foreach ($container->findTaggedServiceIds($options['tag']) as $serviceId => $tags) {
-                $definition = $container->getDefinition($serviceId);
-                $services[$serviceId] = $this->resolvePriorityServiceTags($container, $definition, $options['tag']);
+            foreach (array_keys($container->findTaggedServiceIds($options['tag'])) as $serviceId) {
+                $services[$serviceId] = $this->resolvePriorityServiceTags($container, $container->getDefinition($serviceId), $options['tag']);
             }
             $serviceIds = $this->sortTaggedServicesByPriority($services);
         } else {
@@ -359,7 +365,7 @@ class TextDescriptor extends Descriptor
         $tableRows[] = ['Tags', $tagInformation];
 
         $calls = $definition->getMethodCalls();
-        if (\count($calls) > 0) {
+        if ($calls) {
             $callInformation = [];
             foreach ($calls as $call) {
                 $callInformation[] = $call[0];
@@ -410,10 +416,18 @@ class TextDescriptor extends Descriptor
                     }
 
                     foreach ($argument->getValues() as $ref) {
-                        $argumentsInformation[] = \sprintf('- Service(%s)', $ref);
+                        $argumentsInformation[] = '- '.($ref instanceof LazyProxyArgument ? self::formatLazyProxyArgument($ref) : \sprintf('Service(%s)', $ref));
+                    }
+                } elseif ($argument instanceof TaggedClassMapArgument) {
+                    $argumentsInformation[] = \sprintf('Tagged class map for "%s"%s', $argument->getTag(), $options['is_debug'] ? '' : \sprintf(' (%d element(s))', \count($argument->getValues())));
+
+                    foreach ($argument->getValues() as $key => $class) {
+                        $argumentsInformation[] = \sprintf('- %s => %s', $key, $class);
                     }
                 } elseif ($argument instanceof ServiceLocatorArgument) {
                     $argumentsInformation[] = \sprintf('Service locator (%d element(s))', \count($argument->getValues()));
+                } elseif ($argument instanceof LazyProxyArgument) {
+                    $argumentsInformation[] = self::formatLazyProxyArgument($argument);
                 } elseif ($argument instanceof Definition) {
                     $argumentsInformation[] = 'Inlined Service';
                 } elseif ($argument instanceof \UnitEnum) {
@@ -643,7 +657,7 @@ class TextDescriptor extends Descriptor
      */
     private function formatMethods(array $methods): string
     {
-        if ([] === $methods) {
+        if (!$methods) {
             $methods = ['ANY'];
         }
 
@@ -751,5 +765,12 @@ class TextDescriptor extends Descriptor
             isset($options['raw_text']) && $options['raw_text'] ? strip_tags($content) : $content,
             isset($options['raw_output']) ? !$options['raw_output'] : true
         );
+    }
+
+    private static function formatLazyProxyArgument(LazyProxyArgument $argument): string
+    {
+        [$reference, $interfaces] = $argument->getValues();
+
+        return \sprintf('Lazy Proxy for Service(%s)%s', (string) $reference, $interfaces ? \sprintf(' implementing "%s"', implode('", "', $interfaces)) : '');
     }
 }

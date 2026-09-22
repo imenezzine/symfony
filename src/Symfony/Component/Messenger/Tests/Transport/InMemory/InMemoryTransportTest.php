@@ -12,6 +12,8 @@
 namespace Symfony\Component\Messenger\Tests\Transport\InMemory;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Clock\MockClock;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
@@ -25,6 +27,8 @@ use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
  */
 class InMemoryTransportTest extends TestCase
 {
+    use ClockSensitiveTrait;
+
     private InMemoryTransport $transport;
 
     protected function setUp(): void
@@ -83,6 +87,48 @@ class InMemoryTransportTest extends TestCase
         $envelope2 = (new Envelope(new \stdClass()))->with(new DelayStamp(10_000));
         $envelope2 = $this->transport->send($envelope2);
         $this->assertSame([$envelope1], $this->transport->get());
+    }
+
+    public function testQueueWithSubSecondDelay()
+    {
+        $clock = new MockClock('2020-01-01 00:00:00');
+        $transport = new InMemoryTransport(clock: $clock);
+        $envelope = $transport->send((new Envelope(new \stdClass()))->with(new DelayStamp(500)));
+
+        $clock->sleep(0.1);
+        $this->assertSame([], $transport->get());
+
+        $clock->sleep(0.5);
+        $this->assertSame([$envelope], $transport->get());
+    }
+
+    public function testQueueWithDelayAcrossDstTransition()
+    {
+        // spring forward, fall back, and a day without a transition
+        $this->assertDelayIsHonored('2026-03-28 12:00:00', '2026-03-29 12:00:00');
+        $this->assertDelayIsHonored('2026-10-24 12:00:00', '2026-10-25 12:00:00');
+        $this->assertDelayIsHonored('2026-06-01 12:00:00', '2026-06-02 12:00:00');
+    }
+
+    private function assertDelayIsHonored(string $now, string $target): void
+    {
+        $tz = new \DateTimeZone('Europe/Prague');
+        $now = new \DateTimeImmutable($now, $tz);
+        $target = new \DateTimeImmutable($target, $tz);
+
+        // the delay is given in milliseconds rather than through DelayStamp::delayUntil(),
+        // which reads the real clock on this branch
+        $delay = ($target->getTimestamp() - $now->getTimestamp()) * 1000;
+
+        $clock = self::mockTime($now);
+        $transport = new InMemoryTransport(clock: $clock);
+        $envelope = $transport->send((new Envelope(new \stdClass()))->with(new DelayStamp($delay)));
+
+        $clock->sleep($delay / 1000 - 1);
+        $this->assertSame([], $transport->get(), \sprintf('Message must not be available one second before %s.', $target->format('c')));
+
+        $clock->sleep(2);
+        $this->assertSame([$envelope], $transport->get(), \sprintf('Message must be available one second after %s.', $target->format('c')));
     }
 
     public function testQueueWithSerialization()
@@ -208,5 +254,79 @@ class InMemoryTransportTest extends TestCase
         $this->assertSame([], $this->transport->getAcknowledged(), 'Should be empty after reset');
         $this->assertSame([], $this->transport->getRejected(), 'Should be empty after reset');
         $this->assertSame([], $this->transport->getSent(), 'Should be empty after reset');
+    }
+
+    public function testGetMessageCount()
+    {
+        $this->assertSame(0, $this->transport->getMessageCount());
+
+        $envelope1 = $this->transport->send(new Envelope(new \stdClass()));
+        $envelope2 = $this->transport->send((new Envelope(new \stdClass()))->with(new DelayStamp(10_000)));
+        $this->assertSame(2, $this->transport->getMessageCount());
+
+        $this->transport->ack($envelope1);
+        $this->assertSame(1, $this->transport->getMessageCount());
+
+        $this->transport->reject($envelope2);
+        $this->assertSame(0, $this->transport->getMessageCount());
+    }
+
+    public function testAll()
+    {
+        $this->assertSame([], $this->transport->all());
+
+        $envelope1 = $this->transport->send(new Envelope(new \stdClass()));
+        $envelope2 = $this->transport->send((new Envelope(new \stdClass()))->with(new DelayStamp(10_000)));
+        $envelope3 = $this->transport->send(new Envelope(new \stdClass()));
+        $this->assertSame([$envelope1, $envelope2, $envelope3], $this->transport->all());
+        $this->assertSame([$envelope1, $envelope2], $this->transport->all(2));
+
+        $this->transport->ack($envelope1);
+        $this->transport->reject($envelope3);
+        $this->assertSame([$envelope2], $this->transport->all());
+        $this->assertSame([], $this->transport->get(), 'Delayed messages are listed but not received');
+    }
+
+    public function testAllWithSerialization()
+    {
+        $envelope = new Envelope(new \stdClass());
+        $envelopeDecoded = Envelope::wrap(new DummyMessage('Hello.'));
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer
+            ->method('encode')
+            ->willReturnCallback(function (Envelope $encodedEnvelope) use ($envelope) {
+                $this->assertEquals($envelope->with(new TransportMessageIdStamp(1)), $encodedEnvelope);
+
+                return ['foo' => 'ba'];
+            })
+        ;
+        $serializer
+            ->method('decode')
+            ->willReturnMap([
+                [['foo' => 'ba'], $envelopeDecoded],
+            ])
+        ;
+        $serializeTransport = new InMemoryTransport($serializer);
+        $serializeTransport->send($envelope);
+        $this->assertSame([$envelopeDecoded], $serializeTransport->all());
+        $this->assertSame($envelopeDecoded, $serializeTransport->find(1));
+    }
+
+    public function testFind()
+    {
+        $this->assertNull($this->transport->find(1));
+
+        $envelope1 = $this->transport->send(new Envelope(new \stdClass()));
+        $envelope2 = $this->transport->send(new Envelope(new \stdClass()));
+        $this->assertSame($envelope1, $this->transport->find(1));
+        $this->assertSame($envelope2, $this->transport->find('2'));
+        $this->assertNull($this->transport->find(3));
+        $this->assertNull($this->transport->find('foo'));
+        $this->assertNull($this->transport->find([]));
+
+        $this->transport->ack($envelope1);
+        $this->assertNull($this->transport->find(1));
+        $this->transport->reject($envelope2);
+        $this->assertNull($this->transport->find(2));
     }
 }

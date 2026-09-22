@@ -19,9 +19,11 @@ use Symfony\Component\DependencyInjection\Argument\EnvClosure;
 use Symfony\Component\DependencyInjection\Argument\EnvClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Argument\LazyClosure;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocator;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\Compiler\AnalyzeServiceReferencesPass;
 use Symfony\Component\DependencyInjection\Compiler\CheckCircularReferencesPass;
 use Symfony\Component\DependencyInjection\Compiler\ServiceReferenceGraphNode;
@@ -86,6 +88,8 @@ class PhpDumper extends Dumper
     private array $inlinedRequires = [];
     private array $circularReferences = [];
     private array $singleUsePrivateIds = [];
+    private array $sortedDefinitions = [];
+    private bool $sharesBeforeSetup = false;
     private array $preload = [];
     private bool $addGetService = false;
     private array $locatedIds = [];
@@ -187,6 +191,8 @@ class PhpDumper extends Dumper
         }
 
         $this->analyzeReferences();
+        $this->sortedDefinitions = $this->container->getDefinitions();
+        ksort($this->sortedDefinitions);
         $this->docStar = $options['debug'] ? '*' : '';
 
         if (!empty($options['file']) && is_dir($dir = \dirname($options['file']))) {
@@ -393,6 +399,7 @@ class PhpDumper extends Dumper
         $this->exportedVariables = [];
         $this->dynamicParameters = [];
         $this->preload = [];
+        $this->sortedDefinitions = [];
 
         $unusedEnvs = [];
         foreach ($this->container->getEnvCounters() as $env => $use) {
@@ -444,7 +451,13 @@ class PhpDumper extends Dumper
         foreach ($edges as $edge) {
             $node = $edge->getDestNode();
             $id = $node->getId();
-            if (($sourceId === $id && !$edge->isLazy()) || !$node->getValue() instanceof Definition || $edge->isWeak()) {
+
+            // A direct self-reference is dumped as the local $instance, unless it comes from
+            // an expression: that compiles to a container lookup, which re-enters the factory
+            // unless the service is shared before its setup runs.
+            $selfReferenceIsInlined = !$edge->isFromExpression() || $edge->isReferencedByConstructor();
+
+            if (($sourceId === $id && !$edge->isLazy() && $selfReferenceIsInlined) || !$node->getValue() instanceof Definition || $edge->isWeak()) {
                 continue;
             }
 
@@ -557,18 +570,17 @@ class PhpDumper extends Dumper
     {
         $proxyClasses = [];
         $alreadyGenerated = [];
-        $definitions = $this->container->getDefinitions();
         $strip = '' === $this->docStar;
         $proxyDumper = $this->getProxyDumper();
-        ksort($definitions);
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if (!$definition = $this->isProxyCandidate($definition, $asGhostObject, $id)) {
                 continue;
             }
-            if (isset($alreadyGenerated[$asGhostObject][$class = $definition->getClass()])) {
+            // the proxy class name derives from the "proxy" tags too, so one class can need several proxies
+            if (isset($alreadyGenerated[$asGhostObject][$class = $definition->getClass()][$tags = serialize($definition->getTag('proxy'))])) {
                 continue;
             }
-            $alreadyGenerated[$asGhostObject][$class] = true;
+            $alreadyGenerated[$asGhostObject][$class][$tags] = true;
 
             if ($this->container->isTrackingResources()) {
                 foreach (array_column($definition->getTag('proxy'), 'interface') ?: [$class] as $r) {
@@ -696,10 +708,9 @@ class PhpDumper extends Dumper
         }
 
         $shouldShareInline = !$isProxyCandidate && $definition->isShared() && !isset($this->singleUsePrivateIds[$id]) && null === $lastWitherIndex;
-        $serviceAccessor = \sprintf('$container->%s[%s]', $this->container->getDefinition($id)->isPublic() ? 'services' : 'privates', $this->doExport($id));
+        $serviceAccessor = $this->getServiceAccessor($id);
         $return = match (true) {
             $shouldShareInline && !isset($this->circularReferences[$id]) && $isSimpleInstance => 'return '.$serviceAccessor.' = ',
-            $shouldShareInline && !isset($this->circularReferences[$id]) => $serviceAccessor.' = $instance = ',
             $shouldShareInline || !$isSimpleInstance => '$instance = ',
             default => 'return ',
         };
@@ -707,6 +718,10 @@ class PhpDumper extends Dumper
         $code = $this->addNewInstance($definition, '        '.$return, $id, $asGhostObject);
 
         if ($shouldShareInline && isset($this->circularReferences[$id])) {
+            // sharing before the service is fully configured is required to break the
+            // circular reference, but then a failing setter/configurator must evict it
+            $this->sharesBeforeSetup = !$isSimpleInstance;
+
             $code .= \sprintf(
                 "\n        if (isset(%s)) {\n            return %1\$s;\n        }\n\n        %s%1\$s = \$instance;\n",
                 $serviceAccessor,
@@ -715,6 +730,11 @@ class PhpDumper extends Dumper
         }
 
         return $code;
+    }
+
+    private function getServiceAccessor(string $id): string
+    {
+        return \sprintf('$container->%s[%s]', $this->container->getDefinition($id)->isPublic() ? 'services' : 'privates', $this->doExport($id));
     }
 
     private function isTrivialInstance(Definition $definition): bool
@@ -793,6 +813,7 @@ class PhpDumper extends Dumper
             if ($call[2] ?? false) {
                 if (null !== $sharedNonLazyId && $lastWitherIndex === $k && 'instance' === $variableName) {
                     $witherAssignation = \sprintf('$container->%s[\'%s\'] = ', $definition->isPublic() ? 'services' : 'privates', $sharedNonLazyId);
+                    $this->sharesBeforeSetup = true;
                 }
                 $witherAssignation .= \sprintf('$%s = ', $variableName);
             }
@@ -965,6 +986,13 @@ class PhpDumper extends Dumper
 
             $c = $this->addInlineService($id, $definition);
 
+            if ($this->sharesBeforeSetup) {
+                $this->sharesBeforeSetup = false;
+                $c = implode("\n", array_map(static fn ($line) => $line ? '    '.$line : $line, explode("\n", $c)));
+
+                $c = \sprintf("        try {\n%s        } catch (\\Throwable \$e) {\n            unset(%s);\n\n            throw \$e;\n        }\n", $c, $this->getServiceAccessor($id));
+            }
+
             if (!$isProxyCandidate && !$definition->isShared()) {
                 $c = implode("\n", array_map(static fn ($line) => $line ? '    '.$line : $line, explode("\n", $c)));
                 $lazyloadInitialization = $definition->isLazy() ? ', $lazyLoad = true' : '';
@@ -1105,7 +1133,7 @@ class PhpDumper extends Dumper
             }
 
             $code .= $this->addServiceProperties($inlineDef, $name);
-            $code .= $this->addServiceMethodCalls($inlineDef, $name, !$isProxyCandidate && $inlineDef->isShared() && !isset($this->singleUsePrivateIds[$id]) ? $id : null);
+            $code .= $this->addServiceMethodCalls($inlineDef, $name, !$isProxyCandidate && $inlineDef->isShared() && !isset($this->singleUsePrivateIds[$id]) && isset($this->circularReferences[$id]) ? $id : null);
             $code .= $this->addServiceConfigurator($inlineDef, $name);
         }
 
@@ -1117,15 +1145,16 @@ class PhpDumper extends Dumper
             $code .= \sprintf("\n        \$container->trackForReset(\$instance, [%s]);\n", $methodsCode);
         }
 
-        return $code."\n        return \$instance;\n";
+        // sharing only once the service is fully configured makes a construction failure atomic
+        $share = !$isProxyCandidate && $definition->isShared() && !isset($this->singleUsePrivateIds[$id]) && !isset($this->circularReferences[$id]);
+
+        return $code."\n        return ".($share ? $this->getServiceAccessor($id).' = ' : '')."\$instance;\n";
     }
 
     private function addServices(?array &$services = null): string
     {
         $publicServices = $privateServices = '';
-        $definitions = $this->container->getDefinitions();
-        ksort($definitions);
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if (!$definition->isSynthetic()) {
                 $services[$id] = $this->addService($id, $definition);
             } elseif ($definition->hasTag($this->hotPathTag) || !$definition->hasTag($this->preloadTags[1])) {
@@ -1137,7 +1166,7 @@ class PhpDumper extends Dumper
             }
         }
 
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if (!([$file, $code] = $services[$id]) || null !== $file) {
                 continue;
             }
@@ -1153,9 +1182,7 @@ class PhpDumper extends Dumper
 
     private function generateServiceFiles(array $services): iterable
     {
-        $definitions = $this->container->getDefinitions();
-        ksort($definitions);
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if (([$file, $code] = $services[$id]) && null !== $file && ($definition->isPublic() || !$this->isTrivialInstance($definition) || isset($this->locatedIds[$id]))) {
                 yield $file => [$code, $definition->hasTag($this->hotPathTag) || !$definition->hasTag($this->preloadTags[1]) && !$definition->isDeprecated() && !$definition->hasErrors()];
             }
@@ -1385,9 +1412,7 @@ class PhpDumper extends Dumper
     private function addSyntheticIds(): string
     {
         $code = '';
-        $definitions = $this->container->getDefinitions();
-        ksort($definitions);
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if ($definition->isSynthetic() && 'service_container' !== $id) {
                 $code .= '            '.$this->doExport($id)." => true,\n";
             }
@@ -1472,9 +1497,7 @@ class PhpDumper extends Dumper
     private function addMethodMap(): string
     {
         $code = '';
-        $definitions = $this->container->getDefinitions();
-        ksort($definitions);
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if (!$definition->isSynthetic() && $definition->isPublic() && (!$this->asFiles || $this->inlineFactories || $this->isHotPath($definition))) {
                 $code .= '            '.$this->doExport($id).' => '.$this->doExport($this->generateMethodName($id)).",\n";
             }
@@ -1494,9 +1517,7 @@ class PhpDumper extends Dumper
     private function addFileMap(): string
     {
         $code = '';
-        $definitions = $this->container->getDefinitions();
-        ksort($definitions);
-        foreach ($definitions as $id => $definition) {
+        foreach ($this->sortedDefinitions as $id => $definition) {
             if (!$definition->isSynthetic() && $definition->isPublic() && !$this->isHotPath($definition)) {
                 $code .= \sprintf("            %s => '%s',\n", $this->doExport($id), $this->generateMethodName($id));
             }
@@ -1849,6 +1870,10 @@ class PhpDumper extends Dumper
                 }
 
                 ++$calls[$id][0];
+            } elseif ($argument instanceof LazyProxyArgument) {
+                if ($resolvedReference = $argument->getValues()[2]) {
+                    $this->getDefinitionsFromArguments([$resolvedReference], $definitions, $calls, $byConstructor);
+                }
             } elseif (!$argument instanceof Definition) {
                 // no-op
             } elseif (isset($definitions[$argument])) {
@@ -1882,6 +1907,16 @@ class PhpDumper extends Dumper
 
             return \sprintf('[%s]', implode(', ', $code));
         } elseif ($value instanceof ArgumentInterface) {
+            if ($value instanceof LazyProxyArgument) {
+                [$reference, , $resolvedReference] = $value->getValues();
+
+                if (!$resolvedReference) {
+                    throw new RuntimeException(\sprintf('Cannot dump an unresolved lazy proxy argument for service "%s"; run the "ResolveLazyProxyPass" compiler pass first.', $reference));
+                }
+
+                return $this->dumpValue($resolvedReference, $interpolate);
+            }
+
             $scope = [$this->definitionVariables, $this->referenceVariables];
             $this->definitionVariables = $this->referenceVariables = null;
 
@@ -1924,6 +1959,10 @@ class PhpDumper extends Dumper
                     return $value->isStringable() ? $code : (null !== $value->getDefault() ? $code.'->__invoke(...)' : $closure);
                 }
 
+                if ($value instanceof TaggedClassMapArgument) {
+                    return $this->dumpValue($value->getValues(), $interpolate);
+                }
+
                 if ($value instanceof IteratorArgument) {
                     if (!$values = $value->getValues()) {
                         return 'new RewindableGenerator(fn () => new \EmptyIterator(), 0)';
@@ -1952,6 +1991,9 @@ class PhpDumper extends Dumper
                     $serviceMap = '';
                     $serviceTypes = '';
                     foreach ($value->getValues() as $k => $v) {
+                        if ($v instanceof LazyProxyArgument) {
+                            $v = $v->getValues()[2] ?? $v;
+                        }
                         if (!$v instanceof Reference) {
                             $serviceMap .= \sprintf("\n            %s => [%s],", $this->export($k), $this->dumpValue($v));
                             $serviceTypes .= \sprintf("\n            %s => '?',", $this->export($k));
@@ -2022,7 +2064,7 @@ class PhpDumper extends Dumper
             return $this->getExpressionLanguage()->compile((string) $value, ['container' => 'container']);
         } elseif ($value instanceof Parameter) {
             return $this->dumpParameter($value);
-        } elseif (true === $interpolate && \is_string($value)) {
+        } elseif ($interpolate && \is_string($value)) {
             if (preg_match('/^%([^%]+)%$/', $value, $match)) {
                 // we do this to deal with non string values (Boolean, integer, ...)
                 // the preg_replace_callback converts them to strings

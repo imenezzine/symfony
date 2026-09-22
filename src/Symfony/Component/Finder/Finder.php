@@ -201,11 +201,13 @@ class Finder implements \IteratorAggregate, \Countable
     }
 
     /**
-     * Adds tests that file contents must match.
+     * Adds tests that file contents must match. If multiple patterns are given,
+     * files only need to match at least one of them.
      *
      * Strings or PCRE patterns can be used:
      *
      *     $finder->contains('Lorem ipsum')
+     *     $finder->contains(['Lorem', 'ipsum']) // matches files containing "Lorem", or "ipsum", or both
      *     $finder->contains('/Lorem ipsum/i')
      *     $finder->contains(['dolor', '/ipsum/i'])
      *
@@ -223,11 +225,13 @@ class Finder implements \IteratorAggregate, \Countable
     }
 
     /**
-     * Adds tests that file contents must not match.
+     * Adds tests that file contents must not match. If multiple patterns are given,
+     * files are excluded as soon as they match any of them.
      *
      * Strings or PCRE patterns can be used:
      *
      *     $finder->notContains('Lorem ipsum')
+     *     $finder->notContains(['Lorem', 'ipsum']) // excludes files containing "Lorem", or "ipsum", or both
      *     $finder->notContains('/Lorem ipsum/i')
      *     $finder->notContains(['lorem', '/dolor/i'])
      *
@@ -321,7 +325,12 @@ class Finder implements \IteratorAggregate, \Countable
      *
      * Directories passed as argument must be relative to the ones defined with the `in()` method. For example:
      *
-     *     $finder->in(__DIR__)->exclude('ruby');
+     *     $finder->in(__DIR__)->exclude('ruby'); // excludes every directory named "ruby" at any depth
+     *
+     * By prefixing a directory with `/`, the exclusion applies only at the root of the search path:
+     *
+     *     $finder->in(__DIR__)->exclude('/ruby');    // excludes only __DIR__/ruby
+     *     $finder->in(__DIR__)->exclude('/foo/bar'); // excludes only __DIR__/foo/bar
      *
      * @param string|array $dirs A directory path or an array of directories
      *

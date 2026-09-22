@@ -25,22 +25,47 @@ use Symfony\Component\VarExporter\DeepCloner;
  */
 class ResolveInstanceofConditionalsPass implements CompilerPassInterface
 {
+    /**
+     * @var array<string, list<string>> lowercased canonical type name => rule keys as registered
+     */
+    private array $loadedRuleTypes = [];
+
+    /**
+     * @var array<string, true> rule keys whose type was not loaded when the pass started
+     */
+    private array $unresolvedRuleTypes = [];
+
+    /**
+     * @var array<string, array<string, ChildDefinition>> resolved class name => rules that can match it
+     */
+    private array $matchingRules = [];
+
     public function process(ContainerBuilder $container): void
     {
-        foreach ($container->getAutoconfiguredInstanceof() as $interface => $definition) {
-            if ($definition->getArguments()) {
-                throw new InvalidArgumentException(\sprintf('Autoconfigured instanceof for type "%s" defines arguments but these are not supported and should be removed.', $interface));
+        try {
+            foreach ($container->getAutoconfiguredInstanceof() as $interface => $definition) {
+                if ($definition->getArguments()) {
+                    throw new InvalidArgumentException(\sprintf('Autoconfigured instanceof for type "%s" defines arguments but these are not supported and should be removed.', $interface));
+                }
+
+                if (class_exists($interface, false) || interface_exists($interface, false)) {
+                    $this->loadedRuleTypes[strtolower((new \ReflectionClass($interface))->name)][] = $interface;
+                } else {
+                    $this->unresolvedRuleTypes[$interface] = true;
+                }
             }
-        }
 
-        $tagsToKeep = [];
+            $tagsToKeep = [];
 
-        if ($container->hasParameter('container.behavior_describing_tags')) {
-            $tagsToKeep = $container->getParameter('container.behavior_describing_tags');
-        }
+            if ($container->hasParameter('container.behavior_describing_tags')) {
+                $tagsToKeep = $container->getParameter('container.behavior_describing_tags');
+            }
 
-        foreach ($container->getDefinitions() as $id => $definition) {
-            $container->setDefinition($id, $this->processDefinition($container, $id, $definition, $tagsToKeep));
+            foreach ($container->getDefinitions() as $id => $definition) {
+                $container->setDefinition($id, $this->processDefinition($container, $id, $definition, $tagsToKeep));
+            }
+        } finally {
+            $this->loadedRuleTypes = $this->unresolvedRuleTypes = $this->matchingRules = [];
         }
 
         if ($container->hasParameter('container.behavior_describing_tags')) {
@@ -60,6 +85,7 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
             return $definition;
         }
 
+        $autoconfiguredInstanceof = $this->filterAutoconfigured($container, $class, $autoconfiguredInstanceof);
         $conditionals = $this->mergeConditionals($autoconfiguredInstanceof, $instanceofConditionals, $container);
 
         $definition->setInstanceofConditionals([]);
@@ -113,6 +139,16 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
                 $definition->setShared($shared);
             }
 
+            // Tags are added from the most specific type to the least specific one
+            if (1 < \count($instanceofTags)) {
+                $depths = [];
+                foreach ($instanceofTags as [$interface]) {
+                    $depths[$interface] ??= \count(class_parents($interface) ?: []) + \count(class_implements($interface) ?: []);
+                }
+                uasort($instanceofTags, static fn ($a, $b) => $depths[$a[0]] <=> $depths[$b[0]]);
+                $instanceofTags = array_values($instanceofTags);
+            }
+
             // Don't add tags to service decorators
             $i = \count($instanceofTags);
             while (0 <= --$i) {
@@ -121,7 +157,7 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
                     if (null === $definition->getDecoratedService() || $interface === $definition->getClass() || \in_array($k, $tagsToKeep, true)) {
                         foreach ($v as $v) {
                             if (self::isLazyTagAttributes($v)) {
-                                if (!($r = $container->getReflectionClass($class, false)) || !$r->isInstantiable()) {
+                                if (!($r = $container->getReflectionClass($class, false)) || !self::canComputeTagAttributes($r, $v)) {
                                     continue;
                                 }
                                 $v = self::resolveTagAttributes($v, $class, $k, $interface);
@@ -178,6 +214,45 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
     }
 
     /**
+     * Narrows the autoconfiguration rules to those that can match the class; rules whose
+     * type is not loaded yet are always kept so that the caller's is_subclass_of() check
+     * decides them (e.g. nonexistent types, late-defined class aliases).
+     */
+    private function filterAutoconfigured(ContainerBuilder $container, string $class, array $autoconfiguredInstanceof): array
+    {
+        if (!$autoconfiguredInstanceof || !$this->loadedRuleTypes) {
+            return $autoconfiguredInstanceof;
+        }
+
+        if (null !== $rules = $this->matchingRules[$class] ?? null) {
+            return $rules;
+        }
+
+        $candidates = $this->unresolvedRuleTypes;
+
+        // a rule keyed by the exact class name applies even when the class doesn't exist
+        if (isset($autoconfiguredInstanceof[$class])) {
+            $candidates[$class] = true;
+        }
+
+        if ($container->getReflectionClass($class, false)) {
+            foreach (class_implements($class) ?: [] as $type) {
+                foreach ($this->loadedRuleTypes[strtolower($type)] ?? [] as $ruleKey) {
+                    $candidates[$ruleKey] = true;
+                }
+            }
+            foreach (class_parents($class) ?: [] as $type) {
+                foreach ($this->loadedRuleTypes[strtolower($type)] ?? [] as $ruleKey) {
+                    $candidates[$ruleKey] = true;
+                }
+            }
+        }
+
+        // array_intersect_key() preserves the registration order of the rules
+        return $this->matchingRules[$class] = array_intersect_key($autoconfiguredInstanceof, $candidates);
+    }
+
+    /**
      * Whether a tag attribute-set is a lazily-computed one to be resolved per concrete class: either a
      * [\Closure] (a closure wrapped in an array so it survives addTag()) or a [class-string, method] callable.
      */
@@ -218,9 +293,29 @@ class ResolveInstanceofConditionalsPass implements CompilerPassInterface
         }
 
         if (!\is_array($resolved)) {
-            throw new InvalidArgumentException(\sprintf('%s must return an array of attributes, "%s" returned.', $source, get_debug_type($resolved)));
+            throw new InvalidArgumentException($source.\sprintf(' must return an array of attributes, "%s" returned.', get_debug_type($resolved)));
         }
 
         return $resolved;
+    }
+
+    /**
+     * Whether lazily-computed attributes can be resolved for a class: being instantiable is not required
+     * (private constructors and enums are fine), but a closure cannot run on an abstract class or an
+     * interface, and a [class-string, method] callable cannot when the method resolves to an abstract
+     * declaration there. Skipping beats throwing because base types legitimately match the instanceof rules.
+     * Interfaces need their own check: ReflectionClass::isAbstract() misses those declaring no methods.
+     */
+    private static function canComputeTagAttributes(\ReflectionClass $r, array $attributes): bool
+    {
+        if ($r->isInterface()) {
+            return false;
+        }
+
+        if ($attributes[0] instanceof \Closure) {
+            return !$r->isAbstract();
+        }
+
+        return !$r->hasMethod($attributes[1]) || !$r->getMethod($attributes[1])->isAbstract();
     }
 }

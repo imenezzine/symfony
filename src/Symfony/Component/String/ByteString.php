@@ -78,8 +78,10 @@ class ByteString extends AbstractString
     {
         $str = clone $this;
 
-        $parts = explode(' ', trim(ucwords(preg_replace('/[^a-zA-Z0-9\x7f-\xff]++/', ' ', $this->string))));
-        $parts[0] = 1 !== \strlen($parts[0]) && ctype_upper($parts[0]) ? $parts[0] : lcfirst($parts[0]);
+        $words = trim(preg_replace('/[^a-zA-Z0-9\x7f-\xff]++/', ' ', $this->string));
+        $parts = explode(' ', ucwords($words));
+        // a leading uppercase letter followed by another one is kept, as in AbstractUnicodeString::camel()
+        $parts[0] = preg_match('/^[A-Z]{2}/', $words) || (1 !== \strlen($parts[0]) && ctype_upper($parts[0])) ? $parts[0] : lcfirst($parts[0]);
         $str->string = implode('', $parts);
 
         return $str;
@@ -202,8 +204,17 @@ class ByteString extends AbstractString
         return \strlen($this->string);
     }
 
-    public function lower(): static
+    /**
+     * @param string|null $regexp A pattern matching the parts to convert, or null to convert the whole string
+     */
+    public function lower(/* ?string $regexp = null */): static
     {
+        $regexp = 1 <= \func_num_args() ? func_get_arg(0) : null;
+
+        if (null !== $regexp) {
+            return $this->replaceMatches($regexp, static fn (array $m): string => strtolower($m[0]));
+        }
+
         $str = clone $this;
         $str->string = strtolower($str->string);
 
@@ -379,8 +390,18 @@ class ByteString extends AbstractString
         return '' !== $prefix && 0 === ($this->ignoreCase ? strncasecmp($this->string, $prefix, \strlen($prefix)) : strncmp($this->string, $prefix, \strlen($prefix)));
     }
 
-    public function title(bool $allWords = false): static
+    /**
+     * @param string|null $regexp A pattern matching the parts to convert, or null to convert the whole string;
+     *                            when set, every match is converted and $allWords is ignored
+     */
+    public function title(bool $allWords = false /* , ?string $regexp = null */): static
     {
+        $regexp = 2 <= \func_num_args() ? func_get_arg(1) : null;
+
+        if (null !== $regexp) {
+            return $this->replaceMatches($regexp, static fn (array $m): string => ucwords(strtolower($m[0])));
+        }
+
         $str = clone $this;
         $str->string = $allWords ? ucwords($str->string) : ucfirst($str->string);
 
@@ -453,8 +474,17 @@ class ByteString extends AbstractString
         return $str;
     }
 
-    public function upper(): static
+    /**
+     * @param string|null $regexp A pattern matching the parts to convert, or null to convert the whole string
+     */
+    public function upper(/* ?string $regexp = null */): static
     {
+        $regexp = 1 <= \func_num_args() ? func_get_arg(0) : null;
+
+        if (null !== $regexp) {
+            return $this->replaceMatches($regexp, static fn (array $m): string => strtoupper($m[0]));
+        }
+
         $str = clone $this;
         $str->string = strtoupper($str->string);
 

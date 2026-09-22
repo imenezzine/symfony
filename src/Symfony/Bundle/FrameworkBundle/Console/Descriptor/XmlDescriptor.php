@@ -16,8 +16,10 @@ use Symfony\Component\Console\Exception\RuntimeException;
 use Symfony\Component\DependencyInjection\Alias;
 use Symfony\Component\DependencyInjection\Argument\AbstractArgument;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\LazyProxyArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedClassMapArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
@@ -365,7 +367,7 @@ class XmlDescriptor extends Descriptor
         $serviceXML->setAttribute('file', $definition->getFile() ?? '');
 
         $calls = $definition->getMethodCalls();
-        if (\count($calls) > 0) {
+        if ($calls) {
             $serviceXML->appendChild($callsXML = $dom->createElement('calls'));
             foreach ($calls as $callData) {
                 $callsXML->appendChild($callXML = $dom->createElement('call'));
@@ -448,6 +450,24 @@ class XmlDescriptor extends Descriptor
 
                 foreach ($this->getArgumentNodes($argument->getValues(), $dom, $container) as $childArgumentXML) {
                     $argumentXML->appendChild($childArgumentXML);
+                }
+            } elseif ($argument instanceof TaggedClassMapArgument) {
+                $argumentXML->setAttribute('type', 'tagged_class_map');
+                $argumentXML->setAttribute('tag', $argument->getTag());
+
+                foreach ($this->getArgumentNodes($argument->getValues(), $dom, $container) as $childArgumentXML) {
+                    $argumentXML->appendChild($childArgumentXML);
+                }
+            } elseif ($argument instanceof LazyProxyArgument) {
+                [$reference, $interfaces] = $argument->getValues();
+
+                $argumentXML->setAttribute('type', 'lazy_proxy');
+                $argumentXML->setAttribute('id', (string) $reference);
+
+                foreach ($interfaces as $interface) {
+                    $interfaceXML = $dom->createElement('interface');
+                    $interfaceXML->appendChild(new \DOMText($interface));
+                    $argumentXML->appendChild($interfaceXML);
                 }
             } elseif ($argument instanceof Definition) {
                 $argumentXML->appendChild($dom->importNode($this->getContainerDefinitionDocument($argument, null, false, $container)->childNodes->item(0), true));

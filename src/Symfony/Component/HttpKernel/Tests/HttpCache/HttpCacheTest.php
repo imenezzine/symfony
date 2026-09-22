@@ -14,6 +14,7 @@ namespace Symfony\Component\HttpKernel\Tests\HttpCache;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\TerminateEvent;
@@ -531,6 +532,41 @@ class HttpCacheTest extends HttpCacheTestCase
         $this->request('GET', '/');
         $this->assertEquals(200, $this->response->getStatusCode());
         $this->assertTraceNotContains('store');
+    }
+
+    public function testDoesNotCacheBinaryFileResponses()
+    {
+        $file = tempnam(sys_get_temp_dir(), 'sf_binary_file_');
+        file_put_contents($file, 'Hello World');
+
+        $this->kernel = new class($file) extends TestHttpKernel {
+            public function __construct(private string $file)
+            {
+                parent::__construct(null, 200, []);
+            }
+
+            public function callController(Request $request): Response
+            {
+                $this->called = true;
+
+                return (new BinaryFileResponse($this->file, 200, ['Content-Type' => 'text/plain']))->setMaxAge(10);
+            }
+        };
+
+        $this->request('GET', '/');
+        $this->assertHttpKernelIsCalled();
+        $this->assertEquals(200, $this->response->getStatusCode());
+
+        $this->request('GET', '/');
+        $this->assertHttpKernelIsCalled();
+        $this->assertTraceNotContains('fresh');
+        $this->assertInstanceOf(BinaryFileResponse::class, $this->response);
+
+        ob_start();
+        $this->response->sendContent();
+        $this->assertSame('Hello World', ob_get_clean());
+
+        unlink($file);
     }
 
     public function testCachesResponsesWithExplicitNoCacheDirective()
@@ -1697,6 +1733,55 @@ class HttpCacheTest extends HttpCacheTestCase
         $this->assertEquals(12, $this->response->headers->get('Content-Length'));
     }
 
+    public function testBackendCannotSetBodyFileHeader()
+    {
+        $file = sys_get_temp_dir().'/http_cache_local_file.txt';
+        file_put_contents($file, 'contents of a local file');
+
+        try {
+            $this->setNextResponse(200, ['X-Body-File' => $file], 'backend body');
+            $this->request('GET', '/');
+
+            $this->assertSame('backend body', $this->response->getContent());
+            $this->assertFalse($this->response->headers->has('X-Body-File'));
+        } finally {
+            @unlink($file);
+        }
+    }
+
+    public function testBackendCannotSetBodyEvalHeader()
+    {
+        $boundary = str_repeat('b', HttpCache::BODY_EVAL_BOUNDARY_LENGTH);
+        $body = $boundary.'start'.$boundary."/embedded\n\n\nend".$boundary;
+
+        $this->setNextResponses([
+            [
+                'status' => 200,
+                'body' => $body,
+                'headers' => ['X-Body-Eval' => 'ESI'],
+            ],
+            [
+                'status' => 200,
+                'body' => 'embedded content',
+                'headers' => [],
+            ],
+        ]);
+
+        $this->request('GET', '/', [], [], true);
+
+        $this->assertSame($body, $this->response->getContent());
+        $this->assertFalse($this->response->headers->has('X-Body-Eval'));
+    }
+
+    public function testBackendCannotSetContentDigestHeader()
+    {
+        $this->setNextResponse(200, ['X-Content-Digest' => 'from-the-backend'], 'backend body');
+        $this->request('GET', '/');
+
+        $this->assertSame('backend body', $this->response->getContent());
+        $this->assertFalse($this->response->headers->has('X-Content-Digest'));
+    }
+
     public function testClientIpIsAlwaysLocalhostForForwardedRequests()
     {
         $this->setNextResponse();
@@ -2062,6 +2147,170 @@ class HttpCacheTest extends HttpCacheTestCase
         $this->assertEquals(200, $this->response->getStatusCode());
         $this->assertEquals('OK', $this->response->getContent());
         $this->assertTraceContains('stale-if-error');
+    }
+
+    public function testCacheStatusHeaderIsNotAddedByDefault()
+    {
+        $this->setNextResponse(200, ['Cache-Control' => 'public, max-age=10']);
+        $this->request('GET', '/');
+
+        $this->assertFalse($this->response->headers->has('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderOnMissAndHit()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->setNextResponse(200, ['Cache-Control' => 'public, max-age=10']);
+
+        $this->request('GET', '/');
+        $this->assertSame('Symfony; fwd=miss; stored', $this->response->headers->get('Cache-Status'));
+
+        $this->request('GET', '/');
+        $this->assertMatchesRegularExpression('/^Symfony; hit; ttl=(9|10)$/', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderReportsANegativeTtlOnAStaleHit()
+    {
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('Skips on windows to avoid permissions issues.');
+        }
+
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->cacheConfig['stale_while_revalidate'] = 10;
+
+        $this->setNextResponse(200, ['Cache-Control' => 'public, s-maxage=5', 'Last-Modified' => 'some while ago'], 'Old response');
+        $this->request('GET', '/'); // warm the cache
+
+        // lock the cache so that the next request serves the stale entry while another process revalidates
+        $this->store->lock(Request::create('/', 'GET'));
+        sleep(10);
+
+        $this->store = $this->createStore(); // another store instance, which does not hold the lock
+        $this->request('GET', '/');
+
+        $this->assertTraceContains('stale-while-revalidate');
+        $this->assertSame('Symfony; hit; ttl=-5', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderOnRevalidation()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->setNextResponse(200, [], 'Hello World', static function ($request, $response) {
+            $response->headers->set('Cache-Control', 'public');
+            $response->headers->set('ETag', '"12345"');
+            if ($response->getETag() == $request->headers->get('IF_NONE_MATCH')) {
+                $response->setStatusCode(304);
+                $response->setContent('');
+            }
+        });
+
+        $this->request('GET', '/');
+        $this->assertSame('Symfony; fwd=miss; stored', $this->response->headers->get('Cache-Status'));
+
+        $this->request('GET', '/');
+        $this->assertSame(200, $this->response->getStatusCode());
+        $this->assertSame('Symfony; fwd=stale; fwd-status=304; stored', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderOnHeadRevalidation()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->setNextResponse(200, [], 'Hello World', static function ($request, $response) {
+            $response->headers->set('Cache-Control', 'public');
+            $response->headers->set('ETag', '"12345"');
+            if ($response->getETag() == $request->headers->get('IF_NONE_MATCH')) {
+                $response->setStatusCode(304);
+                $response->setContent('');
+            }
+        });
+
+        $this->request('HEAD', '/');
+        $this->assertSame('Symfony; fwd=miss; stored', $this->response->headers->get('Cache-Status'));
+
+        $this->request('HEAD', '/');
+        $this->assertSame('Symfony; fwd=stale; fwd-status=304; stored', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderOnStaleIfError()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->setNextResponses([
+            ['status' => 200, 'body' => 'OK', 'headers' => ['Cache-Control' => 'public, max-age=0', 'ETag' => '"some-etag"']],
+            ['status' => 500, 'body' => 'FAIL', 'headers' => []],
+        ]);
+
+        $this->request('GET', '/');
+        $this->request('GET', '/');
+
+        $this->assertSame(200, $this->response->getStatusCode());
+        $this->assertTraceContains('stale-if-error');
+        $this->assertSame('Symfony; fwd=stale; fwd-status=500; stored', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderOnNonCacheableMethodAndReload()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->cacheConfig['allow_reload'] = true;
+        $this->setNextResponse(200, ['Cache-Control' => 'public, max-age=10']);
+
+        $this->request('POST', '/');
+        $this->assertSame('Symfony; fwd=method', $this->response->headers->get('Cache-Status'));
+
+        $this->request('GET', '/', [], [], false, ['Cache-Control' => 'no-cache']);
+        $this->assertSame('Symfony; fwd=request; stored', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderOnBypass()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->setNextResponse(200, ['Cache-Control' => 'public, max-age=10']);
+
+        $this->request('GET', '/', [], [], false, ['Expect' => '100-continue']);
+
+        $this->assertSame('Symfony; fwd=bypass', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderIsNotAddedWhenTheCacheGeneratesTheResponse()
+    {
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('Skips on windows to avoid permissions issues.');
+        }
+
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->cacheConfig['stale_while_revalidate'] = 0;
+
+        $this->setNextResponse(200, ['Cache-Control' => 'public, s-maxage=5', 'Last-Modified' => 'some while ago'], 'Old response');
+        $this->request('GET', '/'); // warm the cache
+
+        // lock the cache and never release it, so that waiting for the backend times out
+        $this->store->lock(Request::create('/', 'GET'));
+        sleep(10);
+
+        $this->store = $this->createStore(); // another store instance, which does not hold the lock
+        $this->request('GET', '/');
+
+        $this->assertSame(503, $this->response->getStatusCode());
+        $this->assertFalse($this->response->headers->has('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderQuotesTheCacheIdentifier()
+    {
+        $this->cacheConfig['cache_status'] = 'My CDN';
+        $this->setNextResponse(200, ['Cache-Control' => 'public, max-age=10']);
+
+        $this->request('GET', '/');
+
+        $this->assertSame('"My CDN"; fwd=miss; stored', $this->response->headers->get('Cache-Status'));
+    }
+
+    public function testCacheStatusHeaderIsAppendedToTheBackendOne()
+    {
+        $this->cacheConfig['cache_status'] = 'Symfony';
+        $this->setNextResponse(200, ['Cache-Status' => 'Origin; hit']);
+
+        $this->request('GET', '/');
+
+        $this->assertSame(['Origin; hit', 'Symfony; fwd=miss'], $this->response->headers->all('Cache-Status'));
     }
 
     public function testTraceHeaderNameCanBeChanged()

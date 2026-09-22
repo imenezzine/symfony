@@ -11,6 +11,7 @@
 
 namespace Symfony\Component\Notifier\Bridge\Telegram;
 
+use Symfony\Component\Notifier\Exception\LogicException;
 use Symfony\Component\Notifier\Exception\MultipleExclusiveOptionsUsedException;
 use Symfony\Component\Notifier\Exception\TransportException;
 use Symfony\Component\Notifier\Exception\UnsupportedMessageTypeException;
@@ -47,14 +48,19 @@ final class TelegramTransport extends AbstractTransport
         'sticker',
     ];
 
+    private const MEDIA_TYPES = ['photo', 'video', 'document', 'audio', 'animation'];
+    private const SPOILER_MEDIA_TYPES = ['photo', 'video', 'animation'];
+
     public function __construct(
         #[\SensitiveParameter] private string $token,
         private ?string $chatChannel = null,
         ?HttpClientInterface $client = null,
         ?EventDispatcherInterface $dispatcher = null,
-        private readonly bool $disableHttps = false,
+        bool $disableHttps = false,
     ) {
         parent::__construct($client, $dispatcher);
+
+        $this->setSsl(!$disableHttps);
     }
 
     public function __toString(): string
@@ -63,7 +69,7 @@ final class TelegramTransport extends AbstractTransport
 
         $formattedOptions = http_build_query([
             'channel' => $this->chatChannel,
-            'sslmode' => $this->disableHttps ? 'disable' : null,
+            'ssl' => 'http' === $this->getHttpScheme() ? 'false' : null,
         ], '', '&');
 
         if ('' !== $formattedOptions) {
@@ -95,19 +101,14 @@ final class TelegramTransport extends AbstractTransport
         if (!isset($options['parse_mode']) || TelegramOptions::PARSE_MODE_MARKDOWN_V2 === $options['parse_mode']) {
             $options['parse_mode'] = TelegramOptions::PARSE_MODE_MARKDOWN_V2;
             /*
-             * Just replace the obvious chars according to Telegram documentation.
-             * Do not try to find pairs or replace chars, that occur in pairs like
-             *  - *bold text*
-             *  - _italic text_
-             *  - __underlined text__
-             *  - various notations of images, f. ex. [title](url)
-             *  - `code samples`.
-             *
-             * These formats should be taken care of when the message is constructed.
+             * Escape the reserved characters that Telegram would reject and leave the markup alone:
+             * paired markers (*bold*, _italic_, `code`, ~strikethrough~, ||spoiler||, [link](url)),
+             * block quotations (">" at the start of a line) and custom emojis ("![").
+             * Characters that are already escaped are kept as they are.
              *
              * @see https://core.telegram.org/bots/api#markdownv2-style
              */
-            $text = preg_replace('/([.!#>+-=|{}~])/', '\\\\$1', $text);
+            $text = preg_replace_callback('/\\\\[\x01-\x7E]|\|\||^(?:\*\*)?>|!\[|([.!#+\-=|{}>])/m', static fn (array $m) => isset($m[1]) ? '\\'.$m[1] : $m[0], $text);
         }
 
         if (isset($options['upload'])) {
@@ -122,12 +123,14 @@ final class TelegramTransport extends AbstractTransport
         if (null !== $messageOption) {
             $options[$messageOption] = $text;
         }
-        $method = $this->getPath($options);
         $this->ensureExclusiveOptionsNotDuplicated($options);
+        $method = $this->getPath($options);
+        if ('editMessageMedia' === $method) {
+            $options = $this->buildInputMedia($options, $text);
+        }
+        unset($options['edit_caption']);
         $options = $this->expandOptions($options, 'contact', 'location', 'venue');
-        $protocolSchema = $this->disableHttps ? 'http' : 'https';
-
-        $endpoint = \sprintf('%s://%s/bot%s/%s', $protocolSchema, $this->getEndpoint(), $this->token, $method);
+        $endpoint = \sprintf('%s://%s/bot%s/%s', $this->getHttpScheme(), $this->getEndpoint(), $this->token, $method);
 
         $response = $this->client->request('POST', $endpoint, [
             $optionsContainer => array_filter($options),
@@ -158,7 +161,7 @@ final class TelegramTransport extends AbstractTransport
     private function getPath(array $options): string
     {
         return match (true) {
-            isset($options['message_id']) => 'editMessageText',
+            isset($options['message_id']) => $this->getEditMethod($options),
             isset($options['callback_query_id']) => 'answerCallbackQuery',
             isset($options['photo']) => 'sendPhoto',
             isset($options['location']) => 'sendLocation',
@@ -173,6 +176,50 @@ final class TelegramTransport extends AbstractTransport
         };
     }
 
+    private function getEditMethod(array $options): string
+    {
+        return match (true) {
+            isset($options['photo']), isset($options['video']), isset($options['document']),
+            isset($options['audio']), isset($options['animation']) => 'editMessageMedia',
+            isset($options['edit_caption']) => 'editMessageCaption',
+            default => 'editMessageText',
+        };
+    }
+
+    private function buildInputMedia(array $options, ?string $text): array
+    {
+        foreach (self::MEDIA_TYPES as $type) {
+            if (!isset($options[$type])) {
+                continue;
+            }
+
+            if (\is_resource($options[$type])) {
+                throw new LogicException('Editing a message with a locally uploaded media is not supported yet, use a URL or a Telegram file ID instead.');
+            }
+
+            $media = [
+                'type' => $type,
+                'media' => $options[$type],
+            ];
+            if (null !== $text) {
+                $media['caption'] = $text;
+            }
+            if (isset($options['parse_mode'])) {
+                $media['parse_mode'] = $options['parse_mode'];
+            }
+            if (isset($options['has_spoiler']) && \in_array($type, self::SPOILER_MEDIA_TYPES, true)) {
+                $media['has_spoiler'] = $options['has_spoiler'];
+            }
+
+            $options['media'] = $media;
+            unset($options[$type], $options['caption'], $options['parse_mode'], $options['has_spoiler']);
+
+            break;
+        }
+
+        return $options;
+    }
+
     private function getAction(array $options): string
     {
         return match (true) {
@@ -185,6 +232,7 @@ final class TelegramTransport extends AbstractTransport
     private function getTextOption(array $options): ?string
     {
         return match (true) {
+            isset($options['edit_caption']) => 'caption',
             isset($options['photo']) => 'caption',
             isset($options['audio']) => 'caption',
             isset($options['document']) => 'caption',
@@ -216,6 +264,12 @@ final class TelegramTransport extends AbstractTransport
     {
         $usedOptions = array_keys($options);
         $usedExclusiveOptions = array_intersect($usedOptions, self::EXCLUSIVE_OPTIONS);
+
+        // editing a message replaces its media, so "message_id" pairs with a single media type
+        if (isset($options['message_id']) && 1 === \count(array_intersect($usedOptions, self::MEDIA_TYPES))) {
+            $usedExclusiveOptions = array_diff($usedExclusiveOptions, ['message_id']);
+        }
+
         if (\count($usedExclusiveOptions) > 1) {
             throw new MultipleExclusiveOptionsUsedException($usedExclusiveOptions, self::EXCLUSIVE_OPTIONS);
         }

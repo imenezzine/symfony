@@ -11,10 +11,13 @@
 
 namespace Symfony\Bridge\Twig\Tests\Extension;
 
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bridge\PhpUnit\ExpectUserDeprecationMessageTrait;
 use Symfony\Bridge\Twig\Extension\HttpKernelExtension;
 use Symfony\Bridge\Twig\Extension\HttpKernelRuntime;
-use Symfony\Bundle\FrameworkBundle\Controller\TemplateController;
+use Symfony\Bundle\TwigBundle\Controller\TemplateController;
 use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
@@ -30,6 +33,8 @@ use Twig\RuntimeLoader\ContainerRuntimeLoader;
 
 class HttpKernelExtensionTest extends TestCase
 {
+    use ExpectUserDeprecationMessageTrait;
+
     public function testFragmentWithError()
     {
         $renderer = $this->getFragmentHandler(new \Exception('foo'));
@@ -58,6 +63,19 @@ class HttpKernelExtensionTest extends TestCase
         $renderer->render('/foo');
     }
 
+    #[Group('legacy')]
+    #[IgnoreDeprecations]
+    public function testRenderHIncludeIsDeprecatedAtParseTime()
+    {
+        $this->expectUserDeprecationMessage('Since symfony/twig-bridge 8.2: Twig Function "render_hinclude" is deprecated; use "render_esi() or render(), or Symfony UX Turbo" instead in index at line 1.');
+
+        $loader = new ArrayLoader(['index' => '{{ render_hinclude("/foo") }}']);
+        $twig = new Environment($loader, ['debug' => true, 'cache' => false]);
+        $twig->addExtension(new HttpKernelExtension());
+
+        $twig->parse($twig->tokenize($twig->getLoader()->getSourceContext('index')));
+    }
+
     public function testGenerateFragmentUri()
     {
         $requestStack = new RequestStack();
@@ -83,7 +101,7 @@ class HttpKernelExtensionTest extends TestCase
         ]));
         $twig->addRuntimeLoader($loader);
 
-        $this->assertMatchesRegularExpression('#/_fragment\?(?:_expiration=.+&amp;)?_hash=.+&amp;_path=template%3Dfoo.html.twig%26_format%3Dhtml%26_locale%3Den%26_controller%3DSymfony%255CBundle%255CFrameworkBundle%255CController%255CTemplateController%253A%253AtemplateAction$#', $twig->render('index'));
+        $this->assertMatchesRegularExpression('#/_fragment\?(?:_expiration=.+&amp;)?_hash=.+&amp;_path=template%3Dfoo.html.twig%26_format%3Dhtml%26_locale%3Den%26_controller%3DSymfony%255CBundle%255CTwigBundle%255CController%255CTemplateController%253A%253AtemplateAction$#', $twig->render('index'));
     }
 
     protected function getFragmentHandler($returnOrException): FragmentHandler

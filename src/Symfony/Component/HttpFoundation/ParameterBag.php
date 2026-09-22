@@ -24,7 +24,7 @@ use Symfony\Component\HttpFoundation\Exception\UnexpectedValueException;
 class ParameterBag implements \IteratorAggregate, \Countable
 {
     /**
-     * @param array<string, mixed> $parameters
+     * @param array<mixed> $parameters
      */
     public function __construct(
         protected array $parameters = [],
@@ -34,11 +34,9 @@ class ParameterBag implements \IteratorAggregate, \Countable
     /**
      * Returns the parameters.
      *
-     * @template TKey of string|null
+     * @param string|null $key The name of the parameter to return or null to get them all
      *
-     * @param TKey $key The name of the parameter to return or null to get them all
-     *
-     * @return (TKey is null ? array<string, mixed> : array<mixed>)
+     * @return array<mixed>
      *
      * @throws BadRequestException if the value is not an array
      */
@@ -62,13 +60,13 @@ class ParameterBag implements \IteratorAggregate, \Countable
      */
     public function keys(): array
     {
-        return array_keys($this->parameters);
+        return array_map(strval(...), array_keys($this->parameters));
     }
 
     /**
      * Replaces the current parameters by a new set.
      *
-     * @param array<string, mixed> $parameters
+     * @param array<mixed> $parameters
      */
     public function replace(array $parameters = []): void
     {
@@ -78,7 +76,7 @@ class ParameterBag implements \IteratorAggregate, \Countable
     /**
      * Adds parameters.
      *
-     * @param array<string, mixed> $parameters
+     * @param array<mixed> $parameters
      */
     public function add(array $parameters = []): void
     {
@@ -206,8 +204,8 @@ class ParameterBag implements \IteratorAggregate, \Countable
     /**
      * Filter key.
      *
-     * @param int                                     $filter  FILTER_* constant
-     * @param int|array{flags?: int, options?: array} $options Flags from FILTER_* constants
+     * @param int                                              $filter  FILTER_* constant
+     * @param int|array{flags?: int, options?: array|\Closure} $options Flags from FILTER_* constants, and a Closure when using FILTER_CALLBACK
      *
      * @see https://php.net/filter-var
      *
@@ -250,13 +248,42 @@ class ParameterBag implements \IteratorAggregate, \Countable
     }
 
     /**
+     * Filters the value of a parameter through a callback.
+     *
+     * Per FILTER_CALLBACK semantics, the callback receives the value cast to a string:
+     * e.g. 42 arrives as "42", and a missing key with a null default arrives as "".
+     *
+     * An array value is mapped entry by entry, unless $flags is passed without FILTER_REQUIRE_ARRAY.
+     *
+     * @param \Closure(string): mixed                                                                               $callback
+     * @param int-mask<\FILTER_REQUIRE_SCALAR, \FILTER_REQUIRE_ARRAY, \FILTER_FORCE_ARRAY, \FILTER_NULL_ON_FAILURE> $flags
+     */
+    public function filterCallback(string $key, \Closure $callback, mixed $default = null, int $flags = 0): mixed
+    {
+        $options = ['options' => $callback];
+
+        if ($flags) {
+            $options['flags'] = $flags;
+        }
+
+        return $this->filter($key, $default, \FILTER_CALLBACK, $options);
+    }
+
+    /**
      * Returns an iterator for parameters.
      *
      * @return \ArrayIterator<string, mixed>
      */
     public function getIterator(): \ArrayIterator
     {
-        return new \ArrayIterator($this->parameters);
+        return new
+            /** @extends \ArrayIterator<string, mixed> */
+            class($this->parameters) extends \ArrayIterator {
+                public function key(): string
+                {
+                    return (string) parent::key();
+                }
+            };
     }
 
     /**

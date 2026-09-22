@@ -164,15 +164,11 @@ class TraceableEventDispatcherTest extends TestCase
         $this->assertArrayHasKey('stub', $listeners[0]);
     }
 
-    public function testResetClearsWrappedListenersOnMidDispatchReset()
+    public function testAMidDispatchResetDoesNotLeakWrappedListeners()
     {
         $tdispatcher = new TraceableEventDispatcher(new EventDispatcher(), new Stopwatch());
         $tdispatcher->addListener('foo', static function () {});
-        // Second listener triggers a reset mid-dispatch. postProcess() then
-        // returns early on null === $callStack and leaves wrappedListeners['foo']
-        // uncleared; subsequent dispatches keep appending WrappedListener
-        // instances unless reset() also clears wrappedListeners.
-        $tdispatcher->addListener('foo', static function () use ($tdispatcher) {
+        $tdispatcher->addListener('foo', $reset = static function () use ($tdispatcher) {
             $tdispatcher->reset();
         });
 
@@ -180,9 +176,10 @@ class TraceableEventDispatcherTest extends TestCase
             $tdispatcher->dispatch(new Event(), 'foo');
         }
 
-        $p = (new \ReflectionObject($tdispatcher))->getProperty('wrappedListeners');
+        $tdispatcher->removeListener('foo', $reset);
+        $tdispatcher->dispatch(new Event(), 'foo');
 
-        $this->assertSame([], $p->getValue($tdispatcher));
+        $this->assertCount(1, $tdispatcher->getCalledListeners());
     }
 
     public function testGetCalledListenersNested()
@@ -366,7 +363,7 @@ class TraceableEventDispatcherTest extends TestCase
 
         // repeated invocations are aggregated as a counter, the stored state must not grow
         $p = (new \ReflectionObject($tdispatcher))->getProperty('calledListenerInfos');
-        $this->assertCount(1, $p->getValue($tdispatcher)['']['foo']);
+        $this->assertCount(1, $p->getValue($tdispatcher)[0]['foo']);
     }
 
     public function testCallStackIsNotLeakingWithMultipleListeners()
@@ -456,7 +453,7 @@ class TraceableEventDispatcherTest extends TestCase
         $this->assertCount(2, $tdispatcher->getCalledListeners());
 
         $p = (new \ReflectionObject($tdispatcher))->getProperty('calledListenerInfos');
-        $this->assertCount(1, $p->getValue($tdispatcher)['']['foo']);
+        $this->assertCount(1, $p->getValue($tdispatcher)[0]['foo']);
     }
 
     public function testCallStackIsNotLeakingWhenListenerIsAddedBetweenDispatches()
@@ -483,24 +480,6 @@ class TraceableEventDispatcherTest extends TestCase
         $tdispatcher->dispatch(new Event(), 'foo');
 
         $this->assertSame([], $tdispatcher->getCalledListeners());
-    }
-
-    public function testResetDuringDispatchClearsWrappedListeners()
-    {
-        $tdispatcher = new TraceableEventDispatcher(new EventDispatcher(), new Stopwatch());
-        $tdispatcher->addListener('foo', static function () {});
-        // postProcess() returns early after a mid-dispatch reset, so reset() itself must clear wrappedListeners
-        $tdispatcher->addListener('foo', static function () use ($tdispatcher) {
-            $tdispatcher->reset();
-        });
-
-        for ($i = 0; $i < 5; ++$i) {
-            $tdispatcher->dispatch(new Event(), 'foo');
-        }
-
-        $p = (new \ReflectionObject($tdispatcher))->getProperty('wrappedListeners');
-
-        $this->assertSame([], $p->getValue($tdispatcher));
     }
 
     public function testCallStackIsNotLeakingWhenListenerIsRemovedBetweenDispatches()

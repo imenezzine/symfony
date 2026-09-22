@@ -18,8 +18,8 @@ use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Exception\InvalidArgumentException;
 
 /**
- * AuthenticatedVoter votes if an attribute like IS_AUTHENTICATED_FULLY,
- * IS_AUTHENTICATED_REMEMBERED, IS_AUTHENTICATED is present.
+ * AuthenticatedVoter votes if an attribute like IS_AUTHENTICATED_VERY_RECENTLY, IS_AUTHENTICATED_RECENTLY,
+ * IS_AUTHENTICATED_FULLY, IS_AUTHENTICATED_REMEMBERED, IS_AUTHENTICATED is present.
  *
  * This list is most restrictive to least restrictive checking.
  *
@@ -28,12 +28,27 @@ use Symfony\Component\Security\Core\Exception\InvalidArgumentException;
  */
 class AuthenticatedVoter implements CacheableVoterInterface
 {
+    public const IS_AUTHENTICATED_VERY_RECENTLY = 'IS_AUTHENTICATED_VERY_RECENTLY';
+    public const IS_AUTHENTICATED_RECENTLY = 'IS_AUTHENTICATED_RECENTLY';
     public const IS_AUTHENTICATED_FULLY = 'IS_AUTHENTICATED_FULLY';
     public const IS_AUTHENTICATED_REMEMBERED = 'IS_AUTHENTICATED_REMEMBERED';
     public const IS_AUTHENTICATED = 'IS_AUTHENTICATED';
     public const IS_IMPERSONATOR = 'IS_IMPERSONATOR';
     public const IS_REMEMBERED = 'IS_REMEMBERED';
     public const PUBLIC_ACCESS = 'PUBLIC_ACCESS';
+
+    /**
+     * Most restrictive first: only the reason of the strictest attribute that failed is reported.
+     */
+    private const DENIAL_REASONS = [
+        self::IS_AUTHENTICATED_VERY_RECENTLY => 'The user did not authenticate very recently.',
+        self::IS_AUTHENTICATED_RECENTLY => 'The user is not authenticated recently enough.',
+        self::IS_AUTHENTICATED_FULLY => 'The user is not fully authenticated.',
+        self::IS_AUTHENTICATED_REMEMBERED => 'The user is neither fully authenticated nor remembered.',
+        self::IS_AUTHENTICATED => 'The user is not authenticated.',
+        self::IS_IMPERSONATOR => 'The user is not impersonating another user.',
+        self::IS_REMEMBERED => 'The user is not remembered.',
+    ];
 
     public function __construct(
         private AuthenticationTrustResolverInterface $authenticationTrustResolver,
@@ -50,7 +65,9 @@ class AuthenticatedVoter implements CacheableVoterInterface
 
         $result = VoterInterface::ACCESS_ABSTAIN;
         foreach ($attributes as $attribute) {
-            if (null === $attribute || (self::IS_AUTHENTICATED_FULLY !== $attribute
+            if (null === $attribute || (self::IS_AUTHENTICATED_VERY_RECENTLY !== $attribute
+                    && self::IS_AUTHENTICATED_RECENTLY !== $attribute
+                    && self::IS_AUTHENTICATED_FULLY !== $attribute
                     && self::IS_AUTHENTICATED_REMEMBERED !== $attribute
                     && self::IS_AUTHENTICATED !== $attribute
                     && self::IS_IMPERSONATOR !== $attribute
@@ -63,6 +80,18 @@ class AuthenticatedVoter implements CacheableVoterInterface
             }
 
             $result = VoterInterface::ACCESS_DENIED;
+
+            // being full fledged is an invariant of the attribute, not part of the strategy:
+            // a remember-me cookie is precisely not proof that the user still holds the
+            // credentials, so no custom trust resolver gets to grant on one
+            if ((self::IS_AUTHENTICATED_RECENTLY === $attribute || self::IS_AUTHENTICATED_VERY_RECENTLY === $attribute)
+                && $this->authenticationTrustResolver->isFullFledged($token)
+                && $this->isAuthenticatedRecently($token, $attribute)
+            ) {
+                $vote?->addReason(self::IS_AUTHENTICATED_RECENTLY === $attribute ? 'The user authenticated recently.' : 'The user authenticated very recently.');
+
+                return VoterInterface::ACCESS_GRANTED;
+            }
 
             if ((self::IS_AUTHENTICATED_FULLY === $attribute || self::IS_AUTHENTICATED_REMEMBERED === $attribute)
                 && $this->authenticationTrustResolver->isFullFledged($token)
@@ -100,15 +129,36 @@ class AuthenticatedVoter implements CacheableVoterInterface
         }
 
         if (VoterInterface::ACCESS_DENIED === $result) {
-            $vote?->addReason('The user is not appropriately authenticated.');
+            foreach (self::DENIAL_REASONS as $deniedAttribute => $reason) {
+                if (\in_array($deniedAttribute, $attributes, true)) {
+                    $vote?->addReason($reason);
+
+                    break;
+                }
+            }
         }
 
         return $result;
     }
 
+    private function isAuthenticatedRecently(TokenInterface $token, string $attribute): bool
+    {
+        $method = self::IS_AUTHENTICATED_RECENTLY === $attribute ? 'isAuthenticatedRecently' : 'isAuthenticatedVeryRecently';
+
+        if (!method_exists($this->authenticationTrustResolver, $method)) {
+            trigger_deprecation('symfony/security-core', '8.2', 'Not implementing "%s::%s()" is deprecated, the method will be added to the interface in 9.0; "%s" is denied until then.', get_debug_type($this->authenticationTrustResolver), $method, $attribute);
+
+            return false;
+        }
+
+        return $this->authenticationTrustResolver->$method($token);
+    }
+
     public function supportsAttribute(string $attribute): bool
     {
         return \in_array($attribute, [
+            self::IS_AUTHENTICATED_VERY_RECENTLY,
+            self::IS_AUTHENTICATED_RECENTLY,
             self::IS_AUTHENTICATED_FULLY,
             self::IS_AUTHENTICATED_REMEMBERED,
             self::IS_AUTHENTICATED,

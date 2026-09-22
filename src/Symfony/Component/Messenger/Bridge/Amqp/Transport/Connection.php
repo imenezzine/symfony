@@ -48,6 +48,7 @@ class Connection
         'exchange',
         'delay',
         'auto_setup',
+        'prefetch_count',
         'retry',
         'persistent',
         'frame_max',
@@ -96,6 +97,13 @@ class Connection
     private \AMQPExchange $amqpDelayExchange;
     private int $lastActivityTime = 0;
     private int $inFlightMessages = 0;
+    private int $prefetchCount = 0;
+    private int $appliedPrefetchCount = 0;
+
+    /**
+     * @var array<string, true>
+     */
+    private array $consumers = [];
 
     public function __construct(
         #[\SensitiveParameter] private array $connectionOptions,
@@ -120,6 +128,11 @@ class Connection
         ], $connectionOptions);
         $this->autoSetupExchange = $this->autoSetupDelayExchange = $connectionOptions['auto_setup'] ?? true;
         $this->amqpFactory = $amqpFactory ?? new AmqpFactory();
+
+        if (0 < $this->prefetchCount = max(0, (int) ($this->connectionOptions['prefetch_count'] ?? 0))) {
+            // a consumer that never returns cannot be stopped, so an unlimited read timeout is not an option here
+            $this->connectionOptions['read_timeout'] = (float) ($this->connectionOptions['read_timeout'] ?? 0) ?: 1.0;
+        }
     }
 
     /**
@@ -136,6 +149,11 @@ class Connection
      *   * write_timeout: Timeout in for outcome activity. Note: 0 or greater seconds. May be fractional.
      *   * connect_timeout: Connection timeout. Note: 0 or greater seconds. May be fractional.
      *   * confirm_timeout: Timeout in seconds for confirmation, if none specified transport will not wait for message confirmation. Note: 0 or greater seconds. May be fractional.
+     *   * prefetch_count: Number of messages the broker may push per queue ahead of the acknowledgments (Default: 0).
+     *     Any value greater than zero makes the transport consume messages instead of fetching them one by one, which
+     *     is faster but lets the broker decide in which order the queues are served. The value should be greater than
+     *     the fetch size the worker uses, and it is also how many messages a stopping worker leaves to be redelivered.
+     *     Consuming needs a bounded "read_timeout", which then defaults to 1 second.
      *   * queues[name]: An array of queues, keyed by the name
      *     * binding_keys: The binding keys (if any) to bind to this queue
      *     * binding_arguments: Arguments to be used while binding the queue.
@@ -155,6 +173,13 @@ class Connection
      *     * queue_name_pattern: Pattern to use to create the queues (Default: "delay_%exchange_name%_%routing_key%_%delay%")
      *     * exchange_name: Name of the exchange to be used for the delayed/retried messages (Default: "delays")
      *     * arguments: array of extra delay queue arguments (for example:  ['x-queue-type' => 'classic', 'x-message-deduplication' => true,])
+     *     * granularity: Delays are rounded up to a multiple of this many milliseconds before being used as the
+     *       queue name and the "x-message-ttl" of the delay queue. Since one distinct delay means one delay queue,
+     *       this bounds how many queues randomized delays can create, at the cost of releasing a message slightly
+     *       later than asked. Use a value that is small compared to your delays. By default, delays are rounded up
+     *       to two significant digits (e.g. 5234 becomes 5300 and 52345 becomes 53000), which bounds the number of
+     *       queues whatever the magnitude of the delay is and never delays a message by more than 10%.
+     *       Set it to 1 to publish delays as they are. (Default: 10 ** (floor(log10(delay)) - 1))
      *     * daily_delay_queues: When true, the current date is appended to the delay queue names
      *       (e.g. "delay_messages__5000_delay_2025-04-28") and their "x-expires" argument is increased by 24 hours
      *       (24 * 60 * 60 * 1000 ms), so RabbitMQ deletes them automatically once the day is over. This is useful for
@@ -229,6 +254,14 @@ class Connection
             $amqpOptions['delay']['daily_delay_queues'] = filter_var($amqpOptions['delay']['daily_delay_queues'], \FILTER_VALIDATE_BOOL);
         }
 
+        if (isset($amqpOptions['delay']['granularity'])) {
+            if (false === $granularity = filter_var($amqpOptions['delay']['granularity'], \FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])) {
+                throw new InvalidArgumentException(\sprintf('The "delay.granularity" option of the AMQP Messenger transport must be a positive integer, "%s" given.', $amqpOptions['delay']['granularity']));
+            }
+
+            $amqpOptions['delay']['granularity'] = $granularity;
+        }
+
         $queuesOptions = array_map(static function ($queueOptions) {
             if (!\is_array($queueOptions)) {
                 $queueOptions = [];
@@ -253,7 +286,7 @@ class Connection
 
     private static function validateOptions(array $options): void
     {
-        if (0 < \count($invalidOptions = array_diff(array_keys($options), self::AVAILABLE_OPTIONS))) {
+        if ($invalidOptions = array_diff(array_keys($options), self::AVAILABLE_OPTIONS)) {
             throw new LogicException(\sprintf('Invalid option(s) "%s" passed to the AMQP Messenger transport.', implode('", "', $invalidOptions)));
         }
 
@@ -263,14 +296,14 @@ class Connection
                     continue;
                 }
 
-                if (0 < \count($invalidQueueOptions = array_diff(array_keys($queue), self::AVAILABLE_QUEUE_OPTIONS))) {
+                if ($invalidQueueOptions = array_diff(array_keys($queue), self::AVAILABLE_QUEUE_OPTIONS)) {
                     throw new LogicException(\sprintf('Invalid queue option(s) "%s" passed to the AMQP Messenger transport.', implode('", "', $invalidQueueOptions)));
                 }
             }
         }
 
         if (\is_array($options['exchange'] ?? false)
-            && 0 < \count($invalidExchangeOptions = array_diff(array_keys($options['exchange']), self::AVAILABLE_EXCHANGE_OPTIONS))) {
+            && ($invalidExchangeOptions = array_diff(array_keys($options['exchange']), self::AVAILABLE_EXCHANGE_OPTIONS))) {
             throw new LogicException(\sprintf('Invalid exchange option(s) "%s" passed to the AMQP Messenger transport.', implode('", "', $invalidExchangeOptions)));
         }
     }
@@ -340,6 +373,15 @@ class Connection
     {
         $routingKey = $this->getRoutingKeyForMessage($amqpStamp);
         $isRetryAttempt = $amqpStamp && $amqpStamp->isRetryAttempt();
+
+        // the delay is part of the queue name and of its "x-message-ttl", so each distinct value needs its
+        // own queue; rounding up keeps randomized delays spread over a bounded number of queues. The default
+        // keeps two significant digits, which bounds that number whatever the magnitude of the delay is.
+        $granularity = $this->connectionOptions['delay']['granularity'] ?? 10 ** max(0, (int) log10($delay) - 1);
+
+        if (1 < $granularity) {
+            $delay = (int) (ceil($delay / $granularity) * $granularity);
+        }
 
         $this->setupDelay($delay, $routingKey, $isRetryAttempt);
 
@@ -454,16 +496,133 @@ class Connection
             $this->setupExchangeAndQueues();
         }
 
-        if (false !== $message = $this->queue($queueName)->get()) {
+        $queue = $this->queue($queueName);
+
+        if ($message = $this->holdSignals(static fn () => $queue->get())) {
             ++$this->inFlightMessages;
-            $this->lastActivityTime = time();
 
             return $message;
         }
 
-        $this->lastActivityTime = time();
-
         return null;
+    }
+
+    /**
+     * Fetches up to $fetchSize messages from the given queues, using a long lived consumer.
+     *
+     * Unlike get(), which asks the broker for one message at a time, this registers a consumer per
+     * queue and lets the broker push messages as they come. On an idle queue, the call returns once
+     * the connection read timeout expires.
+     *
+     * @return list<array{string, \AMQPEnvelope}> the queue name each message was consumed from
+     *
+     * @throws \AMQPException
+     */
+    public function consume(array $queueNames, int $fetchSize): array
+    {
+        if (!$this->prefetchCount) {
+            throw new LogicException('Consuming requires the "prefetch_count" option to be set on the transport.');
+        }
+
+        $this->clearWhenDisconnected();
+
+        if ($this->autoSetupExchange) {
+            $this->setupExchangeAndQueues();
+        }
+
+        $prefetchCount = max($this->prefetchCount, $fetchSize);
+
+        if ($prefetchCount !== $this->appliedPrefetchCount) {
+            $this->channel()->setPrefetchCount($this->appliedPrefetchCount = $prefetchCount);
+        }
+
+        $anyQueue = null;
+
+        foreach ($queueNames as $queueName) {
+            $anyQueue = $this->queue($queueName);
+
+            if (!isset($this->consumers[$queueName])) {
+                $anyQueue->consume(null, \AMQP_NOPARAM);
+                $this->consumers[$queueName] = true;
+            }
+        }
+
+        if (!$anyQueue) {
+            return [];
+        }
+
+        $messages = [];
+        $limit = 1;
+        $callback = function (\AMQPEnvelope $envelope, \AMQPQueue $queue) use (&$messages, &$limit): bool {
+            $messages[] = [$queue->getName(), $envelope];
+            ++$this->inFlightMessages;
+
+            return \count($messages) < $limit;
+        };
+
+        $this->holdSignals(function () use ($anyQueue, $callback, $fetchSize, &$messages, &$limit) {
+            // any queue of the channel reads every consumer of the connection, the extension routes
+            // each message back to the queue its consumer tag belongs to
+            $this->waitForMessages($anyQueue, $callback);
+
+            if ($messages && 1 < $limit = $fetchSize) {
+                // the rest of the batch is whatever the broker already pushed: filling it must not
+                // hold the messages at hand for as long as the read timeout
+                $amqpConnection = $anyQueue->getConnection();
+                $readTimeout = $amqpConnection->getReadTimeout();
+                $amqpConnection->setReadTimeout(0.001);
+
+                try {
+                    $this->waitForMessages($anyQueue, $callback);
+                } finally {
+                    $amqpConnection->setReadTimeout($readTimeout);
+                }
+            }
+        });
+
+        return $messages;
+    }
+
+    /**
+     * Runs $fetch with asynchronous signal dispatching suspended.
+     *
+     * Signals raised while the extension waits for the broker are dropped by the engine when the
+     * wait ends by throwing, which is what a read timeout does: the handler never runs and a later
+     * pcntl_signal_dispatch() finds nothing. That silently disarms the keepalive alarm, which is
+     * rescheduled by its own handler, and leaves workers unstoppable. Holding the signals here and
+     * dispatching them once the extension is done costs nothing on engines that no longer drop them.
+     */
+    private function holdSignals(callable $fetch): mixed
+    {
+        $asyncSignals = \function_exists('pcntl_async_signals') && pcntl_async_signals(false);
+
+        try {
+            return $fetch();
+        } finally {
+            $this->lastActivityTime = time();
+
+            if ($asyncSignals) {
+                pcntl_async_signals(true);
+                pcntl_signal_dispatch();
+            }
+        }
+    }
+
+    public function getPrefetchCount(): int
+    {
+        return $this->prefetchCount;
+    }
+
+    private function waitForMessages(\AMQPQueue $queue, callable $callback): void
+    {
+        try {
+            $queue->consume($callback, \AMQP_JUST_CONSUME);
+        } catch (\AMQPQueueException $e) {
+            // the extension reports the read timeout as an error, it is the normal end of a wait
+            if (!str_contains($e->getMessage(), 'Consumer timeout exceed')) {
+                throw $e;
+            }
+        }
     }
 
     public function ack(\AMQPEnvelope $message, string $queueName): bool
@@ -484,6 +643,13 @@ class Connection
             $this->lastActivityTime = time();
             $this->inFlightMessages = max(0, $this->inFlightMessages - 1);
         }
+    }
+
+    public function keepalive(): void
+    {
+        // qos() with the current limits changes nothing on the channel, it is sent for the traffic it generates
+        $this->channel()->qos(0, $this->appliedPrefetchCount);
+        $this->lastActivityTime = time();
     }
 
     public function setup(): void
@@ -612,6 +778,8 @@ class Connection
     {
         unset($this->amqpChannel, $this->amqpExchange, $this->amqpDelayExchange);
         $this->amqpQueues = [];
+        $this->consumers = [];
+        $this->appliedPrefetchCount = 0;
         $this->inFlightMessages = 0;
     }
 

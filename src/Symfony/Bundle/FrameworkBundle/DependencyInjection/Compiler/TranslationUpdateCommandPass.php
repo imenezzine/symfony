@@ -11,21 +11,17 @@
 
 namespace Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler;
 
-use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
-use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\Translation\DependencyInjection\TranslationUpdateCommandPass as BaseTranslationUpdateCommandPass;
 
-class TranslationUpdateCommandPass implements CompilerPassInterface
-{
-    public function process(ContainerBuilder $container): void
+trigger_deprecation('symfony/framework-bundle', '8.2', 'The "%s" class is deprecated, use "%s" instead.', 'Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\TranslationUpdateCommandPass', BaseTranslationUpdateCommandPass::class);
+
+class_alias(BaseTranslationUpdateCommandPass::class, 'Symfony\Bundle\FrameworkBundle\DependencyInjection\Compiler\TranslationUpdateCommandPass');
+
+if (false) {
+    /**
+     * @deprecated since Symfony 8.2, use Symfony\Component\Translation\DependencyInjection\TranslationUpdateCommandPass instead
+     */
+    class TranslationUpdateCommandPass
     {
-        if (!$container->hasDefinition('console.command.translation_extract')) {
-            return;
-        }
-
-        $translationWriterClass = $container->getParameterBag()->resolveValue($container->findDefinition('translation.writer')->getClass());
-
-        if (!method_exists($translationWriterClass, 'getFormats')) {
-            $container->removeDefinition('console.command.translation_extract');
-        }
     }
 }

@@ -47,8 +47,6 @@ class_exists(ConfigCache::class);
  */
 trait KernelTrait
 {
-    private array $bundleClasses = [];
-
     public function getCacheDir(): string
     {
         if (null !== $dir = $_SERVER['APP_CACHE_DIR'] ?? null) {
@@ -102,10 +100,14 @@ trait KernelTrait
             is_file($cachePath)
             && (!$this->debug || is_file($bundlesPath = $this->getBundlesPath()) && filemtime($cachePath) > filemtime($bundlesPath))
         ) {
-            $this->bundles = require $cachePath;
-            $this->bundleClasses = array_map('get_class', $this->bundles);
+            $cached = require $cachePath;
 
-            return;
+            // ignore files dumped by an older version of this trait
+            if (\is_array($cached[1] ?? null)) {
+                [$this->bundleClasses, $this->bundles] = $cached;
+
+                return;
+            }
         }
 
         $this->bundles = [];
@@ -145,6 +147,8 @@ trait KernelTrait
         }
 
         $oldContainer = \is_object($this->container) ? new \ReflectionClass($this->container) : $this->container = null;
+
+        $lock = null;
 
         try {
             is_dir($buildDir) ?: mkdir($buildDir, 0o777, true);
@@ -231,7 +235,10 @@ trait KernelTrait
                 restore_error_handler();
 
                 @file_put_contents($buildDir.'/'.$class.'Deprecations.log', serialize(array_values($collectedLogs)));
-                @file_put_contents($buildDir.'/'.$class.'Compiler.log', null !== $container ? implode("\n", $container->getCompiler()->getLog()) : '');
+            }
+
+            if (null !== $container) {
+                @file_put_contents($buildDir.'/'.$class.'Compiler.log', implode("\n", $container->getCompiler()->getLog()));
             }
         }
 
@@ -295,6 +302,11 @@ trait KernelTrait
             } elseif (!is_writable($dir)) {
                 throw new \RuntimeException(\sprintf('Unable to write in the "%s" directory (%s).', $name, $dir));
             }
+
+            // Tag the directory so backup tools can skip it; see https://bford.info/cachedir/
+            if (!is_file($tag = $dir.'/CACHEDIR.TAG')) {
+                @file_put_contents($tag, "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by Symfony.\n# For information about cache directory tags, see https://bford.info/cachedir/\n");
+            }
         }
 
         $container = $this->getContainerBuilder();
@@ -311,7 +323,7 @@ trait KernelTrait
      */
     protected function prepareContainer(ContainerBuilder $container): void
     {
-        foreach ($this->bundles as $bundle) {
+        foreach ($this->getBundles() as $bundle) {
             if ($extension = $bundle->getContainerExtension()) {
                 $container->registerExtension($extension);
             }
@@ -323,7 +335,7 @@ trait KernelTrait
             }
         }
 
-        foreach ($this->bundles as $bundle) {
+        foreach ($this->getBundles() as $bundle) {
             $bundle->build($container);
         }
 
@@ -396,12 +408,18 @@ trait KernelTrait
 
         $cache->write($rootCode, $container->getResources());
 
-        // Dump resolved bundle list so initializeBundles() can skip reflection on next boot
-        $code = "<?php\n\nreturn [\n";
+        // Dump resolved bundle list so initializeBundles() can skip reflection on next boot,
+        // instantiating only the bundles that have something to do at runtime
+        $code = "<?php\n\nreturn [[\n";
+        $runtimeBundles = '';
         foreach ($this->bundleClasses as $name => $bundleClass) {
-            $code .= \sprintf("    %s => new \\%s(),\n", var_export($name, true), $bundleClass);
+            $code .= \sprintf("    %s => %s,\n", var_export($name, true), var_export($bundleClass, true));
+
+            if (!$this->isLazyBundle($bundleClass)) {
+                $runtimeBundles .= \sprintf("    %s => new \\%s(),\n", var_export($name, true), $bundleClass);
+            }
         }
-        $code .= "];\n";
+        $code .= "], [\n".$runtimeBundles."]];\n";
         $fs->dumpFile($this->getEffectiveBuildDir().'/'.$class.'.bundles.php', $code);
     }
 
@@ -569,11 +587,12 @@ trait KernelTrait
     {
         $bundles = [];
         $bundlesMetadata = [];
+        $escape = static fn (string $path): string => str_replace('%', '%%', $path);
 
-        foreach ($this->bundles as $name => $bundle) {
+        foreach ($this->getBundles() as $name => $bundle) {
             $bundles[$name] = $bundle::class;
             $bundlesMetadata[$name] = [
-                'path' => $bundle->getPath(),
+                'path' => $escape($bundle->getPath()),
             ];
         }
 
@@ -588,7 +607,7 @@ trait KernelTrait
         }
 
         return [
-            'kernel.project_dir' => realpath($this->getProjectDir()) ?: $this->getProjectDir(),
+            'kernel.project_dir' => $escape(realpath($this->getProjectDir()) ?: $this->getProjectDir()),
             'kernel.environment' => $this->environment,
             'kernel.runtime_environment' => '%env(default:kernel.environment:APP_RUNTIME_ENV)%',
             'kernel.runtime_mode' => '%env(query_string:default:container.runtime_mode:APP_RUNTIME_MODE)%',
@@ -596,18 +615,18 @@ trait KernelTrait
             'kernel.runtime_mode.cli' => '%env(not:default:kernel.runtime_mode.web:)%',
             'kernel.runtime_mode.worker' => '%env(int:default::key:worker:default:kernel.runtime_mode:)%',
             'kernel.debug' => $this->debug,
-            'kernel.build_dir' => realpath($dir = $this->getEffectiveBuildDir()) ?: $dir,
-            'kernel.cache_dir' => realpath($dir = ($this->getCacheDir() === $this->getBuildDir() ? $this->getEffectiveBuildDir() : $this->getCacheDir())) ?: $dir,
+            'kernel.build_dir' => $escape(realpath($dir = $this->getEffectiveBuildDir()) ?: $dir),
+            'kernel.cache_dir' => $escape(realpath($dir = ($this->getCacheDir() === $this->getBuildDir() ? $this->getEffectiveBuildDir() : $this->getCacheDir())) ?: $dir),
             'kernel.bundles' => $bundles,
             'kernel.bundles_metadata' => $bundlesMetadata,
             'kernel.container_class' => $this->getContainerClass(),
-            '.kernel.config_dir' => $this->getConfigDir(),
+            '.kernel.config_dir' => $escape($this->getConfigDir()),
             '.kernel.bundles_definition' => $this->getBundlesDefinition(),
             '.container.known_envs' => array_keys($knownEnvs),
         ] + (null !== ($dir = $this->getLogDir()) ? [
-            'kernel.logs_dir' => realpath($dir) ?: $dir,
+            'kernel.logs_dir' => $escape(realpath($dir) ?: $dir),
         ] : []) + (null !== ($dir = $this->getShareDir()) ? [
-            'kernel.share_dir' => realpath($dir) ?: $dir,
+            'kernel.share_dir' => $escape(realpath($dir) ?: $dir),
         ] : []);
     }
 
@@ -675,5 +694,27 @@ trait KernelTrait
             throw new \LogicException(\sprintf('Trying to register two bundles with the same name "%s".', $name));
         }
         $this->bundles[$name] = $bundle;
+    }
+
+    /**
+     * Tells whether a bundle can be instantiated on demand because nothing it declares runs when booting the kernel.
+     *
+     * @param class-string<BundleInterface> $class
+     */
+    private function isLazyBundle(string $class): bool
+    {
+        $r = new \ReflectionClass($class);
+
+        if ($r->hasMethod('__construct') || $r->hasMethod('__destruct')) {
+            return false;
+        }
+
+        foreach (['boot', 'shutdown', 'setContainer'] as $method) {
+            if (AbstractBundle::class !== $r->getMethod($method)->getDeclaringClass()->name) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

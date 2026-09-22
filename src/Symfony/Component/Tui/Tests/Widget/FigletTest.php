@@ -137,7 +137,7 @@ class FigletTest extends TestCase
         $widget = new TextWidget('Ok');
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Should render as FIGlet (multi-line), not normal text
         $this->assertCount(6, $lines);
@@ -155,7 +155,7 @@ class FigletTest extends TestCase
         $widget->addStyleClass('title');
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Should render as FIGlet
         $this->assertCount(4, $lines);
@@ -171,10 +171,25 @@ class FigletTest extends TestCase
         $widget->addStyleClass('font-small');
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Should render as FIGlet
         $this->assertCount(4, $lines);
+    }
+
+    public function testTailwindFontUtilityDoesNotSelectAFigletFont()
+    {
+        $renderer = new Renderer(new TailwindStylesheet());
+
+        $root = new ContainerWidget();
+        $widget = new TextWidget('Hello');
+        $widget->addStyleClass('font-bold');
+        $root->add($widget);
+
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
+
+        $this->assertCount(1, $lines);
+        $this->assertStringContainsString('Hello', AnsiUtils::stripAnsiCodes($lines[0]));
     }
 
     public function testInstanceStyleFontOverridesStylesheet()
@@ -190,7 +205,7 @@ class FigletTest extends TestCase
         $widget->setStyle(new Style(font: 'small'));
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Render with small font directly for comparison
         $renderer2 = new Renderer(new StyleSheet([
@@ -198,7 +213,7 @@ class FigletTest extends TestCase
         ]));
         $root2 = new ContainerWidget();
         $root2->add(new TextWidget('Hi'));
-        $linesSmall = $renderer2->render($root2, 80, 24);
+        $linesSmall = $renderer2->renderFrame($root2, 80, 24)->toArray();
 
         // Both should use 'small' font, so same line count
         $this->assertCount(\count($linesSmall), $lines);
@@ -216,7 +231,7 @@ class FigletTest extends TestCase
         $widget = new TextWidget('Hi');
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Normal text: single line
         $this->assertCount(1, $lines);
@@ -239,7 +254,7 @@ class FigletTest extends TestCase
         $widget->addStyleClass('banner');
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Should render as FIGlet using the registered custom font
         $this->assertCount(3, $lines);
@@ -260,7 +275,7 @@ class FigletTest extends TestCase
         $widget->addStyleClass('font-my-title');
         $root->add($widget);
 
-        $lines = $renderer->render($root, 80, 24);
+        $lines = $renderer->renderFrame($root, 80, 24)->toArray();
 
         // Should render as FIGlet
         $this->assertCount(5, $lines);
@@ -273,7 +288,7 @@ class FigletTest extends TestCase
     {
         $renderer = new Renderer();
 
-        return $renderer->renderWidget($widget, new RenderContext($columns, $rows));
+        return $renderer->renderWidgetLines($widget, new RenderContext($columns, $rows))->toArray();
     }
 
     /**
@@ -289,6 +304,6 @@ class FigletTest extends TestCase
         $root = new ContainerWidget();
         $root->add($widget);
 
-        return $renderer->render($root, $columns, $rows);
+        return $renderer->renderFrame($root, $columns, $rows)->toArray();
     }
 }

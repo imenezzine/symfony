@@ -21,8 +21,10 @@ use Symfony\Component\Security\Http\AccessToken\AccessTokenExtractorInterface;
 use Symfony\Component\Security\Http\AccessToken\AccessTokenHandlerInterface;
 use Symfony\Component\Security\Http\AccessToken\HeaderAccessTokenExtractor;
 use Symfony\Component\Security\Http\Authenticator\AccessTokenAuthenticator;
+use Symfony\Component\Security\Http\Authenticator\Debug\UnsupportedReasons;
 use Symfony\Component\Security\Http\Authenticator\FallbackUserLoader;
 use Symfony\Component\Security\Http\Authenticator\Passport\Badge\UserBadge;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 
 class AccessTokenAuthenticatorTest extends TestCase
 {
@@ -190,5 +192,123 @@ class AccessTokenAuthenticatorTest extends TestCase
             ['Bearer Not Valid', null],
             ['Bearer (NotOK123)', null],
         ];
+    }
+
+    public function testAuthenticateHeaderOfTheFailureResponse()
+    {
+        $authenticator = new AccessTokenAuthenticator(
+            $this->createStub(AccessTokenHandlerInterface::class),
+            new HeaderAccessTokenExtractor(),
+            realm: 'My API',
+        );
+
+        $response = $authenticator->onAuthenticationFailure(Request::create('/test'), new BadCredentialsException());
+
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="invalid_token",error_description="Invalid credentials."', $response->headers->get('WWW-Authenticate'));
+    }
+
+    #[DataProvider('provideResourceMetadataUris')]
+    public function testAuthenticateHeaderAdvertisesTheResourceMetadata(?string $resourceMetadataUri, string $expected)
+    {
+        $authenticator = new AccessTokenAuthenticator(
+            $this->createStub(AccessTokenHandlerInterface::class),
+            new HeaderAccessTokenExtractor(),
+            resourceMetadataUri: $resourceMetadataUri,
+        );
+
+        $response = $authenticator->onAuthenticationFailure(Request::create('https://api.example.com/test'), new BadCredentialsException());
+
+        $this->assertSame($expected, $response->headers->get('WWW-Authenticate'));
+    }
+
+    public static function provideResourceMetadataUris(): iterable
+    {
+        yield 'none configured' => [null, 'Bearer error="invalid_token",error_description="Invalid credentials."'];
+        yield 'a path is resolved against the request' => ['/.well-known/oauth-protected-resource', 'Bearer error="invalid_token",error_description="Invalid credentials.",resource_metadata="https://api.example.com/.well-known/oauth-protected-resource"'];
+        yield 'an absolute URL is advertised as is' => ['https://other.example.com/.well-known/oauth-protected-resource/api', 'Bearer error="invalid_token",error_description="Invalid credentials.",resource_metadata="https://other.example.com/.well-known/oauth-protected-resource/api"'];
+    }
+
+    public function testTheChallengeOfARequestCarryingNoTokenHoldsNoErrorCode()
+    {
+        $authenticator = new AccessTokenAuthenticator(
+            $this->createStub(AccessTokenHandlerInterface::class),
+            new HeaderAccessTokenExtractor(),
+            realm: 'My API',
+            resourceMetadataUri: '/.well-known/oauth-protected-resource',
+        );
+
+        $response = $authenticator->start(Request::create('https://api.example.com/foo'));
+
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",resource_metadata="https://api.example.com/.well-known/oauth-protected-resource"', $response->headers->get('WWW-Authenticate'));
+    }
+
+    public function testTheChallengeOfAFirewallThatPinsNothingIsTheBareScheme()
+    {
+        $authenticator = new AccessTokenAuthenticator($this->createStub(AccessTokenHandlerInterface::class), new HeaderAccessTokenExtractor());
+
+        $response = $authenticator->start(Request::create('https://api.example.com/foo'));
+
+        $this->assertSame('Bearer', $response->headers->get('WWW-Authenticate'));
+    }
+
+    #[DataProvider('provideScopeClaims')]
+    public function testTheGrantedScopesAreExposedAsATokenAttribute(array $claims, array $expectedScopes)
+    {
+        $accessTokenHandler = $this->createStub(AccessTokenHandlerInterface::class);
+        $accessTokenHandler
+            ->method('getUserBadgeFrom')
+            ->willReturn(new UserBadge('john', static fn () => new InMemoryUser('john', null), $claims));
+
+        $authenticator = new AccessTokenAuthenticator($accessTokenHandler, new HeaderAccessTokenExtractor());
+        $passport = $authenticator->authenticate(Request::create('/test', server: ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']));
+
+        $this->assertSame($expectedScopes, $authenticator->createToken($passport, 'main')->getAttribute(AccessTokenAuthenticator::SCOPE_ATTRIBUTE));
+    }
+
+    public static function provideScopeClaims(): iterable
+    {
+        yield 'the space-delimited "scope" claim of RFC 6749 §3.3' => [['scope' => 'openid profile:read'], ['openid', 'profile:read']];
+        yield 'a single scope' => [['scope' => 'openid'], ['openid']];
+        yield 'scopes separated by more than one space' => [['scope' => " openid \t profile:read "], ['openid', 'profile:read']];
+        yield 'a scope granted twice' => [['scope' => 'openid openid'], ['openid']];
+        yield 'the "scope" claim as a list' => [['scope' => ['openid', 'profile:read']], ['openid', 'profile:read']];
+        yield 'the "scp" claim some providers use instead' => [['scp' => ['openid', 'profile:read']], ['openid', 'profile:read']];
+        yield '"scope" wins over "scp"' => [['scope' => 'openid', 'scp' => ['profile:read']], ['openid']];
+        yield 'an empty "scope" falls back on "scp"' => [['scope' => '', 'scp' => 'profile:read'], ['profile:read']];
+        yield 'no scope claim at all' => [['sub' => 'john'], []];
+        yield 'a scope claim of an unexpected type' => [['scope' => 42], []];
+        yield 'a list holding values that are not scopes' => [['scope' => ['openid', 42, null]], ['openid']];
+    }
+
+    public function testTheScopeAttributeIsSetOnATokenBuiltFromABadgeWithoutAttributes()
+    {
+        $accessTokenHandler = $this->createStub(AccessTokenHandlerInterface::class);
+        $accessTokenHandler
+            ->method('getUserBadgeFrom')
+            ->willReturn(new UserBadge('john', static fn () => new InMemoryUser('john', null)));
+
+        $authenticator = new AccessTokenAuthenticator($accessTokenHandler, new HeaderAccessTokenExtractor());
+        $passport = $authenticator->authenticate(Request::create('/test', server: ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']));
+
+        $this->assertSame([], $authenticator->createToken($passport, 'main')->getAttribute(AccessTokenAuthenticator::SCOPE_ATTRIBUTE));
+    }
+
+    public function testUnsupportedReasons()
+    {
+        $authenticator = new AccessTokenAuthenticator($this->createStub(AccessTokenHandlerInterface::class), new HeaderAccessTokenExtractor());
+
+        $request = Request::create('/test');
+        $request->attributes->set(SecurityRequestAttributes::UNSUPPORTED_REASONS, $reasons = new UnsupportedReasons());
+
+        $this->assertFalse($authenticator->supports($request));
+        $this->assertSame([\sprintf('the "%s" extractor found no access token in the request', HeaderAccessTokenExtractor::class)], $reasons->all());
+
+        $request = Request::create('/test', server: ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $request->attributes->set(SecurityRequestAttributes::UNSUPPORTED_REASONS, $reasons = new UnsupportedReasons());
+
+        $this->assertNull($authenticator->supports($request));
+        $this->assertSame([], $reasons->all());
     }
 }

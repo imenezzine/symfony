@@ -15,6 +15,7 @@ use Psr\Log\LoggerAwareInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Cache\CacheItem;
 use Symfony\Component\Cache\Exception\InvalidArgumentException;
+use Symfony\Component\Cache\Marshaller\MarshallerInterface;
 use Symfony\Component\Cache\ResettableInterface;
 use Symfony\Component\Cache\Traits\AbstractAdapterTrait;
 use Symfony\Component\Cache\Traits\ContractsTrait;
@@ -136,8 +137,29 @@ abstract class AbstractAdapter implements AdapterInterface, CacheInterface, Name
         if (preg_match('/^(mysql|oci|pgsql|sqlsrv|sqlite):/', $dsn)) {
             return PdoAdapter::createConnection($dsn, $options);
         }
+        if (str_starts_with($dsn, 'mongodb:') || str_starts_with($dsn, 'mongodb+srv:')) {
+            return MongoDbAdapter::createConnection($dsn, $options);
+        }
 
-        throw new InvalidArgumentException('Unsupported DSN: it does not start with "redis[s]:", "valkey[s]:", "memcached:", "couchbase:", "mysql:", "oci:", "pgsql:", "sqlsrv:" nor "sqlite:".');
+        throw new InvalidArgumentException('Unsupported DSN: it does not start with "redis[s]:", "valkey[s]:", "memcached:", "couchbase:", "mysql:", "oci:", "pgsql:", "sqlsrv:", "sqlite:" nor "mongodb[+srv]:".');
+    }
+
+    /**
+     * Creates the adapter matching a connection returned by createConnection().
+     */
+    public static function createAdapter(mixed $connection, string $namespace = '', int $defaultLifetime = 0, ?MarshallerInterface $marshaller = null): AdapterInterface
+    {
+        return match (true) {
+            $connection instanceof \Memcached => new MemcachedAdapter($connection, $namespace, $defaultLifetime, $marshaller),
+            // PdoAdapter::createConnection() returns the DSN itself when connecting lazily
+            $connection instanceof \PDO, \is_string($connection) && preg_match('/^(mysql|oci|pgsql|sqlsrv|sqlite):/', $connection) => new PdoAdapter($connection, $namespace, $defaultLifetime, [], $marshaller),
+            $connection instanceof \Redis, $connection instanceof \RedisArray, $connection instanceof \RedisCluster,
+            $connection instanceof \Predis\ClientInterface,
+            $connection instanceof \Relay\Relay, $connection instanceof \Relay\Cluster => new RedisAdapter($connection, $namespace, $defaultLifetime, $marshaller),
+            $connection instanceof \Couchbase\Collection => new CouchbaseCollectionAdapter($connection, $namespace, $defaultLifetime, $marshaller),
+            $connection instanceof \MongoDB\Collection => new MongoDbAdapter($connection, $namespace, $defaultLifetime, [], $marshaller),
+            default => throw new InvalidArgumentException(\sprintf('Unsupported connection: "%s".', get_debug_type($connection))),
+        };
     }
 
     public function commit(): bool

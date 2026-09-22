@@ -15,13 +15,17 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Tui\Ansi\AnsiUtils;
 use Symfony\Component\Tui\Exception\RenderException;
+use Symfony\Component\Tui\Render\ConcatenatedLineBuffer;
+use Symfony\Component\Tui\Render\LineBufferInterface;
 use Symfony\Component\Tui\Render\RenderContext;
 use Symfony\Component\Tui\Render\Renderer;
+use Symfony\Component\Tui\Style\Align;
 use Symfony\Component\Tui\Style\Border;
 use Symfony\Component\Tui\Style\Direction;
 use Symfony\Component\Tui\Style\Padding;
 use Symfony\Component\Tui\Style\Style;
 use Symfony\Component\Tui\Style\StyleSheet;
+use Symfony\Component\Tui\Style\TextAlign;
 use Symfony\Component\Tui\Style\VerticalAlign;
 use Symfony\Component\Tui\Widget\AbstractWidget;
 use Symfony\Component\Tui\Widget\ContainerWidget;
@@ -41,9 +45,9 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->add($text);
 
-        $before = $renderer->render($root, 40, 10);
+        $before = $renderer->renderFrame($root, 40, 10)->toArray();
         $text->setText('After');
-        $after = $renderer->render($root, 40, 10);
+        $after = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertNotSame($before, $after);
         $this->assertStringContainsString('Before', $before[0]);
@@ -60,8 +64,8 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->add($fill);
 
-        $small = $renderer->render($root, 40, 5);
-        $large = $renderer->render($root, 40, 10);
+        $small = $renderer->renderFrame($root, 40, 5)->toArray();
+        $large = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // The fill child expands differently with different rows
         $this->assertNotSame($small, $large);
@@ -75,10 +79,10 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->add(new TextWidget('First'));
 
-        $oneChild = $renderer->render($root, 40, 10);
+        $oneChild = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $root->add(new TextWidget('Second'));
-        $twoChildren = $renderer->render($root, 40, 10);
+        $twoChildren = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertCount(1, $oneChild);
         $this->assertCount(2, $twoChildren);
@@ -93,10 +97,10 @@ class RendererTest extends TestCase
         $root->add($first);
         $root->add($second);
 
-        $before = $renderer->render($root, 40, 10);
+        $before = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $root->remove($second);
-        $after = $renderer->render($root, 40, 10);
+        $after = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertCount(2, $before);
         $this->assertCount(1, $after);
@@ -124,7 +128,7 @@ class RendererTest extends TestCase
         $root->add($fill2);
 
         // 10 rows / 2 fill children = 5 each
-        $result = $renderer->render($root, 20, 10);
+        $result = $renderer->renderFrame($root, 20, 10)->toArray();
         $this->assertCount(10, $result);
     }
 
@@ -146,7 +150,7 @@ class RendererTest extends TestCase
         $root->add($fill2);
 
         // 10 rows - 2 gap = 8 remaining, 8 / 2 = 4 each, total = 4 + 2 + 4 = 10
-        $result = $renderer->render($root, 20, 10);
+        $result = $renderer->renderFrame($root, 20, 10)->toArray();
         $this->assertCount(10, $result);
     }
 
@@ -167,7 +171,7 @@ class RendererTest extends TestCase
         $root->add($fill2);
 
         // 11 rows / 2 = 5 base + 1 extra => first gets 6, second gets 5 = 11
-        $result = $renderer->render($root, 20, 11);
+        $result = $renderer->renderFrame($root, 20, 11)->toArray();
         $this->assertCount(11, $result, 'Remainder rows should be distributed');
     }
 
@@ -193,7 +197,7 @@ class RendererTest extends TestCase
         $root->setStyle($style);
         $root->add(new TextWidget('Content'));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertCount($expectedLines, $result);
     }
@@ -205,7 +209,7 @@ class RendererTest extends TestCase
         $root->setStyle(new Style(background: 'red'));
         $root->add(new TextWidget('BG'));
 
-        $result = $renderer->render($root, 20, 10);
+        $result = $renderer->renderFrame($root, 20, 10)->toArray();
 
         // Red background ANSI code (\e[41m) should be in the output
         $this->assertStringContainsString("\x1b[41m", $result[0]);
@@ -220,7 +224,7 @@ class RendererTest extends TestCase
         // Text that would be wider than the inner area
         $root->add(new TextWidget('ABCDEFGHIJKLMNOPQRSTUVWXYZ'));
 
-        $result = $renderer->render($root, 20, 10);
+        $result = $renderer->renderFrame($root, 20, 10)->toArray();
 
         // Inner width = 20 - 10 = 10, text should wrap or be contained
         foreach ($result as $line) {
@@ -244,7 +248,7 @@ class RendererTest extends TestCase
 
         $root->add(new TextWidget('Also visible'));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // Only 2 visible children should produce lines
         $this->assertCount(2, $result);
@@ -268,7 +272,7 @@ class RendererTest extends TestCase
 
         $root->add(new TextWidget('Second'));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // Only 2 visible children + 1 gap = 3 lines
         $this->assertCount(3, $result);
@@ -281,7 +285,7 @@ class RendererTest extends TestCase
         $root->setStyle(new Style(hidden: true));
         $root->add(new TextWidget('Should not render'));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame([], $result);
     }
 
@@ -302,7 +306,7 @@ class RendererTest extends TestCase
         $child->add($innerText);
         $root->add($child);
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // The root's blue background (ANSI code \e[44m) should appear in the
         // child's border rows since border segments reset to the outer background
@@ -330,7 +334,7 @@ class RendererTest extends TestCase
         $grandparent->add($parent);
         $parent->add($child);
 
-        $result = $renderer->render($grandparent, 40, 10);
+        $result = $renderer->renderFrame($grandparent, 40, 10)->toArray();
 
         // border-top + content + border-bottom = 3 lines
         $this->assertCount(3, $result);
@@ -362,7 +366,7 @@ class RendererTest extends TestCase
         $outer->add(new TextWidget('Top'));
         $outer->add($inner);
 
-        $result = $renderer->render($outer, 40, 10);
+        $result = $renderer->renderFrame($outer, 40, 10)->toArray();
 
         // Top is on first line, inner's two children on one line
         $this->assertCount(2, $result);
@@ -385,7 +389,7 @@ class RendererTest extends TestCase
 
         $outer->add($inner);
 
-        $result = $renderer->render($outer, 40, 10);
+        $result = $renderer->renderFrame($outer, 40, 10)->toArray();
 
         // Outer: 1 top + 1 bottom padding
         // Inner: 0 top + 0 bottom but 2 left/right padding
@@ -411,7 +415,7 @@ class RendererTest extends TestCase
 
         $outer->add($inner);
 
-        $result = $renderer->render($outer, 40, 10);
+        $result = $renderer->renderFrame($outer, 40, 10)->toArray();
 
         // Outer border top + inner border top + content + inner border bottom + outer border bottom = 5
         $this->assertCount(5, $result);
@@ -433,7 +437,7 @@ class RendererTest extends TestCase
         ));
         $root->add(new TextWidget('X'));
 
-        $result = $renderer->render($root, 10, 10);
+        $result = $renderer->renderFrame($root, 10, 10)->toArray();
 
         // Should render without error, content area is 1 column
         $this->assertStringContainsString('X', implode("\n", $result));
@@ -449,7 +453,7 @@ class RendererTest extends TestCase
         }
 
         // Only 10 rows available but 50 children
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // All 50 children still produce lines (no truncation at container level)
         $this->assertCount(50, $result);
@@ -466,7 +470,7 @@ class RendererTest extends TestCase
             $root->add(new TextWidget((string) $i));
         }
 
-        $result = $renderer->render($root, 5, 10);
+        $result = $renderer->renderFrame($root, 5, 10)->toArray();
 
         // Only children 0–4 are rendered (one per column), each 1 column wide
         $visible = AnsiUtils::stripAnsiCodes($result[0]);
@@ -493,7 +497,7 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->setStyle($style);
 
-        $result = $renderer->render($root, 20, 10);
+        $result = $renderer->renderFrame($root, 20, 10)->toArray();
 
         $this->assertCount($expectedLines, $result);
     }
@@ -518,7 +522,7 @@ class RendererTest extends TestCase
         $root->add(new TextWidget('B'));
         $root->add(new TextWidget('C'));
 
-        $result = $renderer->render($root, $totalColumns, 10);
+        $result = $renderer->renderFrame($root, $totalColumns, 10)->toArray();
 
         $this->assertCount(1, $result);
         $this->assertSame($totalColumns, AnsiUtils::visibleWidth($result[0]));
@@ -537,7 +541,7 @@ class RendererTest extends TestCase
         $root->add($h1);
         $root->add($h2);
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame([], $result);
     }
 
@@ -550,7 +554,7 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->add(new TextWidget('Bold text'));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // Bold ANSI code should be in the output
         $this->assertStringContainsString("\x1b[1m", $result[0]);
@@ -574,7 +578,7 @@ class RendererTest extends TestCase
         // 'X' * 34 fits exactly one content line
         $root->add(new TextWidget(str_repeat('X', 34)));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // Row count: border-top(1) + padding-top(2) + content(1) + padding-bottom(2) + border-bottom(1) = 7
         $this->assertCount(7, $result);
@@ -595,7 +599,7 @@ class RendererTest extends TestCase
 
         // Even with 10x5 viewport and padding=50 each side, padding is clamped
         // so inner content gets at least 1 column and lines don't exceed width
-        $result = $renderer->render($root, 10, 5);
+        $result = $renderer->renderFrame($root, 10, 5)->toArray();
 
         // Content is rendered and no line exceeds the container width
         $this->assertStringContainsString('X', implode('', $result));
@@ -614,7 +618,7 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->add(new TextWidget('Hello'));
 
-        $result = $renderer->render($root, 40, 10);
+        $result = $renderer->renderFrame($root, 40, 10)->toArray();
         $rect = $renderer->getWidgetRect($root);
 
         $this->assertSame(0, $rect->row);
@@ -634,7 +638,7 @@ class RendererTest extends TestCase
         $root->add($child2);
         $root->add($child3);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         $rect1 = $renderer->getWidgetRect($child1);
         $rect2 = $renderer->getWidgetRect($child2);
@@ -661,7 +665,7 @@ class RendererTest extends TestCase
         $root->add($child1);
         $root->add($child2);
 
-        $renderer->render($root, 40, 20);
+        $renderer->renderFrame($root, 40, 20)->toArray();
 
         $rect1 = $renderer->getWidgetRect($child1);
         $rect2 = $renderer->getWidgetRect($child2);
@@ -682,7 +686,7 @@ class RendererTest extends TestCase
         $child = new TextWidget('Inside');
         $root->add($child);
 
-        $renderer->render($root, 40, 20);
+        $renderer->renderFrame($root, 40, 20)->toArray();
 
         $rect = $renderer->getWidgetRect($child);
 
@@ -702,7 +706,7 @@ class RendererTest extends TestCase
         $root->add($child1);
         $root->add($child2);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         $rect1 = $renderer->getWidgetRect($child1);
         $rect2 = $renderer->getWidgetRect($child2);
@@ -732,7 +736,7 @@ class RendererTest extends TestCase
         $inner->add($leaf);
         $root->add($inner);
 
-        $renderer->render($root, 40, 20);
+        $renderer->renderFrame($root, 40, 20)->toArray();
 
         $innerRect = $renderer->getWidgetRect($inner);
         $leafRect = $renderer->getWidgetRect($leaf);
@@ -752,7 +756,7 @@ class RendererTest extends TestCase
         $root = new ContainerWidget();
         $root->add(new TextWidget('A'));
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         // A widget that was not part of the tree
         $orphan = new TextWidget('Orphan');
@@ -779,7 +783,7 @@ class RendererTest extends TestCase
         $root->add($fillChild);
         $root->add($footer);
 
-        $renderer->render($root, 40, 20);
+        $renderer->renderFrame($root, 40, 20)->toArray();
 
         $fillRect = $renderer->getWidgetRect($fillChild);
         $footerRect = $renderer->getWidgetRect($footer);
@@ -817,7 +821,7 @@ class RendererTest extends TestCase
         $root->add($leftPane);
         $root->add($rightPane);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         $leftLeafRect = $renderer->getWidgetRect($leftLeaf);
         $rightLeafRect = $renderer->getWidgetRect($rightLeaf);
@@ -829,6 +833,80 @@ class RendererTest extends TestCase
         // Right leaf: pane starts at col 20 (40/2), padding top=1, left=2
         $this->assertSame(1, $rightLeafRect->row);
         $this->assertSame(22, $rightLeafRect->col);
+    }
+
+    public function testWidgetPositionTrackingForDescendantsOfHorizontalChildrenInVerticalLayout()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $prefix = new TextWidget('Prefix');
+        $row = new ContainerWidget();
+        $row->setStyle(new Style(direction: Direction::Horizontal));
+
+        $leftPane = new ContainerWidget();
+        $leftLeaf = new TextWidget('Left');
+        $leftCounter = new CountingLeafWidget();
+        $leftPane->add($leftLeaf);
+        $leftPane->add($leftCounter);
+        $rightPane = new ContainerWidget();
+        $rightLeaf = new TextWidget('Right');
+        $rightPane->add($rightLeaf);
+        $row->add($leftPane);
+        $row->add($rightPane);
+
+        $root->add($prefix);
+        $root->add($row);
+
+        $renderer->renderFrame($root, 40, 10)->toArray();
+
+        $leftLeafRect = $renderer->getWidgetRect($leftLeaf);
+        $this->assertNotNull($leftLeafRect);
+        $this->assertSame(1, $leftLeafRect->row);
+        $this->assertSame(0, $leftLeafRect->col);
+        $rightLeafRect = $renderer->getWidgetRect($rightLeaf);
+        $this->assertNotNull($rightLeafRect);
+        $this->assertSame(1, $rightLeafRect->row);
+        $this->assertSame(20, $rightLeafRect->col);
+
+        // Shift the row down while the left pane stays cached
+        $prefix->setText("First line\nSecond line");
+        $rightLeaf->setText('Changed');
+        $renderer->renderFrame($root, 40, 10)->toArray();
+
+        $this->assertSame(1, $leftCounter->renderCount);
+        $this->assertSame(2, $renderer->getWidgetRect($leftLeaf)->row);
+        $this->assertSame(2, $renderer->getWidgetRect($rightLeaf)->row);
+    }
+
+    public function testWidgetPositionTrackingForDescendantsOfVerticallyAlignedHorizontalChildren()
+    {
+        $renderer = new Renderer(new StyleSheet([
+            '.row' => new Style(direction: Direction::Horizontal, verticalAlign: VerticalAlign::Center),
+        ]));
+
+        $root = new ContainerWidget();
+        $row = new ContainerWidget();
+        $row->addStyleClass('row');
+
+        $tall = new ContainerWidget();
+        $tall->add(new TextWidget('top'));
+        $tall->add(new TextWidget('mid'));
+        $tall->add(new TextWidget('bot'));
+
+        $shortPane = new ContainerWidget();
+        $shortLeaf = new TextWidget('url');
+        $shortPane->add($shortLeaf);
+
+        $row->add($tall);
+        $row->add($shortPane);
+        $root->add($row);
+
+        $renderer->renderFrame($root, 40, 10)->toArray();
+
+        // shortPane is 1 line centered in 3: floor((3-1)/2) = 1, and its
+        // descendant must carry the same cross-axis offset.
+        $this->assertSame(1, $renderer->getWidgetRect($shortPane)->row);
+        $this->assertSame(1, $renderer->getWidgetRect($shortLeaf)->row);
     }
 
     public function testWidgetPositionTrackingForHorizontalChildrenWithVerticalAlignCenter()
@@ -854,7 +932,7 @@ class RendererTest extends TestCase
         $row->add($short);
         $root->add($row);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         $tallRect = $renderer->getWidgetRect($tall);
         $shortRect = $renderer->getWidgetRect($short);
@@ -884,7 +962,7 @@ class RendererTest extends TestCase
         $root->add($fill);
         $root->add($footer);
 
-        $lines = $renderer->render($root, 40, 10);
+        $lines = $renderer->renderFrame($root, 40, 10)->toArray();
 
         // fill gets 9 rows, footer gets 1 — total must be 10
         $this->assertCount(10, $lines);
@@ -902,24 +980,32 @@ class RendererTest extends TestCase
         $root->add($first);
         $root->add($second);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertSame(1, $first->renderCount);
         $this->assertSame(1, $second->renderCount);
     }
 
-    public function testVerticalLayoutStillRerendersNonFillParentChildrenInSecondPass()
+    public function testVerticalLayoutReusesCachedParentChildrenWhenSiblingChanges()
     {
         $renderer = new Renderer();
         $root = new ContainerWidget();
 
+        $prefix = new TextWidget('Prefix');
         $childParent = new CountingParentWidget();
         $childParent->add(new TextWidget('Leaf'));
+        $root->add($prefix);
         $root->add($childParent);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
+        $this->assertSame(2, $childParent->renderCount);
+        $this->assertSame(1, $renderer->getWidgetRect($childParent)->row);
+
+        $prefix->setText("First line\nSecond line");
+        $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertSame(2, $childParent->renderCount);
+        $this->assertSame(2, $renderer->getWidgetRect($childParent)->row);
     }
 
     // ---------------------------------------------------------------
@@ -934,11 +1020,11 @@ class RendererTest extends TestCase
         $widget = new CountingLeafWidget();
         $root->add($widget);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(1, $widget->renderCount);
 
         // Second render with no changes: cache hit, render() not called again
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(1, $widget->renderCount);
     }
 
@@ -950,12 +1036,12 @@ class RendererTest extends TestCase
         $widget = new CountingLeafWidget();
         $root->add($widget);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(1, $widget->renderCount);
 
         // Invalidate the widget: next render must call render() again
         $widget->invalidate();
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(2, $widget->renderCount);
     }
 
@@ -967,11 +1053,11 @@ class RendererTest extends TestCase
         $widget = new CountingLeafWidget();
         $root->add($widget);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(1, $widget->renderCount);
 
         // Different columns: cache miss, render() called again
-        $renderer->render($root, 60, 10);
+        $renderer->renderFrame($root, 60, 10)->toArray();
         $this->assertSame(2, $widget->renderCount);
     }
 
@@ -985,15 +1071,36 @@ class RendererTest extends TestCase
         $root->add($stable);
         $root->add($changing);
 
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(1, $stable->renderCount);
         $this->assertSame(1, $changing->renderCount);
 
         // Only invalidate one child: the other should be cached
         $changing->invalidate();
-        $renderer->render($root, 40, 10);
+        $renderer->renderFrame($root, 40, 10)->toArray();
         $this->assertSame(1, $stable->renderCount);
         $this->assertSame(2, $changing->renderCount);
+    }
+
+    public function testVerticalLayoutPreservesUnchangedChildBuffer()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $transcript = new ContainerWidget();
+        $transcript->add(new TextWidget("First\nSecond"));
+        $footer = new TextWidget('Footer 1');
+        $root->add($transcript);
+        $root->add($footer);
+
+        $firstFrame = $renderer->renderFrame($root, 40, 10);
+        $transcriptLines = $renderer->renderWidgetLines($transcript, new RenderContext(40, 10));
+
+        $this->assertTrue($this->containsBuffer($firstFrame, $transcriptLines));
+
+        $footer->setText('Footer 2');
+        $nextFrame = $renderer->renderFrame($root, 40, 10);
+
+        $this->assertTrue($this->containsBuffer($nextFrame, $transcriptLines));
     }
 
     public function testRenderCachePreservesCorrectOutput()
@@ -1004,8 +1111,8 @@ class RendererTest extends TestCase
         $widget = new TextWidget('Hello');
         $root->add($widget);
 
-        $first = $renderer->render($root, 40, 10);
-        $second = $renderer->render($root, 40, 10);
+        $first = $renderer->renderFrame($root, 40, 10)->toArray();
+        $second = $renderer->renderFrame($root, 40, 10)->toArray();
 
         $this->assertSame($first, $second);
     }
@@ -1022,18 +1129,130 @@ class RendererTest extends TestCase
         $root->add($inner);
 
         // First render populates positions
-        $renderer->render($root, 40, 20);
+        $renderer->renderFrame($root, 40, 20)->toArray();
         $leafRect = $renderer->getWidgetRect($leaf);
         $this->assertNotNull($leafRect);
         $this->assertSame(1, $leafRect->row);
         $this->assertSame(2, $leafRect->col);
 
         // Second render: inner + leaf unchanged, positions still tracked
-        $renderer->render($root, 40, 20);
+        $renderer->renderFrame($root, 40, 20)->toArray();
         $leafRect2 = $renderer->getWidgetRect($leaf);
         $this->assertNotNull($leafRect2);
         $this->assertSame(1, $leafRect2->row);
         $this->assertSame(2, $leafRect2->col);
+    }
+
+    public function testCachedDescendantPositionsMoveWithTheirParent()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $prefix = new TextWidget('Prefix');
+        $inner = new ContainerWidget();
+        $inner->setStyle(new Style(padding: new Padding(1, 0, 0, 2)));
+        $leaf = new TextWidget('Nested');
+        $inner->add($leaf);
+        $root->add($prefix);
+        $root->add($inner);
+
+        $renderer->renderFrame($root, 40, 20)->toArray();
+        $leafRect = $renderer->getWidgetRect($leaf);
+        $this->assertSame(2, $leafRect->row);
+        $this->assertSame(2, $leafRect->col);
+
+        $prefix->setText("First line\nSecond line");
+        $renderer->renderFrame($root, 40, 20)->toArray();
+        $leafRect = $renderer->getWidgetRect($leaf);
+        $this->assertSame(3, $leafRect->row);
+        $this->assertSame(2, $leafRect->col);
+    }
+
+    public function testCachedFillChildDescendantPositionsMoveWithTheirParent()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $prefix = new TextWidget('Prefix');
+        $fill = new ContainerWidget()->expandVertically(true);
+        $leaf = new CountingLeafWidget();
+        $fill->add($leaf);
+        $second = new ContainerWidget()->expandVertically(true);
+        $second->add(new TextWidget('Other'));
+        $root->add($prefix);
+        $root->add($fill);
+        $root->add($second);
+
+        // 8 remaining rows split 4/4; after the prefix grows, 7 rows split
+        // 4/3, so the first fill child keeps its rows (cache hit) but shifts.
+        $renderer->renderFrame($root, 40, 9)->toArray();
+        $this->assertSame(1, $leaf->renderCount);
+        $this->assertSame(1, $renderer->getWidgetRect($leaf)->row);
+
+        $prefix->setText("First line\nSecond line");
+        $renderer->renderFrame($root, 40, 9)->toArray();
+
+        $this->assertSame(1, $leaf->renderCount);
+        $this->assertSame(2, $renderer->getWidgetRect($leaf)->row);
+    }
+
+    public function testAlignedPositionsAreShiftedOnEveryFrame()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $root->setStyle(new Style(align: Align::Right));
+        $prefix = new TextWidget('tick 0');
+        $leaf = new TextWidget('abc');
+        $root->add($prefix);
+        $root->add($leaf);
+
+        $renderer->renderFrame($root, 20, 5)->toArray();
+        $this->assertSame(14, $renderer->getWidgetRect($leaf)->col);
+
+        $prefix->setText('tick 1');
+        $renderer->renderFrame($root, 20, 5)->toArray();
+
+        $this->assertSame(14, $renderer->getWidgetRect($leaf)->col);
+    }
+
+    public function testAlignedPositionsFollowCachedChildrenThatStartUnshifted()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $root->setStyle(new Style(align: Align::Right));
+        $prefix = new TextWidget(str_repeat('x', 20));
+        $inner = new ContainerWidget();
+        $leaf = new TextWidget('ab');
+        $inner->add($leaf);
+        $root->add($prefix);
+        $root->add($inner);
+
+        // The prefix fills the width, so nothing is shifted on the first frame.
+        $renderer->renderFrame($root, 20, 5)->toArray();
+        $this->assertSame(0, $renderer->getWidgetRect($inner)->col);
+        $this->assertSame(0, $renderer->getWidgetRect($leaf)->col);
+
+        // Shrinking it introduces an offset while the inner container stays cached.
+        $prefix->setText('x');
+        $renderer->renderFrame($root, 20, 5)->toArray();
+
+        $this->assertSame(18, $renderer->getWidgetRect($inner)->col);
+        $this->assertSame(18, $renderer->getWidgetRect($leaf)->col);
+    }
+
+    public function testAlignmentAccountsForTextAroundImageSequences()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $root->setStyle(new Style(align: Align::Right));
+        $root->add(new class extends AbstractWidget {
+            public function render(RenderContext $context): array
+            {
+                return ["a\x1b_Gdata\x1b\\b"];
+            }
+        });
+
+        $lines = $renderer->renderFrame($root, 10, 5)->toArray();
+
+        $this->assertSame(10, AnsiUtils::visibleWidth($lines[0]));
     }
 
     // ---------------------------------------------------------------
@@ -1047,7 +1266,7 @@ class RendererTest extends TestCase
         $root->add(new OverwideWidget(50));
 
         try {
-            $renderer->render($root, 20, 10);
+            $renderer->renderFrame($root, 20, 10)->toArray();
             $this->fail('Expected RenderException');
         } catch (RenderException $e) {
             $this->assertStringContainsString('OverwideWidget', $e->getMessage());
@@ -1078,8 +1297,146 @@ class RendererTest extends TestCase
             $root->add(new TextWidget((string) $i));
         }
 
-        $result = $renderer->render($root, $columns, 10);
+        $result = $renderer->renderFrame($root, $columns, 10)->toArray();
         $this->assertSame($expectedWidth, AnsiUtils::visibleWidth($result[0]));
+    }
+
+    public function testBorderedChildrenNarrowerThanTheirBorderStayWithinTheirColumns()
+    {
+        $renderer = new Renderer();
+        $root = new ContainerWidget();
+        $row = new ContainerWidget();
+        $row->setStyle(new Style(direction: Direction::Horizontal));
+
+        // 20 children in 40 columns leaves 2 columns each, which a left and a
+        // right border alone would already exceed
+        for ($i = 0; $i < 20; ++$i) {
+            $cell = new ContainerWidget();
+            $cell->setStyle(new Style(border: Border::all(1, 'none')));
+            $cell->add(new TextWidget('x'));
+            $row->add($cell);
+        }
+        $root->add($row);
+
+        $result = $renderer->renderFrame($root, 40, 6)->toArray();
+
+        foreach ($result as $line) {
+            $this->assertLessThanOrEqual(40, AnsiUtils::visibleWidth($line));
+        }
+    }
+
+    private function containsBuffer(LineBufferInterface $buffer, LineBufferInterface $expected): bool
+    {
+        if ($buffer === $expected) {
+            return true;
+        }
+        if (!$buffer instanceof ConcatenatedLineBuffer) {
+            return false;
+        }
+
+        foreach ($buffer->getBuffers() as $child) {
+            if ($this->containsBuffer($child, $expected)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function testStyleChangedDuringBeforeRenderIsApplied()
+    {
+        $styleSheet = new StyleSheet();
+        $styleSheet->addRule('.highlighted', new Style()->withTextAlign(TextAlign::Right));
+
+        $root = new ContainerWidget();
+        $root->add($widget = new RestylingWidget());
+
+        $lines = new Renderer($styleSheet)->renderFrame($root, 10, 3)->toArray();
+
+        $this->assertSame('        hi', $lines[0]);
+        $this->assertTrue($widget->beforeRenderRan);
+    }
+    // ---------------------------------------------------------------
+    // postRender hook
+    // ---------------------------------------------------------------
+
+    private static function newPostRenderWidget(): AbstractWidget
+    {
+        return new class extends AbstractWidget {
+            public array $seenLines = [];
+            public int $calls = 0;
+
+            public function render(RenderContext $context): array
+            {
+                return ['ab'];
+            }
+
+            public function postRender(array $lines, RenderContext $context): array
+            {
+                ++$this->calls;
+                $this->seenLines = $lines;
+
+                return array_map(strtoupper(...), $lines);
+            }
+        };
+    }
+
+    public function testPostRenderReceivesTheFinishedBoxAndItsResultIsRendered()
+    {
+        $renderer = new Renderer();
+        $widget = self::newPostRenderWidget();
+        $widget->setStyle(new Style(border: Border::all(1, 'none')));
+        $root = new ContainerWidget();
+        $root->add($widget);
+
+        $frame = implode("\n", $renderer->renderFrame($root, 10, 5)->toArray());
+
+        // The hook saw the box with its border already drawn, not the raw content
+        $this->assertCount(3, $widget->seenLines);
+        $this->assertStringContainsString('ab', $widget->seenLines[1]);
+        $this->assertStringNotContainsString('ab', $widget->seenLines[0]);
+
+        // What the hook returned is what the frame carries
+        $this->assertStringContainsString('AB', $frame);
+        $this->assertStringNotContainsString('ab', $frame);
+    }
+
+    public function testPostRenderResultIsCachedUntilTheWidgetIsInvalidated()
+    {
+        $renderer = new Renderer();
+        $widget = self::newPostRenderWidget();
+        $root = new ContainerWidget();
+        $root->add($widget);
+
+        $renderer->renderFrame($root, 10, 5);
+        $renderer->renderFrame($root, 10, 5);
+        $this->assertSame(1, $widget->calls);
+
+        $widget->invalidate();
+        $renderer->renderFrame($root, 10, 5);
+        $this->assertSame(2, $widget->calls);
+    }
+
+    public function testPostRenderLinesKeepTheWidthContract()
+    {
+        $renderer = new Renderer();
+        $widget = new class extends AbstractWidget {
+            public function render(RenderContext $context): array
+            {
+                return ['ab'];
+            }
+
+            public function postRender(array $lines, RenderContext $context): array
+            {
+                return [str_repeat('x', 100)];
+            }
+        };
+        $root = new ContainerWidget();
+        $root->add($widget);
+
+        $this->expectException(RenderException::class);
+
+        $renderer->renderFrame($root, 10, 5);
     }
 }
 
@@ -1112,6 +1469,27 @@ class CountingLeafWidget extends AbstractWidget
         ++$this->renderCount;
 
         return ['leaf'];
+    }
+}
+
+/**
+ * Adds a style class from beforeRender(), which the Renderer must observe even
+ * though the container already resolved this widget's style when filtering out
+ * hidden children.
+ */
+class RestylingWidget extends AbstractWidget
+{
+    public bool $beforeRenderRan = false;
+
+    public function beforeRender(): void
+    {
+        $this->beforeRenderRan = true;
+        $this->addStyleClass('highlighted');
+    }
+
+    public function render(RenderContext $context): array
+    {
+        return ['hi'];
     }
 }
 

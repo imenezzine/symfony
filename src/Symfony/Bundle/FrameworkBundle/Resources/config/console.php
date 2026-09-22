@@ -14,11 +14,6 @@ namespace Symfony\Component\DependencyInjection\Loader\Configurator;
 use Symfony\Bundle\FrameworkBundle\Command\AboutCommand;
 use Symfony\Bundle\FrameworkBundle\Command\AssetsInstallCommand;
 use Symfony\Bundle\FrameworkBundle\Command\CacheClearCommand;
-use Symfony\Bundle\FrameworkBundle\Command\CachePoolClearCommand;
-use Symfony\Bundle\FrameworkBundle\Command\CachePoolDeleteCommand;
-use Symfony\Bundle\FrameworkBundle\Command\CachePoolInvalidateTagsCommand;
-use Symfony\Bundle\FrameworkBundle\Command\CachePoolListCommand;
-use Symfony\Bundle\FrameworkBundle\Command\CachePoolPruneCommand;
 use Symfony\Bundle\FrameworkBundle\Command\CacheWarmupCommand;
 use Symfony\Bundle\FrameworkBundle\Command\ConfigDebugCommand;
 use Symfony\Bundle\FrameworkBundle\Command\ConfigDumpReferenceCommand;
@@ -27,7 +22,6 @@ use Symfony\Bundle\FrameworkBundle\Command\ContainerLintCommand;
 use Symfony\Bundle\FrameworkBundle\Command\DebugAutowiringCommand;
 use Symfony\Bundle\FrameworkBundle\Command\EventDispatcherDebugCommand;
 use Symfony\Bundle\FrameworkBundle\Command\RouterDebugCommand;
-use Symfony\Bundle\FrameworkBundle\Command\RouterMatchCommand;
 use Symfony\Bundle\FrameworkBundle\Command\SecretsDecryptToLocalCommand;
 use Symfony\Bundle\FrameworkBundle\Command\SecretsEncryptFromLocalCommand;
 use Symfony\Bundle\FrameworkBundle\Command\SecretsGenerateKeysCommand;
@@ -35,31 +29,19 @@ use Symfony\Bundle\FrameworkBundle\Command\SecretsListCommand;
 use Symfony\Bundle\FrameworkBundle\Command\SecretsRemoveCommand;
 use Symfony\Bundle\FrameworkBundle\Command\SecretsRevealCommand;
 use Symfony\Bundle\FrameworkBundle\Command\SecretsSetCommand;
-use Symfony\Bundle\FrameworkBundle\Command\TranslationDebugCommand;
-use Symfony\Bundle\FrameworkBundle\Command\TranslationExtractCommand;
 use Symfony\Bundle\FrameworkBundle\Command\YamlLintCommand;
+use Symfony\Bundle\FrameworkBundle\Command\YamlLintSchemaResolver;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Bundle\FrameworkBundle\EventListener\SuggestMissingPackageSubscriber;
 use Symfony\Component\Console\EventListener\ValidateQuestionInputListener;
 use Symfony\Component\Console\Messenger\RunCommandMessageHandler;
 use Symfony\Component\ErrorHandler\Command\ErrorDumpCommand;
 use Symfony\Component\Form\Command\DebugCommand;
-use Symfony\Component\Messenger\Command\ConsumeMessagesCommand;
-use Symfony\Component\Messenger\Command\DebugCommand as MessengerDebugCommand;
-use Symfony\Component\Messenger\Command\FailedMessagesRemoveCommand;
-use Symfony\Component\Messenger\Command\FailedMessagesRetryCommand;
-use Symfony\Component\Messenger\Command\FailedMessagesShowCommand;
-use Symfony\Component\Messenger\Command\SetupTransportsCommand;
-use Symfony\Component\Messenger\Command\StatsCommand;
-use Symfony\Component\Messenger\Command\StopWorkersCommand;
-use Symfony\Component\Scheduler\Command\DebugCommand as SchedulerDebugCommand;
 use Symfony\Component\Serializer\Command\DebugCommand as SerializerDebugCommand;
-use Symfony\Component\Translation\Command\TranslationLintCommand;
-use Symfony\Component\Translation\Command\TranslationPullCommand;
-use Symfony\Component\Translation\Command\TranslationPushCommand;
 use Symfony\Component\Translation\Command\XliffLintCommand;
 use Symfony\Component\Validator\Command\DebugCommand as ValidatorDebugCommand;
-use Symfony\Component\Workflow\Command\WorkflowDumpCommand;
+use Symfony\Component\Yaml\Schema\FileHeaderSchemaResolver;
+use Symfony\Component\Yaml\Schema\SchemaValidator;
 use Symfony\WebpackEncoreBundle\Asset\EntrypointLookupInterface;
 
 return static function (ContainerConfigurator $container) {
@@ -72,6 +54,7 @@ return static function (ContainerConfigurator $container) {
                 service('validator'),
             ])
             ->tag('kernel.event_subscriber')
+            ->tag('container.remove_if_missing', ['service' => 'validator'])
 
         ->set('console.command.about', AboutCommand::class)
             ->tag('console.command')
@@ -87,36 +70,6 @@ return static function (ContainerConfigurator $container) {
             ->args([
                 service('cache_clearer'),
                 service('filesystem'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.cache_pool_clear', CachePoolClearCommand::class)
-            ->args([
-                service('cache.global_clearer'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.cache_pool_prune', CachePoolPruneCommand::class)
-            ->args([
-                [],
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.cache_pool_invalidate_tags', CachePoolInvalidateTagsCommand::class)
-            ->args([
-                tagged_locator('cache.taggable', 'pool'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.cache_pool_delete', CachePoolDeleteCommand::class)
-            ->args([
-                service('cache.global_clearer'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.cache_pool_list', CachePoolListCommand::class)
-            ->args([
-                null,
             ])
             ->tag('console.command')
 
@@ -154,172 +107,37 @@ return static function (ContainerConfigurator $container) {
             ])
             ->tag('console.command')
 
-        ->set('console.command.messenger_consume_messages', ConsumeMessagesCommand::class)
-            ->args([
-                abstract_arg('Routable message bus'),
-                service('messenger.receiver_locator'),
-                service('event_dispatcher'),
-                service('logger')->nullOnInvalid(),
-                [], // Receiver names
-                service('messenger.listener.reset_services')->nullOnInvalid(),
-                [], // Bus names
-                service('messenger.rate_limiter_locator')->nullOnInvalid(),
-                null,
-            ])
-            ->tag('console.command')
-            ->tag('monolog.logger', ['channel' => 'messenger'])
-
-        ->set('console.command.messenger_setup_transports', SetupTransportsCommand::class)
-            ->args([
-                service('messenger.receiver_locator'),
-                [], // Receiver names
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.messenger_debug', MessengerDebugCommand::class)
-            ->args([
-                [], // Message to handlers mapping
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.messenger_stop_workers', StopWorkersCommand::class)
-            ->args([
-                service('cache.messenger.restart_workers_signal'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.messenger_failed_messages_retry', FailedMessagesRetryCommand::class)
-            ->args([
-                abstract_arg('Default failure receiver name'),
-                abstract_arg('Receivers'),
-                service('messenger.routable_message_bus'),
-                service('event_dispatcher'),
-                service('logger')->nullOnInvalid(),
-                service('.messenger.transport.native_php_serializer')->nullOnInvalid(),
-                null,
-            ])
-            ->tag('console.command')
-            ->tag('monolog.logger', ['channel' => 'messenger'])
-
-        ->set('console.command.messenger_failed_messages_show', FailedMessagesShowCommand::class)
-            ->args([
-                abstract_arg('Default failure receiver name'),
-                abstract_arg('Receivers'),
-                service('.messenger.transport.native_php_serializer')->nullOnInvalid(),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.messenger_failed_messages_remove', FailedMessagesRemoveCommand::class)
-            ->args([
-                abstract_arg('Default failure receiver name'),
-                abstract_arg('Receivers'),
-                service('.messenger.transport.native_php_serializer')->nullOnInvalid(),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.messenger_stats', StatsCommand::class)
-            ->args([
-                service('messenger.receiver_locator'),
-                abstract_arg('Receivers names'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.scheduler_debug', SchedulerDebugCommand::class)
-            ->args([
-                tagged_locator('scheduler.schedule_provider', 'name'),
-            ])
-            ->tag('console.command')
-
         ->set('console.command.router_debug', RouterDebugCommand::class)
             ->args([
                 service('router'),
                 service('debug.file_link_formatter')->nullOnInvalid(),
             ])
             ->tag('console.command')
-
-        ->set('console.command.router_match', RouterMatchCommand::class)
-            ->args([
-                service('router'),
-                tagged_iterator('routing.expression_language_provider'),
-            ])
-            ->tag('console.command')
+            ->tag('container.remove_if_missing', ['service' => 'router'])
 
         ->set('console.command.serializer_debug', SerializerDebugCommand::class)
             ->args([
                 service('serializer.mapping.class_metadata_factory'),
             ])
             ->tag('console.command')
-
-        ->set('console.command.translation_debug', TranslationDebugCommand::class)
-            ->args([
-                service('translator'),
-                service('translation.reader'),
-                service('translation.extractor'),
-                param('translator.default_path'),
-                null, // twig.default_path
-                [], // Translator paths
-                [], // Twig paths
-                param('kernel.enabled_locales'),
-            ])
-            ->tag('console.command')
-
-        ->set('console.command.translation_extract', TranslationExtractCommand::class)
-            ->args([
-                service('translation.writer'),
-                service('translation.reader'),
-                service('translation.extractor'),
-                param('kernel.default_locale'),
-                param('translator.default_path'),
-                null, // twig.default_path
-                [], // Translator paths
-                [], // Twig paths
-                param('kernel.enabled_locales'),
-            ])
-            ->tag('console.command')
+            ->tag('container.remove_if_missing', ['service' => 'serializer'])
 
         ->set('console.command.validator_debug', ValidatorDebugCommand::class)
             ->args([
                 service('validator'),
             ])
             ->tag('console.command')
-
-        ->set('console.command.translation_pull', TranslationPullCommand::class)
-            ->args([
-                service('translation.provider_collection'),
-                service('translation.writer'),
-                service('translation.reader'),
-                param('kernel.default_locale'),
-                [], // Translator paths
-                [], // Enabled locales
-            ])
-            ->tag('console.command', ['command' => 'translation:pull'])
-
-        ->set('console.command.translation_push', TranslationPushCommand::class)
-            ->args([
-                service('translation.provider_collection'),
-                service('translation.reader'),
-                [], // Translator paths
-                [], // Enabled locales
-            ])
-            ->tag('console.command', ['command' => 'translation:push'])
-
-        ->set('console.command.workflow_dump', WorkflowDumpCommand::class)
-            ->args([
-                tagged_locator('workflow', 'name'),
-                service('event_dispatcher')->nullOnInvalid(),
-            ])
-            ->tag('console.command')
+            ->tag('container.remove_if_missing', ['service' => 'validator'])
 
         ->set('console.command.xliff_lint', XliffLintCommand::class)
             ->tag('console.command')
 
         ->set('console.command.yaml_lint', YamlLintCommand::class)
-            ->tag('console.command')
-
-        ->set('console.command.translation_lint', TranslationLintCommand::class)
             ->args([
-                service('translator'),
-                param('kernel.enabled_locales'),
+                inline_service(YamlLintSchemaResolver::class)
+                    ->args([null, inline_service(FileHeaderSchemaResolver::class)]),
+                inline_service(SchemaValidator::class),
+                param('kernel.project_dir'),
             ])
             ->tag('console.command')
 

@@ -11,7 +11,9 @@
 
 namespace Symfony\Component\Mime\Tests\Header;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Mime\Exception\RfcComplianceException;
 use Symfony\Component\Mime\Header\UnstructuredHeader;
 
 class UnstructuredHeaderTest extends TestCase
@@ -30,7 +32,7 @@ class UnstructuredHeaderTest extends TestCase
 
     public function testBasicStructureIsKeyValuePair()
     {
-        /* -- RFC 2822, 2.2
+        /* -- RFC 5322, 2.2
         Header fields are lines composed of a field name, followed by a colon
         (":"), followed by a field body, and terminated by CRLF.
         */
@@ -40,7 +42,7 @@ class UnstructuredHeaderTest extends TestCase
 
     public function testLongHeadersAreFoldedAtWordBoundary()
     {
-        /* -- RFC 2822, 2.2.3
+        /* -- RFC 5322, 2.2.3
         Each header field is logically a single line of characters comprising
         the field name, the colon, and the field body.  For convenience
         however, and to deal with the 998/78 character limitations per line,
@@ -67,7 +69,7 @@ class UnstructuredHeaderTest extends TestCase
 
     public function testPrintableAsciiOnlyAppearsInHeaders()
     {
-        /* -- RFC 2822, 2.2.
+        /* -- RFC 5322, 2.2.
         A field name MUST be composed of printable US-ASCII characters (i.e.,
         characters that have values between 33 and 126, inclusive), except
         colon.  A field body may be composed of any US-ASCII characters,
@@ -111,7 +113,7 @@ class UnstructuredHeaderTest extends TestCase
     public function testEncodedWordsAreUsedToEncodedNonPrintableAscii()
     {
         // SPACE and TAB permitted
-        $nonPrintableBytes = array_merge(range(0x00, 0x08), range(0x10, 0x19), [0x7F]);
+        $nonPrintableBytes = array_merge(range(0x00, 0x08), range(0x0A, 0x1F), [0x7F]);
         foreach ($nonPrintableBytes as $byte) {
             $char = pack('C', $byte);
             $encodedChar = \sprintf('=%02X', $byte);
@@ -252,5 +254,34 @@ class UnstructuredHeaderTest extends TestCase
     {
         $header = new UnstructuredHeader('Subject', 'test');
         $this->assertEquals('test', $header->getBody());
+    }
+
+    #[DataProvider('provideInvalidNames')]
+    public function testInvalidNameIsRejected(string $name)
+    {
+        $this->expectException(RfcComplianceException::class);
+
+        new UnstructuredHeader($name, 'value');
+    }
+
+    public static function provideInvalidNames()
+    {
+        yield [""];
+        yield ["X-A\r\nX-Injected: value"];
+        yield ["X-A\nX-Injected: value"];
+        yield ["X-A\rX-Injected: value"];
+        yield ["X-A: value\r\nX-Injected"];
+        yield ["X A"];
+        yield ["X-A\t"];
+        yield ["X-\x00A"];
+        yield ["X-\x7fA"];
+        yield ["X-\xc3\xa9"];
+    }
+
+    public function testValidNamesAreAccepted()
+    {
+        foreach (['Subject', 'X-Custom-Header', 'x-lower', '!#$%&\'*+-.^_`|~', 'Header-With-Digits-123', 'h:X-Mailgun-Tag', 'o:tag', 'v:my-var'] as $name) {
+            $this->assertSame($name, (new UnstructuredHeader($name, 'value'))->getName());
+        }
     }
 }

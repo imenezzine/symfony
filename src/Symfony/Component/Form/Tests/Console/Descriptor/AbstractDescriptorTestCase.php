@@ -17,6 +17,7 @@ use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Form\AbstractType;
+use Symfony\Component\Form\AbstractTypeExtension;
 use Symfony\Component\Form\Extension\Core\Type\ChoiceType;
 use Symfony\Component\Form\Extension\Core\Type\FormType;
 use Symfony\Component\Form\Extension\Csrf\Type\FormTypeCsrfExtension;
@@ -85,6 +86,7 @@ abstract class AbstractDescriptorTestCase extends TestCase
     {
         $options['core_types'] = ['Symfony\Component\Form\Extension\Core\Type\FormType'];
         $options['service_types'] = ['Symfony\Bridge\Doctrine\Form\Type\EntityType'];
+        $options['data_class_types'] = [];
         $options['extensions'] = ['Symfony\Component\Form\Extension\Csrf\Type\FormTypeCsrfExtension'];
         $options['guessers'] = ['Symfony\Component\Form\Extension\Validator\ValidatorTypeGuesser'];
         $options['decorated'] = false;
@@ -105,6 +107,11 @@ abstract class AbstractDescriptorTestCase extends TestCase
         yield [new ResolvedFormType(new ChoiceType(), [], $parent), ['decorated' => false, 'show_deprecated' => false], 'resolved_form_type_1'];
         yield [new ResolvedFormType(new FormType()), ['decorated' => false, 'show_deprecated' => false], 'resolved_form_type_2'];
         yield [new ResolvedFormType(new FooType(), [], $parent), ['decorated' => false, 'show_deprecated' => true], 'deprecated_options_of_type'];
+
+        $sharedExtension = new SharedTypeExtension();
+        $extendedParent = new ResolvedFormType(new ExtendedParentType(), [$sharedExtension]);
+
+        yield [new ResolvedFormType(new ExtendedChildType(), [$sharedExtension], $extendedParent), ['decorated' => false, 'show_deprecated' => false], 'resolved_form_type_with_shared_type_extension'];
     }
 
     public static function getDescribeOptionTestData()
@@ -182,5 +189,39 @@ class FooType extends AbstractType
             $baz->setRequired('foo');
             $baz->setDefaults(['foo' => true, 'bar' => true]);
         });
+    }
+}
+
+class ExtendedParentType extends AbstractType
+{
+    public function configureOptions(OptionsResolver $resolver): void
+    {
+        $resolver->setDefined('parent_option');
+    }
+}
+
+class ExtendedChildType extends AbstractType
+{
+    public function configureOptions(OptionsResolver $resolver): void
+    {
+        $resolver->setDefined('child_option');
+    }
+
+    public function getParent(): string
+    {
+        return ExtendedParentType::class;
+    }
+}
+
+class SharedTypeExtension extends AbstractTypeExtension
+{
+    public static function getExtendedTypes(): iterable
+    {
+        return [ExtendedParentType::class, ExtendedChildType::class];
+    }
+
+    public function configureOptions(OptionsResolver $resolver): void
+    {
+        $resolver->setDefined('shared_extension_option');
     }
 }

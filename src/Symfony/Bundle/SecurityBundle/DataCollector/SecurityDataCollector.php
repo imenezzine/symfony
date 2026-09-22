@@ -23,9 +23,11 @@ use Symfony\Component\Security\Core\Authentication\Token\SwitchUserToken;
 use Symfony\Component\Security\Core\Authorization\AccessDecisionManagerInterface;
 use Symfony\Component\Security\Core\Authorization\TraceableAccessDecisionManager;
 use Symfony\Component\Security\Core\Authorization\Voter\TraceableVoter;
+use Symfony\Component\Security\Core\Dumper\MermaidDumper;
 use Symfony\Component\Security\Core\Role\RoleHierarchyInterface;
-use Symfony\Component\Security\Http\Firewall\SwitchUserListener;
+use Symfony\Component\Security\Http\Event\TokenDeauthenticatedEvent;
 use Symfony\Component\Security\Http\FirewallMapInterface;
+use Symfony\Component\Security\Http\Impersonate\ImpersonateUrlGenerator;
 use Symfony\Component\Security\Http\Logout\LogoutUrlGenerator;
 use Symfony\Component\VarDumper\Caster\ClassStub;
 use Symfony\Component\VarDumper\Cloner\Data;
@@ -38,6 +40,7 @@ use Symfony\Component\VarDumper\Cloner\Data;
 class SecurityDataCollector extends DataCollector implements LateDataCollectorInterface
 {
     private bool $hasVarDumper;
+    private ?array $deauthentication = null;
 
     public function __construct(
         private ?TokenStorageInterface $tokenStorage = null,
@@ -46,8 +49,19 @@ class SecurityDataCollector extends DataCollector implements LateDataCollectorIn
         private ?AccessDecisionManagerInterface $accessDecisionManager = null,
         private ?FirewallMapInterface $firewallMap = null,
         private ?TraceableFirewallListener $firewall = null,
+        private ?ImpersonateUrlGenerator $impersonateUrlGenerator = null,
+        private MermaidDumper $mermaidDumper = new MermaidDumper(),
     ) {
         $this->hasVarDumper = class_exists(ClassStub::class);
+    }
+
+    public function collectDeauthentication(TokenDeauthenticatedEvent $event): void
+    {
+        $this->deauthentication = [
+            'reason' => $event->getReason(),
+            'providers' => $event->getProviderClasses(),
+            'user' => $event->getOriginalToken()->getUserIdentifier(),
+        ];
     }
 
     public function collect(Request $request, Response $response, ?\Throwable $exception = null): void
@@ -92,7 +106,7 @@ class SecurityDataCollector extends DataCollector implements LateDataCollectorIn
                 $impersonatorUser = $originalToken->getUserIdentifier();
             }
 
-            if (null !== $this->roleHierarchy) {
+            if ($this->roleHierarchy) {
                 foreach ($this->roleHierarchy->getReachableRoleNames($assignedRoles) as $role) {
                     if (!\in_array($role, $assignedRoles, true)) {
                         $inheritedRoles[] = $role;
@@ -182,13 +196,12 @@ class SecurityDataCollector extends DataCollector implements LateDataCollectorIn
                     'authenticators' => $firewallConfig->getAuthenticators(),
                 ];
 
-                // generate exit impersonation path from current request
-                if ($this->data['impersonated'] && null !== $switchUserConfig = $firewallConfig->getSwitchUser()) {
-                    $exitPath = $request->getRequestUri();
-                    $exitPath .= null === $request->getQueryString() ? '?' : '&';
-                    $exitPath .= \sprintf('%s=%s', urlencode($switchUserConfig['parameter']), SwitchUserListener::EXIT_VALUE);
-
-                    $this->data['impersonation_exit_path'] = $exitPath;
+                if ($this->data['impersonated'] && null !== $firewallConfig->getSwitchUser()) {
+                    try {
+                        $this->data['impersonation_exit_path'] = $this->impersonateUrlGenerator?->generateExitPath();
+                    } catch (\Exception) {
+                        // fail silently when the exit impersonation path cannot be generated
+                    }
                 }
             }
         }
@@ -200,6 +213,10 @@ class SecurityDataCollector extends DataCollector implements LateDataCollectorIn
         }
 
         $this->data['authenticators'] = $this->firewall ? $this->firewall->getAuthenticatorsInfo() : [];
+
+        // kept until reset(), which runs before the next main request: sub-requests of the
+        // same request must report it too, the main profile is not always collected first
+        $this->data['deauthentication'] = $this->deauthentication;
 
         if ($this->data['listeners'] && !($this->data['firewall']['stateless'] ?? true)) {
             $authCookieName = "{$this->data['firewall']['name']}_auth_profile_token";
@@ -221,11 +238,15 @@ class SecurityDataCollector extends DataCollector implements LateDataCollectorIn
                 $response->headers->clearCookie($authCookieName);
             }
         }
+        if ($this->roleHierarchy) {
+            $this->data['roles_diagram'] = $this->mermaidDumper->dump($this->roleHierarchy);
+        }
     }
 
     public function reset(): void
     {
         $this->data = [];
+        $this->deauthentication = null;
     }
 
     public function lateCollect(): void
@@ -375,8 +396,23 @@ class SecurityDataCollector extends DataCollector implements LateDataCollectorIn
         return $this->data['deauth_profile_token'] ?? null;
     }
 
+    /**
+     * Returns information about why the user was deauthenticated, if applicable.
+     *
+     * @return array{reason: ?string, providers: list<class-string>, user: string}|Data|null
+     */
+    public function getDeauthentication(): array|Data|null
+    {
+        return $this->data['deauthentication'] ?? null;
+    }
+
     public function getName(): string
     {
         return 'security';
+    }
+
+    public function getRolesDiagram(): ?string
+    {
+        return $this->data['roles_diagram'] ?? null;
     }
 }

@@ -22,6 +22,7 @@ use Jose\Component\Signature\JWSBuilder;
 use Jose\Component\Signature\Serializer\CompactSerializer as JwsCompactSerializer;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
+use Symfony\Bundle\SecurityBundle\Tests\Functional\Bundle\AccessTokenBundle\Security\Handler\IntrospectionResponseFactory;
 use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -41,6 +42,148 @@ class AccessTokenTest extends AbstractWebTestCase
         $this->expectException(InvalidConfigurationException::class);
         $this->expectExceptionMessage('The path "security.firewalls.main.access_token.token_extractors" should have at least 1 element(s) defined.');
         $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_no_extractors.yml']);
+    }
+
+    public function testProtectedResourceMetadataIsServedAndAdvertised()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_resource_metadata.yml']);
+
+        $client->request('GET', '/foo', server: ['HTTP_AUTHORIZATION' => 'Bearer INVALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="invalid_token",error_description="Invalid credentials.",resource_metadata="http://localhost/.well-known/oauth-protected-resource"', $response->headers->get('WWW-Authenticate'));
+
+        // the primary RFC 9728 discovery flow: a client holding no token yet is told where
+        // the document is, which the firewall can only answer as its entry point
+        $client->request('GET', '/foo');
+        $response = $client->getResponse();
+
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",resource_metadata="http://localhost/.well-known/oauth-protected-resource"', $response->headers->get('WWW-Authenticate'));
+
+        $client->request('GET', '/.well-known/oauth-protected-resource');
+        $response = $client->getResponse();
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('application/json', $response->headers->get('Content-Type'));
+        $this->assertSame([
+            'resource' => 'http://localhost',
+            'authorization_servers' => ['https://accounts.example.com'],
+            'scopes_supported' => ['profile', 'email'],
+            'bearer_methods_supported' => ['header', 'query'],
+            'resource_name' => 'My API',
+            'resource_documentation' => 'https://api.example.com/docs',
+        ], json_decode($response->getContent(), true));
+    }
+
+    public function testNoProtectedResourceMetadataRouteWithoutTheConfiguration()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_header_default.yml']);
+
+        $client->request('GET', '/.well-known/oauth-protected-resource');
+
+        $this->assertSame(404, $client->getResponse()->getStatusCode());
+    }
+
+    public function testAccessControlGrantedOnTheScopesTheTokenCarries()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope.yml']);
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer SCOPED_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(['message' => 'Welcome @dunglas!'], json_decode($response->getContent(), true));
+    }
+
+    /**
+     * RFC 9728 §5.1 does not restrict "resource_metadata" to a 401, and a client denied for a missing
+     * scope holds a token from an authorization server it may have to find again.
+     */
+    public function testTheInsufficientScopeChallengeAdvertisesTheResourceMetadata()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope_metadata.yml']);
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="insufficient_scope",error_description="The request requires higher privileges than provided by the access token.",scope="openid profile:read",resource_metadata="http://localhost/.well-known/oauth-protected-resource"', $response->headers->get('WWW-Authenticate'));
+    }
+
+    public function testAccessControlDeniedOnAMissingScope()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope.yml']);
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="insufficient_scope",error_description="The request requires higher privileges than provided by the access token.",scope="openid profile:read"', $response->headers->get('WWW-Authenticate'));
+    }
+
+    /**
+     * The scope challenge stands in only for the denials no handler of the application already
+     * answers, so an application-wide access denied URL keeps being rendered.
+     */
+    public function testTheApplicationWideAccessDeniedUrlStillApplies()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope_denied_url.yml']);
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(['message' => 'Welcome anonymous!'], json_decode($response->getContent(), true));
+        $this->assertFalse($response->headers->has('WWW-Authenticate'));
+    }
+
+    /**
+     * A denial no scope took part in is handed back to the handler the application registered,
+     * while a denial on a scope still gets the RFC 6750 challenge.
+     */
+    public function testTheApplicationWideAccessDeniedHandlerStillAnswersTheDenialsItUsedTo()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope_app_handler.yml']);
+
+        $client->request('GET', '/bar', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame(['message' => 'Denied by the application.'], json_decode($response->getContent(), true));
+        $this->assertFalse($response->headers->has('WWW-Authenticate'));
+
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="insufficient_scope",error_description="The request requires higher privileges than provided by the access token.",scope="openid profile:read"', $response->headers->get('WWW-Authenticate'));
+    }
+
+    public function testIsGrantedDeniedOnAMissingScope()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope.yml']);
+        $client->request('GET', '/scoped', [], [], ['HTTP_AUTHORIZATION' => 'Bearer SCOPED_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="insufficient_scope",error_description="The request requires higher privileges than provided by the access token.",scope="profile:write"', $response->headers->get('WWW-Authenticate'));
+    }
+
+    public function testIsGrantedDeniedOnOneOfTheScopesAnAttributeRequires()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope.yml']);
+        $client->request('GET', '/all-scopes', [], [], ['HTTP_AUTHORIZATION' => 'Bearer SCOPED_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="insufficient_scope",error_description="The request requires higher privileges than provided by the access token.",scope="openid profile:write"', $response->headers->get('WWW-Authenticate'));
+    }
+
+    public function testADenialNoScopeTookPartInKeepsThePlainForbiddenResponse()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_scope.yml']);
+        $client->request('GET', '/bar', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertFalse($response->headers->has('WWW-Authenticate'));
     }
 
     public function testAnonymousAccessIsGranted()
@@ -396,6 +539,90 @@ class AccessTokenTest extends AbstractWebTestCase
         $this->assertSame('Bearer realm="My API",error="invalid_token",error_description="Invalid credentials."', $response->headers->get('WWW-Authenticate'));
     }
 
+    public function testOAuth2IntrospectionSuccess()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_oauth2.yml']);
+        $endpoint = $client->getContainer()->get(IntrospectionResponseFactory::class);
+
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(['message' => 'Welcome @dunglas!'], json_decode($response->getContent(), true));
+
+        ['method' => $method, 'url' => $url, 'options' => $options] = $endpoint->requests[0];
+        $this->assertSame('POST', $method);
+        $this->assertSame('https://authorization-server.example.com/token/introspect', $url);
+        $this->assertSame(['Authorization: Basic '.base64_encode('client:password')], $options['normalized_headers']['authorization']);
+        $this->assertSame('token=VALID_ACCESS_TOKEN&token_type_hint=access_token', $options['body']);
+    }
+
+    public function testOAuth2IntrospectionFailureOnAnInactiveToken()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_oauth2.yml']);
+
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer INVALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="invalid_token",error_description="Invalid credentials."', $response->headers->get('WWW-Authenticate'));
+    }
+
+    /**
+     * The "issuer" the firewall declares reaches the handler, so a token the authorization server
+     * reports as active but attributes to another issuer is still refused.
+     */
+    /**
+     * RFC 9701: the endpoint is asked for a signed response, and the RFC 7662 members are read from
+     * the "token_introspection" claim of the JWT it answers with.
+     */
+    #[RequiresPhpExtension('openssl')]
+    public function testOAuth2IntrospectionSuccessWithASignedResponse()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_oauth2_signed.yml']);
+        $endpoint = $client->getContainer()->get(IntrospectionResponseFactory::class);
+
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer SIGNED_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(['message' => 'Welcome @dunglas!'], json_decode($response->getContent(), true));
+
+        $this->assertSame(['Accept: application/token-introspection+jwt'], $endpoint->requests[0]['options']['normalized_headers']['accept']);
+    }
+
+    /**
+     * An authorization server answering plain JSON to a request that asked for a JWT has given up
+     * the guarantee the resource server required, so the response is refused.
+     */
+    #[RequiresPhpExtension('openssl')]
+    public function testOAuth2IntrospectionFailureOnAnUnsignedResponse()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_oauth2_signed.yml']);
+
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer VALID_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="invalid_token",error_description="Invalid credentials."', $response->headers->get('WWW-Authenticate'));
+    }
+
+    public function testOAuth2IntrospectionFailureOnAForeignIssuer()
+    {
+        $client = $this->createClient(['test_case' => 'AccessToken', 'root_config' => 'config_oauth2.yml']);
+
+        $client->request('GET', '/foo', [], [], ['HTTP_AUTHORIZATION' => 'Bearer FOREIGN_ISSUER_ACCESS_TOKEN']);
+        $response = $client->getResponse();
+
+        $this->assertInstanceOf(Response::class, $response);
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('Bearer realm="My API",error="invalid_token",error_description="Invalid credentials."', $response->headers->get('WWW-Authenticate'));
+    }
+
     public function testCasSuccess()
     {
         $casResponse = new MockResponse(<<<BODY
@@ -466,14 +693,16 @@ class AccessTokenTest extends AbstractWebTestCase
             [static fn () => self::createJws([...$claims, 'username' => 'Invalid Username'])],
             [static fn () => self::createJwe(self::createJws($claims), ['exp' => $time - 3600])],
             [static fn () => self::createJwe(self::createJws($claims), ['cty' => 'x-specific'])],
+            [static fn () => self::createJws($claims, ['typ' => 'JWT'])],
+            [static fn () => self::createJws($claims, [])],
         ];
     }
 
-    private static function createJws(array $claims, array $header = []): string
+    private static function createJws(array $claims, array $header = ['typ' => 'at+jwt']): string
     {
         return (new JwsCompactSerializer())->serialize((new JWSBuilder(new AlgorithmManager([
             new ES256(),
-        ])))->create()
+        ])))
             ->withPayload(json_encode($claims))
             // tip: use https://mkjwk.org/ to generate a JWK
             ->addSignature(new JWK([
@@ -501,7 +730,7 @@ class AccessTokenTest extends AbstractWebTestCase
         return (new JweCompactSerializer())->serialize(
             (new JWEBuilder(new AlgorithmManager([
                 new ECDHES(), new A128GCM(),
-            ]), null))->create()
+            ]), null))
                 ->withPayload($input)
                 ->withSharedProtectedHeader(['alg' => 'ECDH-ES', 'enc' => 'A128GCM', ...$header])
                 // tip: use https://mkjwk.org/ to generate a JWK

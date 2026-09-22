@@ -16,19 +16,51 @@ use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Bundle\FrameworkBundle\Kernel\MicroKernelTrait;
+use Symfony\Component\Asset\AssetBundle;
+use Symfony\Component\AssetMapper\AssetMapperBundle;
+use Symfony\Component\Cache\CacheBundle;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\ConsoleBundle;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Extension\ExtensionInterface;
+use Symfony\Component\DependencyInjection\Kernel\ServicesBundle;
 use Symfony\Component\DependencyInjection\Loader\ClosureLoader;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\HtmlSanitizer\HtmlSanitizerBundle;
+use Symfony\Component\HttpClient\HttpClientBundle;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\Kernel;
+use Symfony\Component\JsonPath\JsonPathBundle;
+use Symfony\Component\JsonStreamer\JsonStreamerBundle;
+use Symfony\Component\KeyManagement\KeyManagementBundle;
+use Symfony\Component\Lock\LockBundle;
+use Symfony\Component\Mailer\MailerBundle;
+use Symfony\Component\Messenger\MessengerBundle;
+use Symfony\Component\Mime\MimeBundle;
+use Symfony\Component\Notifier\NotifierBundle;
+use Symfony\Component\ObjectMapper\ObjectMapperBundle;
+use Symfony\Component\Process\ProcessBundle;
+use Symfony\Component\PropertyAccess\PropertyAccessBundle;
+use Symfony\Component\PropertyInfo\PropertyInfoBundle;
+use Symfony\Component\RateLimiter\RateLimiterBundle;
+use Symfony\Component\RemoteEvent\RemoteEventBundle;
 use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
+use Symfony\Component\Routing\RouterBundle;
+use Symfony\Component\Scheduler\SchedulerBundle;
+use Symfony\Component\Semaphore\SemaphoreBundle;
+use Symfony\Component\Serializer\SerializerBundle;
+use Symfony\Component\Translation\TranslationBundle;
+use Symfony\Component\TypeInfo\TypeInfoBundle;
+use Symfony\Component\Uid\UidBundle;
+use Symfony\Component\Validator\ValidationBundle;
+use Symfony\Component\Webhook\WebhookBundle;
+use Symfony\Component\WebLink\WebLinkBundle;
+use Symfony\Component\Workflow\WorkflowBundle;
 
 require_once __DIR__.'/default/src/DefaultKernel.php';
 require_once __DIR__.'/flex-style/src/FlexStyleMicroKernel.php';
@@ -276,12 +308,24 @@ class MicroKernelTraitTest extends TestCase
         $parameters = $kernel->getKernelParameters();
 
         $this->assertSame(['test', 'dev'], $parameters['.container.known_envs']);
-        $this->assertSame([
-            'Symfony\Component\DependencyInjection\Kernel\ServicesBundle' => ['all' => true],
-            'Symfony\Component\Console\ConsoleBundle' => ['all' => true],
-            'Symfony\Bundle\FrameworkBundle\FrameworkBundle' => ['all' => true],
-            'TestBundle' => ['test' => true, 'dev' => true],
-        ], $parameters['.kernel.bundles_definition']);
+        $expected = [
+            ServicesBundle::class => ['all' => true],
+            ConsoleBundle::class => ['all' => true],
+            RouterBundle::class => ['all' => true],
+            CacheBundle::class => ['all' => true],
+        ];
+
+        // registered with ignoreOnInvalid, so absent when the component is not installed
+        foreach ([AssetBundle::class, SerializerBundle::class, ValidationBundle::class, TranslationBundle::class, WebLinkBundle::class, LockBundle::class, MessengerBundle::class, SemaphoreBundle::class, WorkflowBundle::class, RemoteEventBundle::class, HtmlSanitizerBundle::class, TypeInfoBundle::class, PropertyAccessBundle::class, PropertyInfoBundle::class, UidBundle::class, SchedulerBundle::class, JsonStreamerBundle::class, AssetMapperBundle::class, RateLimiterBundle::class, WebhookBundle::class, HttpClientBundle::class, MailerBundle::class, NotifierBundle::class, ProcessBundle::class, JsonPathBundle::class, MimeBundle::class, ObjectMapperBundle::class, KeyManagementBundle::class] as $class) {
+            if (class_exists($class)) {
+                $expected[$class] = ['all' => true];
+            }
+        }
+
+        $expected['Symfony\Bundle\FrameworkBundle\FrameworkBundle'] = ['all' => true];
+        $expected['TestBundle'] = ['test' => true, 'dev' => true];
+
+        $this->assertSame($expected, $parameters['.kernel.bundles_definition']);
     }
 
     public function testAllowedEnvsRestrictsKnownEnvs()

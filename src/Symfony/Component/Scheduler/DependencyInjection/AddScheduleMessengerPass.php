@@ -18,8 +18,10 @@ use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
+use Symfony\Component\DependencyInjection\Exception\LogicException;
 use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\Messenger\Message\RedispatchMessage;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Scheduler\Messenger\ServiceCallMessage;
 use Symfony\Component\Scheduler\RecurringMessage;
@@ -30,10 +32,36 @@ use Symfony\Component\Scheduler\Schedule;
  */
 class AddScheduleMessengerPass implements CompilerPassInterface
 {
+    private const MESSENGER_DEPENDENT_SERVICES = [
+        'scheduler.messenger.service_call_message_handler',
+        'scheduler.messenger_transport_factory',
+        'scheduler.event_listener',
+        'serializer.normalizer.scheduler_trigger',
+        'console.command.scheduler_debug',
+        'cache.scheduler',
+    ];
+
     public function process(ContainerBuilder $container): void
     {
+        if ($container->hasDefinition('scheduler.messenger_transport_factory') && !$container->hasDefinition('messenger.transport_factory')) {
+            if ($container->findTaggedServiceIds('scheduler.task') || $container->findTaggedServiceIds('scheduler.schedule_provider')) {
+                throw new LogicException('Scheduler support cannot be enabled as the Messenger component is not '.(interface_exists(MessageBusInterface::class) ? 'enabled.' : 'installed. Try running "composer require symfony/messenger".'));
+            }
+
+            // the scheduler only provides Messenger transports, there is nothing to register without it
+            foreach (self::MESSENGER_DEPENDENT_SERVICES as $id) {
+                $container->removeDefinition($id);
+            }
+
+            return;
+        }
+
         if (!$container->has('event_dispatcher')) {
             $container->removeDefinition('scheduler.event_listener');
+        }
+
+        if (!$container->has('cache.app')) {
+            $container->removeDefinition('cache.scheduler');
         }
 
         $receivers = [];
@@ -55,16 +83,43 @@ class AddScheduleMessengerPass implements CompilerPassInterface
             $scheduleProviderIds[$name] = $serviceId;
         }
 
+        $knownEnvs = $container->hasParameter('.container.known_envs') ? $container->getParameter('.container.known_envs') : [];
+        $currentEnv = $container->hasParameter('kernel.environment') ? $container->getParameter('kernel.environment') : null;
+
         $tasksPerSchedule = [];
         foreach ($container->findTaggedServiceIds('scheduler.task') as $serviceId => $tags) {
             foreach ($tags as $tagAttributes) {
-                $serviceDefinition = $container->getDefinition($serviceId);
                 $scheduleName = $tagAttributes['schedule'] ?? 'default';
 
-                if ($commandTags = $serviceDefinition->getTag('console.command')) {
+                // keep the schedule known even when every one of its tasks is filtered out,
+                // so that its receiver still exists and workers can be started in any environment
+                $tasksPerSchedule[$scheduleName] ??= [];
+
+                if ($envs = (array) ($tagAttributes['env'] ?? [])) {
+                    if ($knownEnvs && $unknownEnvs = array_diff($envs, $knownEnvs)) {
+                        $container->log($this, \sprintf('Task "%s" is restricted to environment(s) "%s", which are not among the known ones ("%s"); check for a typo.', $serviceId, implode('", "', $unknownEnvs), implode('", "', $knownEnvs)));
+                    }
+
+                    if (null !== $currentEnv && !\in_array($currentEnv, $envs, true)) {
+                        continue;
+                    }
+                }
+
+                $serviceDefinition = $container->getDefinition($serviceId);
+
+                $commandTags = $serviceDefinition->getTag('console.command');
+                $method = $tagAttributes['method'] ?? '__invoke';
+                $commandTag = array_find($commandTags, static fn ($tag) => $method === ($tag['method'] ?? '__invoke'));
+
+                // with no method-level #[AsCommand], the class-level command applies to all tasks
+                if (null === $commandTag && !array_any($commandTags, static fn ($tag) => isset($tag['method']))) {
+                    $commandTag = $commandTags[0] ?? null;
+                }
+
+                if (null !== $commandTag) {
                     /** @var AsCommand|null $attribute */
                     $attribute = ($container->getReflectionClass($serviceDefinition->getClass())->getAttributes(AsCommand::class)[0] ?? null)?->newInstance();
-                    $aliases = explode('|', $commandTags[0]['command'] ?? $attribute?->name ?? '');
+                    $aliases = explode('|', $commandTag['command'] ?? $attribute?->name ?? '');
                     if ('' === $commandName = array_shift($aliases)) {
                         $commandName = array_shift($aliases) ?? '';
                     }
@@ -108,7 +163,11 @@ class AddScheduleMessengerPass implements CompilerPassInterface
 
         foreach ($tasksPerSchedule as $scheduleName => $tasks) {
             $id = "scheduler.provider.$scheduleName";
-            $schedule = (new Definition(Schedule::class))->addMethodCall('add', $tasks);
+            $schedule = new Definition(Schedule::class);
+
+            if ($tasks) {
+                $schedule->addMethodCall('add', $tasks);
+            }
 
             if (isset($scheduleProviderIds[$scheduleName])) {
                 $schedule

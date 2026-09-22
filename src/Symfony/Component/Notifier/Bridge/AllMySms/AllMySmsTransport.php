@@ -62,7 +62,7 @@ final class AllMySmsTransport extends AbstractTransport
         $options['to'] = $message->getPhone();
         $options['text'] = $message->getSubject();
 
-        $endpoint = \sprintf('https://%s/sms/send/', $this->getEndpoint());
+        $endpoint = \sprintf('%s://%s/sms/send/', $this->getHttpScheme(), $this->getEndpoint());
         $response = $this->client->request('POST', $endpoint, [
             'auth_basic' => [$this->login, $this->apiKey],
             'json' => array_filter($options),
@@ -82,7 +82,7 @@ final class AllMySmsTransport extends AbstractTransport
 
         $success = $response->toArray(false);
 
-        if (false === isset($success['smsId'])) {
+        if (!isset($success['smsId'])) {
             throw new TransportException(\sprintf('Unable to send the SMS: "%s" (%s).', $success['description'], $success['code']), $response);
         }
 

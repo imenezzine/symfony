@@ -110,9 +110,6 @@ final class Cas2HandlerTest extends TestCase
 
     public function testWithInvalidPrefix()
     {
-        $this->expectException(AuthenticationException::class);
-        $this->expectExceptionMessage('Invalid CAS response.');
-
         $response = new MockResponse(<<<BODY
                 <cas:serviceResponse xmlns:cas='http://www.yale.edu/tp/cas'>
                     <cas:authenticationSuccess>
@@ -128,8 +125,11 @@ final class Cas2HandlerTest extends TestCase
         $requestStack->push(new Request(['ticket' => 'PGTIOU-84678-8a9d']));
 
         $cas2Handler = new Cas2Handler($requestStack, 'https://www.example.com/cas', 'invalid-one', $httpClient);
-        $username = $cas2Handler->getUserBadgeFrom('PGTIOU-84678-8a9d');
-        $this->assertEquals('lobster', $username);
+
+        $this->expectException(AuthenticationException::class);
+        $this->expectExceptionMessage('Invalid CAS response.');
+
+        $cas2Handler->getUserBadgeFrom('PGTIOU-84678-8a9d');
     }
 
     public function testServiceUrlIsBuiltFromCurrentRequest()
@@ -153,6 +153,24 @@ final class Cas2HandlerTest extends TestCase
 
         $cas2Handler = new Cas2Handler($requestStack, 'https://www.example.com/cas', 'cas', $httpClient);
         $this->assertEquals(new UserBadge('lobster'), $cas2Handler->getUserBadgeFrom('ST-1856339'));
+    }
+
+    public function testValidationDoesNotFollowRedirects()
+    {
+        $response = new MockResponse('', ['http_code' => 302, 'response_headers' => ['location' => 'https://other.example.com/validate']]);
+
+        $httpClient = new MockHttpClient([$response]);
+        $requestStack = new RequestStack();
+        $requestStack->push(new Request(['ticket' => 'ST-1856339']));
+
+        $cas2Handler = new Cas2Handler($requestStack, 'https://www.example.com/cas', 'cas', $httpClient);
+
+        try {
+            $cas2Handler->getUserBadgeFrom('ST-1856339');
+        } catch (\Throwable) {
+        }
+
+        $this->assertSame(0, $response->getRequestOptions()['max_redirects'] ?? null);
     }
 
     public function testThrowsWhenNoTrustedHostsConfigured()

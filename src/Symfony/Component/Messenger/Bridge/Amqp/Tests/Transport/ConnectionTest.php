@@ -20,6 +20,7 @@ use Symfony\Component\Messenger\Bridge\Amqp\Transport\AmqpFactory;
 use Symfony\Component\Messenger\Bridge\Amqp\Transport\AmqpStamp;
 use Symfony\Component\Messenger\Bridge\Amqp\Transport\Connection;
 use Symfony\Component\Messenger\Exception\InvalidArgumentException;
+use Symfony\Component\Messenger\Exception\LogicException;
 
 #[RequiresPhpExtension('amqp')]
 #[Group('time-sensitive')]
@@ -261,6 +262,110 @@ class ConnectionTest extends TestCase
 
         $connection = Connection::fromDsn('amqp://localhost', [], $factory);
         $connection->publish('body');
+    }
+
+    #[RequiresPhpExtension('posix')]
+    public function testItDispatchesTheSignalsRaisedWhileFetching()
+    {
+        $received = false;
+        $previousHandler = pcntl_signal_get_handler(\SIGUSR1);
+        $previousAsync = pcntl_async_signals(true);
+        pcntl_signal(\SIGUSR1, static function () use (&$received) { $received = true; });
+
+        try {
+            $factory = new TestAmqpFactory(
+                $this->createStub(\AMQPConnection::class),
+                $amqpChannel = $this->createStub(\AMQPChannel::class),
+                $amqpQueue = $this->createMock(\AMQPQueue::class),
+                $this->createStub(\AMQPExchange::class)
+            );
+
+            $amqpChannel->method('isConnected')->willReturn(true);
+            $amqpQueue->expects($this->once())->method('get')->willReturnCallback(function () use (&$received) {
+                posix_kill(posix_getpid(), \SIGUSR1);
+
+                // the transport holds the signal back until the extension is done
+                $this->assertFalse($received);
+
+                return null;
+            });
+
+            $connection = Connection::fromDsn('amqp://localhost', [], $factory);
+
+            $this->assertNull($connection->get('messages'));
+            $this->assertTrue($received);
+            $this->assertTrue(pcntl_async_signals());
+        } finally {
+            pcntl_signal(\SIGUSR1, $previousHandler);
+            pcntl_async_signals($previousAsync);
+        }
+    }
+
+    public function testItConsumesWithALongLivedConsumerWhenPrefetchCountIsSet()
+    {
+        $factory = new TestAmqpFactory(
+            $amqpConnection = $this->createStub(\AMQPConnection::class),
+            $amqpChannel = $this->createMock(\AMQPChannel::class),
+            $amqpQueue = $this->createMock(\AMQPQueue::class),
+            $amqpExchange = $this->createStub(\AMQPExchange::class)
+        );
+
+        $amqpChannel->method('isConnected')->willReturn(true);
+        $amqpChannel->expects($this->once())->method('setPrefetchCount')->with(7);
+        $amqpQueue->method('getName')->willReturn('messages');
+        $amqpQueue->method('getConnection')->willReturn($amqpConnection);
+
+        $amqpEnvelope = $this->createStub(\AMQPEnvelope::class);
+        $consumed = [];
+        $amqpQueue->expects($this->exactly(2))->method('consume')
+            ->willReturnCallback(static function (?callable $callback, int $flags) use ($amqpEnvelope, $amqpQueue, &$consumed) {
+                $consumed[] = $flags;
+
+                if (null !== $callback) {
+                    $callback($amqpEnvelope, $amqpQueue);
+                }
+            });
+
+        $connection = Connection::fromDsn('amqp://localhost?prefetch_count=7', [], $factory);
+
+        $this->assertSame(7, $connection->getPrefetchCount());
+        $this->assertSame([['messages', $amqpEnvelope]], $connection->consume(['messages'], 1));
+        $this->assertSame([\AMQP_NOPARAM, \AMQP_JUST_CONSUME], $consumed);
+    }
+
+    #[DataProvider('provideReadTimeouts')]
+    public function testConsumingBoundsTheReadTimeout(string $dsn, float|string|null $expectedReadTimeout)
+    {
+        $factory = new class($this->createStub(\AMQPConnection::class), $this->createStub(\AMQPChannel::class), $this->createStub(\AMQPQueue::class), $this->createStub(\AMQPExchange::class)) extends TestAmqpFactory {
+            public array $credentials = [];
+
+            public function createConnection(array $credentials): \AMQPConnection
+            {
+                $this->credentials = $credentials;
+
+                return parent::createConnection($credentials);
+            }
+        };
+
+        Connection::fromDsn($dsn, [], $factory)->channel();
+
+        $this->assertSame($expectedReadTimeout, $factory->credentials['read_timeout'] ?? null);
+    }
+
+    public static function provideReadTimeouts(): iterable
+    {
+        yield 'unbounded by default' => ['amqp://localhost', null];
+        yield 'bounded when consuming' => ['amqp://localhost?prefetch_count=7', 1.0];
+        yield 'kept when set' => ['amqp://localhost?prefetch_count=7&read_timeout=2.5', 2.5];
+        yield 'bounded when set to zero' => ['amqp://localhost?prefetch_count=7&read_timeout=0', 1.0];
+    }
+
+    public function testConsumingRequiresAPrefetchCount()
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Consuming requires the "prefetch_count" option to be set on the transport.');
+
+        Connection::fromDsn('amqp://localhost')->consume(['messages'], 1);
     }
 
     public function testItAllowsToUseAPersistentConnection()
@@ -530,6 +635,21 @@ class ConnectionTest extends TestCase
         $connection->publish('body');
     }
 
+    public function testItKeepsConnectionAlive()
+    {
+        $factory = new TestAmqpFactory(
+            $this->createStub(\AMQPConnection::class),
+            $amqpChannel = $this->createMock(\AMQPChannel::class),
+            $this->createStub(\AMQPQueue::class),
+            $this->createStub(\AMQPExchange::class)
+        );
+
+        $amqpChannel->expects($this->once())->method('qos')->with(0, 0);
+
+        $connection = Connection::fromDsn('amqp://localhost', [], $factory);
+        $connection->keepalive();
+    }
+
     public function testAutoSetupWithDelayDeclaresExchangeQueuesAndDelay()
     {
         $amqpConnection = $this->createStub(\AMQPConnection::class);
@@ -574,6 +694,80 @@ class ConnectionTest extends TestCase
         $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__5000_delay');
 
         $connection->publish('{}', ['x-some-headers' => 'foo'], 5000);
+    }
+
+    public function testItRoundsTheDelayUpToTheConfiguredGranularity()
+    {
+        $delayExchange = $this->createMock(\AMQPExchange::class);
+        $delayExchange->expects($this->once())
+            ->method('publish')
+            ->with('{}', 'delay_messages__6000_delay', \AMQP_NOPARAM);
+        $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__6000_delay', false, 6000, ['granularity' => 1000]);
+
+        $connection->publish('{}', [], 5200);
+    }
+
+    public function testTheDelayGranularityIsNormalizedToAnInteger()
+    {
+        $delayExchange = $this->createMock(\AMQPExchange::class);
+        $delayExchange->expects($this->once())
+            ->method('publish')
+            ->with('{}', 'delay_messages__6000_delay', \AMQP_NOPARAM);
+        $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__6000_delay', false, 6000, ['granularity' => '1000']);
+
+        $connection->publish('{}', [], 5200);
+    }
+
+    public function testADelayOnTheGranularityGridIsLeftUnchanged()
+    {
+        $delayExchange = $this->createMock(\AMQPExchange::class);
+        $delayExchange->expects($this->once())
+            ->method('publish')
+            ->with('{}', 'delay_messages__5000_delay', \AMQP_NOPARAM);
+        $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__5000_delay', false, 5000, ['granularity' => 1000]);
+
+        $connection->publish('{}', [], 5000);
+    }
+
+    public function testItRoundsTheDelayUpToTwoSignificantDigitsByDefault()
+    {
+        $delayExchange = $this->createMock(\AMQPExchange::class);
+        $delayExchange->expects($this->once())
+            ->method('publish')
+            ->with('{}', 'delay_messages__5300_delay', \AMQP_NOPARAM);
+        $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__5300_delay', false, 5300);
+
+        $connection->publish('{}', [], 5234);
+    }
+
+    public function testTheDefaultDelayGranularityScalesWithTheDelay()
+    {
+        $delayExchange = $this->createMock(\AMQPExchange::class);
+        $delayExchange->expects($this->once())
+            ->method('publish')
+            ->with('{}', 'delay_messages__53000_delay', \AMQP_NOPARAM);
+        $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__53000_delay', false, 53000);
+
+        $connection->publish('{}', [], 52345);
+    }
+
+    public function testTheDelayRoundingIsDisabledByAGranularityOfOne()
+    {
+        $delayExchange = $this->createMock(\AMQPExchange::class);
+        $delayExchange->expects($this->once())
+            ->method('publish')
+            ->with('{}', 'delay_messages__5234_delay', \AMQP_NOPARAM);
+        $connection = $this->createDelayOrRetryConnection($delayExchange, self::DEFAULT_EXCHANGE_NAME, 'delay_messages__5234_delay', false, 5234, ['granularity' => 1]);
+
+        $connection->publish('{}', [], 5234);
+    }
+
+    public function testItThrowsWhenTheDelayGranularityIsNotPositive()
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The "delay.granularity" option of the AMQP Messenger transport must be a positive integer, "0" given.');
+
+        Connection::fromDsn('amqp://localhost?delay[granularity]=0');
     }
 
     public function testItPublishesImmediatelyWithNegativeDelay()
@@ -662,7 +856,6 @@ class ConnectionTest extends TestCase
 
         $connection->publish('{}', ['x-some-headers' => 'foo'], 5000);
     }
-
 
     public function testItDelaysTheMessageWithADifferentRoutingKeyAndTTLs()
     {
@@ -1012,6 +1205,41 @@ class ConnectionTest extends TestCase
         $connection->ack($envelope, self::DEFAULT_EXCHANGE_NAME);
     }
 
+    public function testItReconnectsWhenHeartbeatExpiresAfterGettingNoMessage()
+    {
+        $factory = new TestAmqpFactory(
+            $amqpConnection = $this->createMock(\AMQPConnection::class),
+            $amqpChannel = $this->createStub(\AMQPChannel::class),
+            $amqpQueue = $this->createStub(\AMQPQueue::class),
+            $this->createStub(\AMQPExchange::class)
+        );
+
+        $connected = true;
+
+        $amqpConnection->expects($this->once())->method('disconnect')->willReturnCallback(static function () use (&$connected) {
+            $connected = false;
+        });
+        $amqpConnection->method('connect')->willReturnCallback(static function () use (&$connected) {
+            $connected = true;
+        });
+
+        $amqpChannel->method('getConnection')->willReturn($amqpConnection);
+        $amqpChannel->method('isConnected')->willReturnCallback(static function () use (&$connected) {
+            return $connected;
+        });
+
+        $amqpQueue->method('get')->willReturn(null);
+
+        $connection = Connection::fromDsn('amqp://localhost?heartbeat=1', [], $factory);
+
+        $this->assertNull($connection->get(self::DEFAULT_EXCHANGE_NAME));
+        $this->assertNull($connection->get(self::DEFAULT_EXCHANGE_NAME));
+
+        (new \ReflectionProperty($connection, 'lastActivityTime'))->setValue($connection, time() - 3);
+
+        $connection->get(self::DEFAULT_EXCHANGE_NAME);
+    }
+
     public function testClearResetsInFlightMessagesCounter()
     {
         $factory = $this->createStub(AmqpFactory::class);
@@ -1055,7 +1283,7 @@ class ConnectionTest extends TestCase
         $connection->publish('body');
     }
 
-    private function createDelayOrRetryConnection(\AMQPExchange $delayExchange, string $deadLetterExchangeName, string $delayQueueName, bool|string $dailyDelayQueues = false): Connection
+    private function createDelayOrRetryConnection(\AMQPExchange $delayExchange, string $deadLetterExchangeName, string $delayQueueName, bool|string $dailyDelayQueues = false, int $expectedDelay = 5000, array $delayOptions = []): Connection
     {
         $amqpConnection = $this->createStub(\AMQPConnection::class);
         $amqpChannel = $this->createStub(\AMQPChannel::class);
@@ -1070,17 +1298,19 @@ class ConnectionTest extends TestCase
         $baseExpire = filter_var($dailyDelayQueues, \FILTER_VALIDATE_BOOL) ? 86400 * 1000 : 0;
         $delayQueue->expects($this->once())->method('setName')->with($delayQueueName);
         $delayQueue->expects($this->once())->method('setArguments')->with([
-            'x-message-ttl' => 5000,
-            'x-expires' => 5000 + 10000 + $baseExpire,
+            'x-message-ttl' => $expectedDelay,
+            'x-expires' => $expectedDelay + 10000 + $baseExpire,
             'x-dead-letter-exchange' => $deadLetterExchangeName,
             'x-dead-letter-routing-key' => '',
         ]);
 
         $delayQueue->expects($this->once())->method('declareQueue');
         $delayQueue->expects($this->once())->method('bind')->with('delays', $delayQueueName);
-        $options = false === $dailyDelayQueues ? [] : ['delay' => ['daily_delay_queues' => $dailyDelayQueues]];
+        if (false !== $dailyDelayQueues) {
+            $delayOptions['daily_delay_queues'] = $dailyDelayQueues;
+        }
 
-        return Connection::fromDsn('amqp://localhost', $options, $factory);
+        return Connection::fromDsn('amqp://localhost', $delayOptions ? ['delay' => $delayOptions] : [], $factory);
     }
 
     public function testGettingDefaultExchange()

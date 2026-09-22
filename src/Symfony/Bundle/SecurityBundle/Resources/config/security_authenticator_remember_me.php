@@ -56,6 +56,8 @@ return static function (ContainerConfigurator $container) {
                 abstract_arg('options'),
                 service('logger')->nullOnInvalid(),
                 abstract_arg('token verifier'),
+                abstract_arg('signature properties'),
+                service('property_accessor')->nullOnInvalid(),
             ])
             ->tag('monolog.logger', ['channel' => 'security'])
 
@@ -97,5 +99,6 @@ return static function (ContainerConfigurator $container) {
             ->parent('cache.system')
             ->private()
             ->tag('cache.pool')
+            ->tag('container.remove_if_missing', ['service' => 'cache.system'])
     ;
 };

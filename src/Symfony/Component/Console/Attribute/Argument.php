@@ -21,6 +21,7 @@ use Symfony\Component\String\UnicodeString;
 #[\Attribute(\Attribute::TARGET_PARAMETER | \Attribute::TARGET_PROPERTY)]
 class Argument
 {
+    public string $description;
     public mixed $default = null;
     public array|\Closure $suggestedValues;
 
@@ -38,13 +39,15 @@ class Argument
      *
      * If unset, the `name` value will be inferred from the parameter definition.
      *
+     * @param string|(callable():string)                                                 $description     The description of the argument, displayed with the help page
      * @param array<string|Suggestion>|callable(CompletionInput):list<string|Suggestion> $suggestedValues The values used for input completion
      */
     public function __construct(
-        public string $description = '',
+        string|callable $description = '',
         public string $name = '',
         array|callable $suggestedValues = [],
     ) {
+        $this->description = \is_string($description) ? $description : $description();
         $this->suggestedValues = \is_callable($suggestedValues) ? $suggestedValues(...) : $suggestedValues;
     }
 
@@ -92,7 +95,9 @@ class Argument
 
         $self->interactiveAttribute = Ask::tryFrom($member, $self->name) ?? AskChoice::tryFrom($member, $self->name);
 
-        if ($self->interactiveAttribute && $isOptional) {
+        // A variadic argument is optional at the CLI but, like an array argument, collects
+        // values until an empty answer, so it stays compatible with an interactive attribute.
+        if ($self->interactiveAttribute && $isOptional && !$reflection->isVariadic()) {
             throw new LogicException(\sprintf('The %s "$%s" argument of "%s" cannot be both interactive and optional.', $reflection->getMemberName(), $self->name, $reflection->getSourceName()));
         }
 

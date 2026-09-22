@@ -1,6 +1,17 @@
 CHANGELOG
 =========
 
+8.2
+---
+
+ * Add `RateLimiterBundle`, which provides the `rate_limiter` configuration and the services previously provided by `FrameworkBundle` under `framework.rate_limiter`
+ * Add `RateLimitExceededEvent`
+ * `CompoundLimiter::consume()` now stops consuming at the first limiter that rejects the request
+ * Add `RateLimiterBuilder`
+ * Allow `\DateInterval` for the `interval` and `rate.interval` options of `RateLimiterFactory`
+ * Add `RateLimit::getResetAt()`
+ * Add a `$keys` argument to `CompoundRateLimiterFactory` to fix the key of some of its sub-limiters
+
 8.1
 ---
 

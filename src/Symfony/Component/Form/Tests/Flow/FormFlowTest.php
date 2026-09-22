@@ -23,10 +23,15 @@ use Symfony\Component\Form\Flow\Type\NextFlowType;
 use Symfony\Component\Form\Flow\Type\PreviousFlowType;
 use Symfony\Component\Form\FormError;
 use Symfony\Component\Form\FormFactoryInterface;
+use Symfony\Component\Form\FormInterface;
 use Symfony\Component\Form\Forms;
 use Symfony\Component\Form\Tests\Fixtures\Flow\Data\UserSignUp;
 use Symfony\Component\Form\Tests\Fixtures\Flow\Extension\UserSignUpTypeExtension;
+use Symfony\Component\Form\Tests\Fixtures\Flow\FirstStepSkippedType;
+use Symfony\Component\Form\Tests\Fixtures\Flow\GroupingStepsFlowType;
 use Symfony\Component\Form\Tests\Fixtures\Flow\LastStepSkippedType;
+use Symfony\Component\Form\Tests\Fixtures\Flow\NestedStepsFlowType;
+use Symfony\Component\Form\Tests\Fixtures\Flow\SkippedParentStepsFlowType;
 use Symfony\Component\Form\Tests\Fixtures\Flow\UserSignUpType;
 use Symfony\Component\Validator\Mapping\Factory\LazyLoadingMetadataFactory;
 use Symfony\Component\Validator\Mapping\Loader\AttributeLoader;
@@ -126,27 +131,48 @@ class FormFlowTest extends TestCase
 
         $step1 = [
             'name' => 'personal',
+            'level' => 0,
             'index' => 0,
             'position' => 1,
+            'is_before_current_step' => false,
             'is_current_step' => true,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => false,
             'can_be_skipped' => false,
             'is_skipped' => false,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
         ];
         $step2 = [
             'name' => 'professional',
+            'level' => 0,
             'index' => 1,
             'position' => -1,
+            'is_before_current_step' => false,
             'is_current_step' => false,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => true,
             'can_be_skipped' => true,
             'is_skipped' => true,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
         ];
         $step3 = [
             'name' => 'account',
+            'level' => 0,
             'index' => 2,
             'position' => 2,
+            'is_before_current_step' => false,
             'is_current_step' => false,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => true,
             'can_be_skipped' => false,
             'is_skipped' => false,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
         ];
 
         self::assertSame($step1, $view->vars['steps']['personal']);
@@ -444,6 +470,86 @@ class FormFlowTest extends TestCase
         self::assertNull($data->role);
     }
 
+    public function testResetActionWithoutInitialData()
+    {
+        $data = new UserSignUp();
+        $data->firstName = 'John';
+        $data->lastName = 'Doe';
+        $data->worker = true;
+        $data->company = 'Acme';
+        $data->currentStep = 'account';
+
+        $dataStorage = new InMemoryDataStorage('user_sign_up');
+        $dataStorage->save($data);
+
+        $flow = $this->factory->create(UserSignUpType::class, null, [
+            'data_storage' => $dataStorage,
+        ]);
+
+        self::assertSame('account', $flow->getCursor()->getCurrentStep());
+
+        $flow->submit([
+            'account' => [],
+            'navigator' => [
+                'reset' => '',
+            ],
+        ]);
+
+        $flow = $flow->getStepForm();
+        /** @var UserSignUp $data */
+        $data = $flow->getData();
+
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('personal'), 'reset action should restart the flow from empty data');
+        self::assertNull($data->firstName);
+        self::assertNull($data->company);
+        self::assertSame('personal', $data->currentStep);
+        self::assertNull($dataStorage->load());
+    }
+
+    public function testFinishActionWithoutInitialData()
+    {
+        $data = new UserSignUp();
+        $data->firstName = 'John';
+        $data->lastName = 'Doe';
+        $data->worker = true;
+        $data->company = 'Acme';
+        $data->role = 'ROLE_DEVELOPER';
+        $data->currentStep = 'account';
+
+        $dataStorage = new InMemoryDataStorage('user_sign_up');
+        $dataStorage->save($data);
+
+        $flow = $this->factory->create(UserSignUpType::class, null, [
+            'data_storage' => $dataStorage,
+        ]);
+
+        $flow->submit([
+            'account' => [
+                'email' => 'john@acme.com',
+                'password' => 'eBvU2vBLfSXqf36',
+            ],
+            'navigator' => [
+                'finish' => '',
+            ],
+        ]);
+
+        self::assertTrue($flow->isFinished());
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
+
+        /** @var UserSignUp $data */
+        $data = $flow->getData();
+        self::assertSame('John', $data->firstName, 'the finished data must stay available');
+        self::assertSame('john@acme.com', $data->email);
+
+        $nextFlow = $flow->getStepForm();
+
+        self::assertNotSame($flow, $nextFlow);
+        self::assertSame('personal', $nextFlow->getCursor()->getCurrentStep());
+        self::assertNotSame($data, $nextFlow->getData());
+        self::assertNull($nextFlow->getData()->firstName);
+    }
+
     public function testResetManually()
     {
         $data = new UserSignUp();
@@ -619,12 +725,100 @@ class FormFlowTest extends TestCase
         $data = new UserSignUp();
         $data->worker = false;
         $data->currentStep = 'account';
-        $flow = $this->factory->create(UserSignUpType::class, $data);
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Cannot move back to step "professional" because it is a skipped step.');
+        $dataStorage = new InMemoryDataStorage('user_sign_up');
+        $dataStorage->save($data);
 
-        $flow->movePrevious('professional');
+        $flow = $this->factory->create(UserSignUpType::class, new UserSignUp(), [
+            'data_storage' => $dataStorage,
+        ]);
+
+        try {
+            $flow->movePrevious('professional');
+            self::fail('A RuntimeException should have been thrown.');
+        } catch (RuntimeException $e) {
+            self::assertSame('Cannot move back to step "professional" because it is a skipped step.', $e->getMessage());
+        }
+
+        self::assertSame('account', $flow->getCursor()->getCurrentStep(), 'the cursor must not move when the target is skipped');
+        self::assertSame('account', $dataStorage->load()->currentStep, 'the storage must not change when the target is skipped');
+    }
+
+    public function testMovePreviousToStepSavesOnce()
+    {
+        $dataStorage = new class('user_sign_up') extends InMemoryDataStorage {
+            public array $savedSteps = [];
+
+            public function save(object|array $data): void
+            {
+                $this->savedSteps[] = $data->currentStep;
+
+                parent::save($data);
+            }
+        };
+
+        $data = new UserSignUp();
+        $data->worker = true;
+        $data->currentStep = 'account';
+        $dataStorage->save($data);
+        $dataStorage->savedSteps = [];
+
+        $flow = $this->factory->create(UserSignUpType::class, new UserSignUp(), [
+            'data_storage' => $dataStorage,
+        ]);
+
+        $flow->movePrevious('personal');
+
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
+        self::assertSame(['personal'], $dataStorage->savedSteps, 'only the target step must be persisted');
+        self::assertSame('personal', $flow->newStepForm()->getCursor()->getCurrentStep());
+    }
+
+    public function testInvalidMovePreviousToGroupStep()
+    {
+        $dataStorage = new InMemoryDataStorage('nested_steps_flow');
+        $dataStorage->save(['currentStep' => 'stepC']);
+
+        $flow = $this->factory->create(NestedStepsFlowType::class, [], [
+            'data_storage' => $dataStorage,
+        ]);
+
+        try {
+            $flow->movePrevious('stepA');
+            self::fail('A RuntimeException should have been thrown.');
+        } catch (RuntimeException $e) {
+            self::assertSame('Cannot move back to step "stepA" because it is a group.', $e->getMessage());
+        }
+
+        self::assertSame('stepC', $flow->getCursor()->getCurrentStep(), 'the cursor must not move when the target is a group');
+        self::assertSame('stepC', $dataStorage->load()['currentStep'], 'the storage must not change when the target is a group');
+    }
+
+    public function testMovePreviousToNestedStepSavesOnce()
+    {
+        $dataStorage = new class('nested_steps_flow') extends InMemoryDataStorage {
+            public array $savedSteps = [];
+
+            public function save(object|array $data): void
+            {
+                $this->savedSteps[] = $data['currentStep'];
+
+                parent::save($data);
+            }
+        };
+
+        $dataStorage->save(['currentStep' => 'stepC']);
+        $dataStorage->savedSteps = [];
+
+        $flow = $this->factory->create(NestedStepsFlowType::class, [], [
+            'data_storage' => $dataStorage,
+        ]);
+
+        $flow->movePrevious('stepA2');
+
+        self::assertSame('stepA2', $flow->getCursor()->getCurrentStep());
+        self::assertSame(['stepA2'], $dataStorage->savedSteps, 'only the target step must be persisted');
+        self::assertSame('stepA2', $flow->newStepForm()->getCursor()->getCurrentStep());
     }
 
     public function testInvalidStepForm()
@@ -720,6 +914,138 @@ class FormFlowTest extends TestCase
 
         self::assertSame('professional', $flow->getCursor()->getCurrentStep(), 'The current step should be the one set in the initial data');
         self::assertSame('professional', $data->currentStep);
+    }
+
+    public function testCreateWithoutInitialData()
+    {
+        $flow = $this->factory->create(UserSignUpType::class);
+
+        /** @var UserSignUp $data */
+        $data = $flow->getData();
+
+        self::assertInstanceOf(UserSignUp::class, $data);
+        self::assertSame('personal', $data->currentStep);
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('personal'));
+        self::assertArrayNotHasKey('data', $flow->getConfig()->getInitialOptions());
+
+        $flow->submit([
+            'personal' => [
+                'firstName' => 'John',
+                'lastName' => 'Doe',
+                'worker' => '1',
+            ],
+            'navigator' => [
+                'next' => '',
+            ],
+        ]);
+
+        self::assertTrue($flow->isValid());
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('professional', $flow->getCursor()->getCurrentStep());
+        self::assertSame($data, $flow->getData());
+        self::assertSame('John', $data->firstName);
+    }
+
+    public function testCreateWithoutInitialDataAndWithoutDataClass()
+    {
+        $flow = $this->factory->create(FirstStepSkippedType::class);
+
+        self::assertSame(['currentStep' => 'step2'], $flow->getData());
+        self::assertSame('step2', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('step2'));
+    }
+
+    public function testCreateWithoutInitialDataUsesEmptyDataClosureOnNestedSteps()
+    {
+        $cursor = null;
+
+        $flow = $this->factory->create(NestedStepsFlowType::class, null, [
+            'empty_data' => static function (FormFlowInterface $flow) use (&$cursor) {
+                $cursor = $flow->getCursor();
+
+                return ['currentStep' => 'stepB2'];
+            },
+        ]);
+
+        self::assertSame('stepA1', $cursor->getCurrentStep(), 'the provisional flow must start on the first step that is not a group');
+        self::assertContains('stepB11', $cursor->getSteps(), 'the provisional cursor must carry the nested steps');
+        self::assertSame('stepB2', $flow->getCursor()->getCurrentStep());
+    }
+
+    public function testCreateWithoutInitialDataUsesEmptyDataClosure()
+    {
+        $flow = $this->factory->create(UserSignUpType::class, null, [
+            'empty_data' => static function (FormInterface $form) {
+                $data = new UserSignUp();
+                $data->worker = true;
+
+                return $data;
+            },
+        ]);
+
+        /** @var UserSignUp $data */
+        $data = $flow->getData();
+
+        self::assertInstanceOf(FormFlowInterface::class, $flow);
+        self::assertTrue($data->worker);
+        self::assertSame('personal', $data->currentStep);
+    }
+
+    public function testCreateWithoutInitialDataClonesEmptyDataObject()
+    {
+        $emptyData = new UserSignUp();
+        $emptyData->worker = true;
+
+        $flow = $this->factory->create(UserSignUpType::class, null, ['empty_data' => $emptyData]);
+
+        /** @var UserSignUp $data */
+        $data = $flow->getData();
+
+        self::assertNotSame($emptyData, $data);
+        self::assertTrue($data->worker);
+        self::assertSame('personal', $data->currentStep);
+        self::assertSame('', $emptyData->currentStep, 'The empty_data instance must not be mutated');
+    }
+
+    public function testUnknownStoredStepFallsBackToFirstStep()
+    {
+        $data = new UserSignUp();
+        $data->firstName = 'John';
+        $data->worker = true;
+        $data->currentStep = 'removed_step';
+
+        $dataStorage = new InMemoryDataStorage('user_sign_up');
+        $dataStorage->save($data);
+
+        $flow = $this->factory->create(UserSignUpType::class, new UserSignUp(), [
+            'data_storage' => $dataStorage,
+        ]);
+
+        /** @var UserSignUp $data */
+        $data = $flow->getData();
+
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('personal'));
+        self::assertSame('personal', $data->currentStep, 'the stored step must be corrected');
+        self::assertSame('John', $data->firstName, 'the stored data must be preserved');
+    }
+
+    public function testUnknownInitialStepFallsBackToFirstStep()
+    {
+        $flow = $this->factory->create(UserSignUpType::class, ['currentStep' => 'removed_step'], [
+            'data_class' => null,
+            'step_property_path' => '[currentStep]',
+        ]);
+
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
+        self::assertSame('personal', $flow->getConfig()->getInitialStep());
+
+        $flow->reset();
+
+        self::assertSame('personal', $flow->getCursor()->getCurrentStep());
     }
 
     public function testFormFlowWithArrayData()
@@ -969,5 +1295,541 @@ class FormFlowTest extends TestCase
         self::assertTrue($flow->isFinished());
         self::assertNotSame($flow, $flow->getStepForm());
         self::assertSame(['currentStep' => 'step1', 'step1' => 'foo'], $flow->getData());
+    }
+
+    public function testNestedStepsFlowConfig()
+    {
+        $flow = $this->factory->create(NestedStepsFlowType::class, []);
+        $config = $flow->getConfig();
+
+        self::assertTrue($config->hasStep('stepA'));
+        self::assertTrue($config->hasStep('stepA1'));
+        self::assertTrue($config->hasStep('stepA2'));
+        self::assertTrue($config->hasStep('stepA3'));
+        self::assertTrue($config->hasStep('stepB'));
+        self::assertTrue($config->hasStep('stepB1'));
+        self::assertTrue($config->hasStep('stepB11'));
+        self::assertTrue($config->hasStep('stepB12'));
+        self::assertTrue($config->hasStep('stepB2'));
+        self::assertTrue($config->hasStep('stepC'));
+    }
+
+    public function testNestedStepsFlowNavigation()
+    {
+        $flow = $this->factory->create(NestedStepsFlowType::class, []);
+
+        // stepA is group, so the initial step is its first child
+        self::assertSame('stepA1', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepA1'));
+
+        $flow->submit([
+            'stepA1' => 'value1',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepA2', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepA2'));
+
+        $flow->submit([
+            'stepA2' => 'value2',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepA3', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepA3'));
+
+        $flow->submit([
+            'stepA3' => 'value3',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepB', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepB'));
+
+        // Submit stepB with value 2 (SkipB2) - this means stepB1 is NOT skipped
+        $flow->submit([
+            'stepB' => '2',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        // stepB1 is NOT skipped (skip condition returns false), it's a FormType container
+        self::assertSame('stepB1', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepB1'));
+
+        $flow->submit([
+            'stepB1' => [],
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepB11', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepB11'));
+
+        $flow->submit([
+            'stepB11' => 'valueB11',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepB12', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepB12'));
+
+        $flow->submit([
+            'stepB12' => 'valueB12',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepB2', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepB2'));
+
+        $flow->submit([
+            'stepB2' => 'valueB2',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepC', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepC'));
+        self::assertTrue($flow->getCursor()->isLastStep());
+
+        // Finish the flow
+        $flow->submit([
+            'stepC' => 'valueC',
+            'navigator' => ['finish' => ''],
+        ]);
+
+        self::assertTrue($flow->isSubmitted());
+        self::assertTrue($flow->isValid());
+        self::assertTrue($flow->isFinished());
+
+        // Verify all data was collected
+        $data = $flow->getData();
+        self::assertSame('value1', $data['stepA1']);
+        self::assertSame('value2', $data['stepA2']);
+        self::assertSame('value3', $data['stepA3']);
+        self::assertSame(2, $data['stepB']); // ChoiceType converts to int
+        self::assertSame('valueB11', $data['stepB11']);
+        self::assertSame('valueB12', $data['stepB12']);
+        self::assertSame('valueB2', $data['stepB2']);
+        self::assertSame('valueC', $data['stepC']);
+    }
+
+    public function testNestedStepsFlowNavigationWithSkippedParent()
+    {
+        $flow = $this->factory->create(NestedStepsFlowType::class, []);
+
+        // Navigate quickly to stepB
+        $flow->submit(['stepA' => [], 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        $flow->submit(['stepA1' => 'v1', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        $flow->submit(['stepA2' => 'v2', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        $flow->submit(['stepA3' => 'v3', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepB', $flow->getCursor()->getCurrentStep());
+
+        // Submit stepB with value 1 (SkipB1) - stepB1 parent is skipped but children are not
+        $flow->submit([
+            'stepB' => '1',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        // stepB1 is skipped via skip func, so its children (stepB11, stepB12) are also skipped
+        self::assertSame('stepB2', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('stepB2'));
+
+        $flow->submit([
+            'stepB2' => 'valueB2',
+            'navigator' => ['next' => ''],
+        ]);
+
+        $flow = $flow->getStepForm();
+
+        self::assertSame('stepC', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->getCursor()->isLastStep());
+    }
+
+    public function testNestedStepsViewVars()
+    {
+        $flow = $this->factory->create(NestedStepsFlowType::class, []);
+        $view = $flow->createView();
+
+        // Top-level steps (3 in this case)
+        self::assertArrayHasKey('steps', $view->vars);
+        self::assertCount(3, $view->vars['steps']);
+        self::assertArrayHasKey('stepA', $view->vars['steps']);
+        self::assertArrayHasKey('stepB', $view->vars['steps']);
+        self::assertArrayHasKey('stepC', $view->vars['steps']);
+
+        // Top-level index and position are level-specific
+        // stepA uses FormType (container) so it's skipped (position=-1)
+        self::assertSame(0, $view->vars['steps']['stepA']['index']);
+        self::assertSame(1, $view->vars['steps']['stepA']['position']);
+        self::assertFalse($view->vars['steps']['stepA']['is_skipped']);
+        // stepB uses ChoiceType, stepC uses TextType - both visible
+        self::assertSame(1, $view->vars['steps']['stepB']['index']);
+        self::assertSame(2, $view->vars['steps']['stepB']['position']);
+        self::assertFalse($view->vars['steps']['stepB']['is_skipped']);
+        self::assertSame(2, $view->vars['steps']['stepC']['index']);
+        self::assertSame(3, $view->vars['steps']['stepC']['position']);
+        self::assertFalse($view->vars['steps']['stepC']['is_skipped']);
+
+        // has_current_step_descendant is true for current step (stepA1 is the initial step)
+        self::assertTrue($view->vars['steps']['stepA']['has_current_step_descendant']);
+        self::assertFalse($view->vars['steps']['stepB']['has_current_step_descendant']);
+        self::assertFalse($view->vars['steps']['stepC']['has_current_step_descendant']);
+
+        // stepA children (stepA1, stepA2, stepA3) have level-specific index/position
+        $stepAChildren = $view->vars['steps']['stepA']['children'];
+        self::assertCount(3, $stepAChildren);
+        self::assertSame(0, $stepAChildren['stepA1']['index']);
+        self::assertSame(1, $stepAChildren['stepA1']['position']);
+        self::assertSame(1, $stepAChildren['stepA2']['index']);
+        self::assertSame(2, $stepAChildren['stepA2']['position']);
+        self::assertSame(2, $stepAChildren['stepA3']['index']);
+        self::assertSame(3, $stepAChildren['stepA3']['position']);
+
+        // stepB children (stepB1, stepB2)
+        $stepBChildren = $view->vars['steps']['stepB']['children'];
+        self::assertCount(2, $stepBChildren);
+        // stepB1 has explicit setSkip that checks $data['stepB'] === 1, which is false for empty data
+        self::assertSame(0, $stepBChildren['stepB1']['index']);
+        self::assertSame(1, $stepBChildren['stepB1']['position']);
+        self::assertFalse($stepBChildren['stepB1']['is_skipped']);
+        // stepB2 is a TextType, so it's visible
+        self::assertSame(1, $stepBChildren['stepB2']['index']);
+        self::assertSame(2, $stepBChildren['stepB2']['position']);
+        self::assertFalse($stepBChildren['stepB2']['is_skipped']);
+
+        // stepB1 nested children (stepB11, stepB12)
+        $stepB1Children = $stepBChildren['stepB1']['children'];
+        self::assertCount(2, $stepB1Children);
+        self::assertSame(0, $stepB1Children['stepB11']['index']);
+        self::assertSame(1, $stepB1Children['stepB11']['position']);
+        self::assertSame(1, $stepB1Children['stepB12']['index']);
+        self::assertSame(2, $stepB1Children['stepB12']['position']);
+    }
+
+    public function testNestedStepsViewVarsWithDeeplyNestedCurrentStep()
+    {
+        // Set current step to a deeply nested child (stepB11)
+        $flow = $this->factory->create(NestedStepsFlowType::class, ['currentStep' => 'stepB11']);
+        $view = $flow->createView();
+
+        // All ancestors should have has_current_step_descendant=true
+        self::assertFalse($view->vars['steps']['stepA']['has_current_step_descendant']);
+        self::assertTrue($view->vars['steps']['stepB']['has_current_step_descendant']);
+        self::assertFalse($view->vars['steps']['stepC']['has_current_step_descendant']);
+
+        // stepB1 (parent of stepB11) should have has_current_step_descendant=true
+        $stepBChildren = $view->vars['steps']['stepB']['children'];
+        self::assertTrue($stepBChildren['stepB1']['has_current_step_descendant']);
+        self::assertFalse($stepBChildren['stepB2']['has_current_step_descendant']);
+
+        // stepB11 should have is_current_step=true
+        $stepB1Children = $stepBChildren['stepB1']['children'];
+        self::assertTrue($stepB1Children['stepB11']['is_current_step']);
+        self::assertFalse($stepB1Children['stepB12']['is_current_step']);
+    }
+
+    public function testGroupViewVars()
+    {
+        $flow = $this->factory->create(GroupingStepsFlowType::class, []);
+        $view = $flow->createView();
+
+        // Current step is 'a1' (first visitable child of group 'a')
+        self::assertSame('a1', $flow->getCursor()->getCurrentStep());
+
+        // Top-level: a(group), b, c(group)
+        self::assertCount(3, $view->vars['steps']);
+        self::assertArrayHasKey('a', $view->vars['steps']);
+        self::assertArrayHasKey('b', $view->vars['steps']);
+        self::assertArrayHasKey('c', $view->vars['steps']);
+
+        $a1 = [
+            'name' => 'a1',
+            'level' => 1,
+            'index' => 0,
+            'position' => 1,
+            'is_before_current_step' => false,
+            'is_current_step' => true,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => false,
+            'can_be_skipped' => false,
+            'is_skipped' => false,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
+        ];
+        $a2 = [
+            'name' => 'a2',
+            'level' => 1,
+            'index' => 1,
+            'position' => 2,
+            'is_before_current_step' => false,
+            'is_current_step' => false,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => true,
+            'can_be_skipped' => false,
+            'is_skipped' => false,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
+        ];
+        $c1 = [
+            'name' => 'c1',
+            'level' => 1,
+            'index' => 0,
+            'position' => 1,
+            'is_before_current_step' => false,
+            'is_current_step' => false,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => true,
+            'can_be_skipped' => false,
+            'is_skipped' => false,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
+        ];
+
+        // Group 'a': level 0, before current step, has_current_step_descendant (a1 is current)
+        self::assertSame([
+            'name' => 'a',
+            'level' => 0,
+            'index' => 0,
+            'position' => 1,
+            'is_before_current_step' => true,
+            'is_current_step' => false,
+            'has_current_step_descendant' => true,
+            'is_after_current_step' => false,
+            'can_be_skipped' => false,
+            'is_skipped' => false,
+            'is_group' => true,
+            'children' => ['a1' => $a1, 'a2' => $a2],
+            'visible_children' => ['a1' => $a1, 'a2' => $a2],
+        ], $view->vars['steps']['a']);
+
+        // Step 'b': level 0, after current step
+        self::assertSame([
+            'name' => 'b',
+            'level' => 0,
+            'index' => 1,
+            'position' => 2,
+            'is_before_current_step' => false,
+            'is_current_step' => false,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => true,
+            'can_be_skipped' => false,
+            'is_skipped' => false,
+            'is_group' => false,
+            'children' => [],
+            'visible_children' => [],
+        ], $view->vars['steps']['b']);
+
+        // Group 'c': level 0, after current step
+        self::assertSame([
+            'name' => 'c',
+            'level' => 0,
+            'index' => 2,
+            'position' => 3,
+            'is_before_current_step' => false,
+            'is_current_step' => false,
+            'has_current_step_descendant' => false,
+            'is_after_current_step' => true,
+            'can_be_skipped' => false,
+            'is_skipped' => false,
+            'is_group' => true,
+            'children' => ['c1' => $c1],
+            'visible_children' => ['c1' => $c1],
+        ], $view->vars['steps']['c']);
+    }
+
+    public function testGroupFirstRootResolvesToFirstChild()
+    {
+        $flow = $this->factory->create(GroupingStepsFlowType::class, []);
+
+        // 'a' is group, initial step is 'a1' (first child)
+        self::assertSame('a1', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('a1'));
+    }
+
+    public function testGroupForwardNavigationSkipsToChildren()
+    {
+        $flow = $this->factory->create(GroupingStepsFlowType::class, []);
+
+        // Start at a1 (skipping group 'a')
+        self::assertSame('a1', $flow->getCursor()->getCurrentStep());
+
+        $flow->submit(['a1' => 'v1', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        self::assertSame('a2', $flow->getCursor()->getCurrentStep());
+
+        $flow->submit(['a2' => 'v2', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+
+        self::assertSame('b', $flow->getCursor()->getCurrentStep());
+    }
+
+    public function testGroupForwardFromLastNonGroupStepToGroupChild()
+    {
+        $flow = $this->factory->create(GroupingStepsFlowType::class, []);
+
+        // Navigate to 'b'
+        $flow->submit(['a1' => 'v1', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        $flow->submit(['a2' => 'v2', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        self::assertSame('b', $flow->getCursor()->getCurrentStep());
+
+        // Move forward from 'b': next is 'c' (group/skipped) → 'c1' (first child)
+        $flow->submit(['b' => 'v3', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        self::assertSame('c1', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('c1'));
+    }
+
+    public function testGroupBackwardNavigationSkipsParent()
+    {
+        $flow = $this->factory->create(GroupingStepsFlowType::class, []);
+
+        // Navigate forward to a2
+        $flow->submit(['a1' => 'v1', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        self::assertSame('a2', $flow->getCursor()->getCurrentStep());
+
+        // Navigate forward to b
+        $flow->submit(['a2' => 'v2', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+        self::assertSame('b', $flow->getCursor()->getCurrentStep());
+
+        // Move backward from 'b': previous in DFS is 'a2' (deepest last descendant of 'a')
+        // 'a' is group/skipped, so move() lands on 'a2'
+        $flow->submit(['b' => 'v3', 'navigator' => ['previous' => '']]);
+        $flow = $flow->getStepForm();
+        self::assertSame('a2', $flow->getCursor()->getCurrentStep());
+    }
+
+    public function testGroupBackwardFromFirstChildOfGroupRootThrows()
+    {
+        $flow = $this->factory->create(GroupingStepsFlowType::class, []);
+
+        self::assertSame('a1', $flow->getCursor()->getCurrentStep());
+
+        // Structurally there is a previous step ('a'), but it's group
+        // and there's nothing before it, so moving backward fails
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Cannot determine previous step.');
+
+        $flow->movePrevious();
+    }
+
+    public function testSkippedParentSkipsItsWholeSubtree()
+    {
+        $flow = $this->factory->create(SkippedParentStepsFlowType::class, []);
+
+        self::assertSame('intro', $flow->getCursor()->getCurrentStep());
+
+        $flow->submit(['intro' => 'value', 'navigator' => ['next' => '']]);
+        $flow = $flow->getStepForm();
+
+        // p, p1, p2 (skip => false), g and g1 are all skipped
+        self::assertSame('q', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('q'));
+        self::assertTrue($flow->getCursor()->isLastStep());
+
+        // and moving back from q goes to intro
+        $flow->submit(['q' => 'value', 'navigator' => ['previous' => '']]);
+        $flow = $flow->getStepForm();
+
+        self::assertSame('intro', $flow->getCursor()->getCurrentStep());
+    }
+
+    public function testSkippedParentIsNotResolvedAsInitialStep()
+    {
+        $flow = $this->factory->create(SkippedParentStepsFlowType::class, ['skipIntro' => true]);
+
+        self::assertSame('q', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('q'));
+        self::assertTrue($flow->getCursor()->isFirstStep());
+        self::assertFalse($flow->get('navigator')->has('previous'));
+    }
+
+    public function testSkippedParentViewVars()
+    {
+        $view = $this->factory->create(SkippedParentStepsFlowType::class, [])->createView();
+        $steps = $view->vars['steps'];
+
+        self::assertSame(['intro', 'q'], array_keys($view->vars['visible_steps']));
+
+        self::assertTrue($steps['p']['is_skipped']);
+        self::assertSame(-1, $steps['p']['position']);
+        self::assertTrue($steps['p']['children']['p1']['is_skipped']);
+        self::assertSame(-1, $steps['p']['children']['p1']['position']);
+        self::assertTrue($steps['p']['children']['p2']['is_skipped'], 'a child skip closure cannot cancel the skipped parent');
+        self::assertTrue($steps['p']['children']['p2']['can_be_skipped']);
+        self::assertSame([], $steps['p']['visible_children']);
+
+        self::assertTrue($steps['g']['is_skipped']);
+        self::assertTrue($steps['g']['children']['g1']['is_skipped']);
+        self::assertSame([], $steps['g']['visible_children']);
+
+        self::assertFalse($steps['q']['is_skipped']);
+        self::assertSame(2, $steps['q']['position']);
+    }
+
+    public function testNestedStepsViewVarsWithSkippedParent()
+    {
+        $view = $this->factory->create(NestedStepsFlowType::class, ['stepB' => 1, 'currentStep' => 'stepB2'])->createView();
+        $stepB1 = $view->vars['steps']['stepB']['children']['stepB1'];
+
+        self::assertTrue($stepB1['is_skipped']);
+        self::assertTrue($stepB1['children']['stepB11']['is_skipped']);
+        self::assertTrue($stepB1['children']['stepB12']['is_skipped']);
+        self::assertSame([], $stepB1['visible_children']);
+        self::assertSame(['stepB2'], array_keys($view->vars['steps']['stepB']['visible_children']));
+    }
+
+    public function testFirstStepSkippedResolvesToSecondStep()
+    {
+        $flow = $this->factory->create(FirstStepSkippedType::class, []);
+
+        // step1 is skipped, initial step resolves to step2
+        self::assertSame('step2', $flow->getCursor()->getCurrentStep());
+        self::assertTrue($flow->has('step2'));
+    }
+
+    public function testFirstStepSkippedHidesPreviousButton()
+    {
+        $flow = $this->factory->create(FirstStepSkippedType::class, []);
+        $cursor = $flow->getCursor();
+
+        self::assertSame('step2', $cursor->getCurrentStep());
+        self::assertTrue($cursor->isFirstStep());
+        self::assertFalse($cursor->canMoveBack());
+        self::assertSame('step2', $cursor->getFirstStep());
+        self::assertFalse($flow->get('navigator')->has('previous'), 'the previous button must not be offered when every previous step is skipped');
+        self::assertTrue($flow->get('navigator')->has('next'));
+
+        $view = $flow->createView();
+
+        self::assertTrue($view->vars['steps']['step1']['is_skipped']);
+        self::assertTrue($view->vars['steps']['step2']['is_current_step']);
     }
 }

@@ -33,6 +33,7 @@ use Symfony\Component\Serializer\Exception\InvalidArgumentException;
 use Symfony\Component\Serializer\Exception\LogicException;
 use Symfony\Component\Serializer\Exception\MissingConstructorArgumentsException;
 use Symfony\Component\Serializer\Exception\NotNormalizableValueException;
+use Symfony\Component\Serializer\Exception\PartialDenormalizationException;
 use Symfony\Component\Serializer\Mapping\ClassDiscriminatorFromClassMetadata;
 use Symfony\Component\Serializer\Mapping\ClassDiscriminatorMapping;
 use Symfony\Component\Serializer\Mapping\ClassDiscriminatorResolverInterface;
@@ -58,6 +59,8 @@ use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Serializer\Tests\Fixtures\Attributes\AbstractDummy;
 use Symfony\Component\Serializer\Tests\Fixtures\Attributes\AbstractDummyFirstChild;
 use Symfony\Component\Serializer\Tests\Fixtures\Attributes\AbstractDummySecondChild;
+use Symfony\Component\Serializer\Tests\Fixtures\Attributes\SerializedPathPerGroupDummy;
+use Symfony\Component\Serializer\Tests\Fixtures\Attributes\SerializedPerGroupWithContextDummy;
 use Symfony\Component\Serializer\Tests\Fixtures\DummyFirstChildQuux;
 use Symfony\Component\Serializer\Tests\Fixtures\DummyMessageInterface;
 use Symfony\Component\Serializer\Tests\Fixtures\DummyMessageNumberFour;
@@ -239,6 +242,40 @@ class AbstractObjectNormalizerTest extends TestCase
         $this->expectExceptionMessage('Duplicate values for key "quux" found. One value is set via the SerializedPath attribute: "one->four", the other one is set via the SerializedName attribute: "notquux".');
 
         $normalizer->denormalize($data, DuplicateKeyNestedDummy::class, 'any');
+    }
+
+    public function testDenormalizePrefersSerializedNameOverRawPropertyName()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadata();
+
+        $object = $normalizer->denormalize(['subproject' => 'from raw key', 'subproject_id' => 'from serialized name'], SerializedNameDuplicateRawKeyDummy::class, 'any');
+        $this->assertSame('from serialized name', $object->subproject);
+
+        $object = $normalizer->denormalize(['subproject_id' => 'from serialized name', 'subproject' => 'from raw key'], SerializedNameDuplicateRawKeyDummy::class, 'any');
+        $this->assertSame('from serialized name', $object->subproject);
+    }
+
+    public function testDenormalizePrefersSerializedNameOverRawPropertyNameInConstructor()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadata();
+
+        $object = $normalizer->denormalize(['subproject' => 'from raw key', 'subproject_id' => 'from serialized name'], SerializedNameDuplicateRawKeyConstructorDummy::class, 'any');
+        $this->assertSame('from serialized name', $object->subproject);
+
+        $object = $normalizer->denormalize(['subproject_id' => 'from serialized name', 'subproject' => 'from raw key'], SerializedNameDuplicateRawKeyConstructorDummy::class, 'any');
+        $this->assertSame('from serialized name', $object->subproject);
+    }
+
+    public function testDenormalizeReportsRawPropertyNameAsExtraAttribute()
+    {
+        $this->expectException(ExtraAttributesException::class);
+        $this->expectExceptionMessage('Extra attributes are not allowed ("subproject" is unknown).');
+
+        $normalizer = new AbstractObjectNormalizerWithMetadata();
+        $normalizer->denormalize([
+            'subproject' => 'from raw key',
+            'subproject_id' => 'from serialized name',
+        ], SerializedNameDuplicateRawKeyDummy::class, 'any', [AbstractObjectNormalizer::ALLOW_EXTRA_ATTRIBUTES => false]);
     }
 
     public function testDenormalizeWithNestedAttributesInConstructor()
@@ -1407,6 +1444,121 @@ class AbstractObjectNormalizerTest extends TestCase
         $this->assertEquals($expected, $normalizer->denormalize($data, ScalarCollectionDocBlockDummy::class));
     }
 
+    public function testDenormalizeConvertsScalarCollectionElements()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        $dummy = $normalizer->denormalize([
+            'ints' => ['1', '2'],
+            'floats' => ['1.5', null],
+            'bools' => ['name' => 'true'],
+        ], ScalarCollectionsDummy::class, null, [AbstractObjectNormalizer::ENABLE_TYPE_CONVERSION => true]);
+
+        $this->assertSame([1, 2], $dummy->ints);
+        $this->assertSame([1.5, null], $dummy->floats);
+        $this->assertSame(['name' => true], $dummy->bools);
+    }
+
+    public function testDenormalizeConvertsScalarCollectionElementsDecodedFromXml()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        $dummy = $normalizer->denormalize(['ints' => ['1', '2']], ScalarCollectionsDummy::class, 'xml');
+
+        $this->assertSame([1, 2], $dummy->ints);
+    }
+
+    public function testDenormalizeEnforcesScalarCollectionElementType()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        try {
+            $normalizer->denormalize(['ints' => [1, 'nope']], ScalarCollectionsDummy::class, null, [AbstractObjectNormalizer::ENABLE_TYPE_CONVERSION => true]);
+            $this->fail(\sprintf('A "%s" should have been thrown.', NotNormalizableValueException::class));
+        } catch (NotNormalizableValueException $e) {
+            $this->assertSame('The type of the "ints" attribute for class "'.ScalarCollectionsDummy::class.'" must be int ("nope" given).', $e->getMessage());
+            $this->assertSame('ints[1]', $e->getPath());
+        }
+    }
+
+    public function testDenormalizeEnforcesNestedScalarCollectionElementType()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        try {
+            $normalizer->denormalize(['intsByName' => ['a' => [1, 'nope']]], ScalarCollectionsDummy::class);
+            $this->fail(\sprintf('A "%s" should have been thrown.', NotNormalizableValueException::class));
+        } catch (NotNormalizableValueException $e) {
+            $this->assertSame('intsByName[a][1]', $e->getPath());
+        }
+    }
+
+    public function testDenormalizeConvertsNestedScalarCollectionElements()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        $dummy = $normalizer->denormalize(['intsByName' => ['a' => ['1', '2']]], ScalarCollectionsDummy::class, null, [AbstractObjectNormalizer::ENABLE_TYPE_CONVERSION => true]);
+
+        $this->assertSame(['a' => [1, 2]], $dummy->intsByName);
+    }
+
+    public function testDenormalizeCollectsScalarCollectionElementErrors()
+    {
+        $serializer = new Serializer([new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors()]);
+
+        try {
+            $serializer->denormalize(['ints' => ['nope', 2, ['a' => 1]]], ScalarCollectionsDummy::class, null, [
+                DenormalizerInterface::COLLECT_DENORMALIZATION_ERRORS => true,
+            ]);
+            $this->fail(\sprintf('A "%s" should have been thrown.', PartialDenormalizationException::class));
+        } catch (PartialDenormalizationException $e) {
+            $this->assertSame(['ints[0]', 'ints[2]'], array_map(static fn (NotNormalizableValueException $e) => $e->getPath(), $e->getNotNormalizableValueErrors()));
+            $this->assertSame([1 => 2], $e->getData()->ints);
+        }
+    }
+
+    public function testDenormalizeCollectingErrorsKeepsUnionCollectionFallback()
+    {
+        $serializer = new Serializer([new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors()]);
+
+        $dummy = $serializer->denormalize(['intsOrStrings' => ['nope']], ScalarCollectionsDummy::class, null, [DenormalizerInterface::COLLECT_DENORMALIZATION_ERRORS => true]);
+
+        $this->assertSame(['nope'], $dummy->intsOrStrings);
+    }
+
+    public function testDenormalizeKeepsScalarCollectionElementsWhenTypeEnforcementIsDisabled()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        $dummy = $normalizer->denormalize(['ints' => [1, 'nope']], ScalarCollectionsDummy::class, null, [
+            AbstractObjectNormalizer::DISABLE_TYPE_ENFORCEMENT => true,
+        ]);
+
+        $this->assertSame([1, 'nope'], $dummy->ints);
+    }
+
+    #[DataProvider('denormalizeBasicTypePropertiesConversionDataProvider')]
+    public function testDenormalizeKeepsUnconvertibleScalarCollectionElementsWhenTypeEnforcementIsDisabled(string $format, array $context)
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        $dummy = $normalizer->denormalize(['ints' => ['1', 'nope', '']], ScalarCollectionsDummy::class, $format, $context + [AbstractObjectNormalizer::DISABLE_TYPE_ENFORCEMENT => true]);
+
+        $this->assertSame([1, 'nope', ''], $dummy->ints);
+    }
+
+    #[DataProvider('denormalizeBasicTypePropertiesConversionDataProvider')]
+    public function testDenormalizeKeepsUnconvertibleBasicTypePropertiesWhenTypeEnforcementIsDisabled(string $format, array $context)
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        $object = $normalizer->denormalize(['boolTrue1' => 'maybe', 'int1' => 'nope', 'float1' => 'nope'], ObjectWithBasicProperties::class, $format, $context + [AbstractObjectNormalizer::DISABLE_TYPE_ENFORCEMENT => true]);
+
+        $this->assertSame('maybe', $object->boolTrue1);
+        $this->assertSame('nope', $object->int1);
+        $this->assertSame('nope', $object->float1);
+    }
+
     public function testDenormalizeCollectionOfUnionTypesPropertyWithPhpDocExtractor()
     {
         $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
@@ -1495,6 +1647,39 @@ class AbstractObjectNormalizerTest extends TestCase
             $this->assertSame($expectedFoo, $dummy->foo);
         }
     }
+
+    public function testDenormalizeUnionTypeWithFilterBool()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        foreach ([null, XmlEncoder::FORMAT, CsvEncoder::FORMAT] as $format) {
+            $dummy = $normalizer->denormalize(['foo' => 'publish'], UnionBoolPropertyDummy::class, $format, [AbstractNormalizer::FILTER_BOOL => true]);
+            $this->assertSame('publish', $dummy->foo);
+
+            $dummy = $normalizer->denormalize(['foo' => 'on'], UnionBoolPropertyDummy::class, $format, [AbstractNormalizer::FILTER_BOOL => true]);
+            $this->assertTrue($dummy->foo);
+        }
+    }
+
+    public function testDenormalizeUnionTypeWithFilterBoolKeepsEmptyArray()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+
+        foreach ([XmlEncoder::FORMAT, CsvEncoder::FORMAT] as $format) {
+            $dummy = $normalizer->denormalize(['foo' => ''], UnionArrayBoolPropertyDummy::class, $format, [AbstractNormalizer::FILTER_BOOL => true]);
+            $this->assertSame([], $dummy->foo);
+        }
+    }
+
+    public function testDenormalizeUnionTypeWithFilterBoolKeepsBackedEnum()
+    {
+        $normalizer = new AbstractObjectNormalizerWithMetadataAndPropertyTypeExtractors();
+        new Serializer([new BackedEnumNormalizer(), $normalizer]);
+
+        $dummy = $normalizer->denormalize(['foo' => 'on'], UnionEnumBoolPropertyDummy::class, null, [AbstractNormalizer::FILTER_BOOL => true]);
+        $this->assertSame(SwitchEnum::On, $dummy->foo);
+    }
+
     public static function provideDenormalizeWithFilterBoolData(): array
     {
         return [
@@ -1646,6 +1831,180 @@ class AbstractObjectNormalizerTest extends TestCase
         $this->assertSame('dummy', $denormalizedData->values[0]->type);
     }
 
+    public function testDenormalizeGenericType()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['box' => ['item' => ['kind' => 'circle', 'radius' => 2.0]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericDrawing::class, $drawing);
+        $this->assertInstanceOf(GenericBox::class, $drawing->box);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->box->item);
+        $this->assertSame('circle', $drawing->box->item->kind);
+        $this->assertSame(2.0, $drawing->box->item->radius);
+    }
+
+    public function testDenormalizeGenericTypeWithUnboundedTemplate()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['unboundedBox' => ['item' => ['kind' => 'circle', 'radius' => 2.0]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericCircle::class, $drawing->unboundedBox->item);
+        $this->assertSame(2.0, $drawing->unboundedBox->item->radius);
+    }
+
+    public function testDenormalizeGenericTypeInCollections()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize([
+            'box' => ['items' => [['kind' => 'circle', 'radius' => 1.0], ['kind' => 'circle', 'radius' => 2.0]]],
+            'boxes' => [['item' => ['kind' => 'circle', 'radius' => 3.0]], ['item' => ['kind' => 'circle', 'radius' => 4.0]]],
+            'boxesByName' => ['small' => ['item' => ['kind' => 'circle', 'radius' => 5.0]]],
+        ], GenericDrawing::class);
+
+        $this->assertCount(2, $drawing->box->items);
+        $this->assertContainsOnlyInstancesOf(GenericCircle::class, $drawing->box->items);
+        $this->assertSame([1.0, 2.0], array_map(static fn (GenericCircle $circle) => $circle->radius, $drawing->box->items));
+
+        $this->assertCount(2, $drawing->boxes);
+        $this->assertContainsOnlyInstancesOf(GenericBox::class, $drawing->boxes);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->boxes[0]->item);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->boxes[1]->item);
+        $this->assertSame(4.0, $drawing->boxes[1]->item->radius);
+
+        $this->assertInstanceOf(GenericBox::class, $drawing->boxesByName['small']);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->boxesByName['small']->item);
+        $this->assertSame(5.0, $drawing->boxesByName['small']->item->radius);
+    }
+
+    public function testDenormalizeGenericTypeWithNullableTemplate()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['box' => ['optionalItem' => null], 'nullableBox' => null], GenericDrawing::class);
+
+        $this->assertNull($drawing->box->optionalItem);
+        $this->assertNull($drawing->nullableBox);
+
+        $drawing = $serializer->denormalize(['box' => ['optionalItem' => ['kind' => 'circle', 'radius' => 1.0]], 'nullableBox' => ['item' => ['kind' => 'circle', 'radius' => 2.0]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericCircle::class, $drawing->box->optionalItem);
+        $this->assertSame(1.0, $drawing->box->optionalItem->radius);
+        $this->assertInstanceOf(GenericBox::class, $drawing->nullableBox);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->nullableBox->item);
+        $this->assertSame(2.0, $drawing->nullableBox->item->radius);
+    }
+
+    public function testDenormalizeGenericTypeInUnionType()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['unboundedBox' => ['itemOrLabel' => ['kind' => 'circle', 'radius' => 2.0]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericCircle::class, $drawing->unboundedBox->itemOrLabel);
+        $this->assertSame(2.0, $drawing->unboundedBox->itemOrLabel->radius);
+    }
+
+    public function testDenormalizeGenericTypeWithMixedVariableType()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['mixedBox' => ['item' => ['kind' => 'circle'], 'itemOrLabel' => ['kind' => 'circle']]], GenericDrawing::class);
+
+        $this->assertSame(['kind' => 'circle'], $drawing->mixedBox->item);
+        $this->assertSame(['kind' => 'circle'], $drawing->mixedBox->itemOrLabel);
+    }
+
+    public function testDenormalizeNestedGenericType()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['nestedBox' => ['item' => ['item' => ['kind' => 'circle', 'radius' => 2.0]]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericUnboundedBox::class, $drawing->nestedBox);
+        $this->assertInstanceOf(GenericUnboundedBox::class, $drawing->nestedBox->item);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->nestedBox->item->item);
+        $this->assertSame(2.0, $drawing->nestedBox->item->item->radius);
+    }
+
+    public function testDenormalizeGenericTypeWithSeveralTemplates()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['pair' => ['first' => ['kind' => 'circle', 'radius' => 1.0], 'second' => ['kind' => 'square', 'side' => 2.0]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericCircle::class, $drawing->pair->first);
+        $this->assertSame(1.0, $drawing->pair->first->radius);
+        $this->assertInstanceOf(GenericSquare::class, $drawing->pair->second);
+        $this->assertSame(2.0, $drawing->pair->second->side);
+    }
+
+    public function testDenormalizeGenericTypeKeepsTemplatesWithoutVariableType()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['partialPair' => ['first' => ['kind' => 'circle', 'radius' => 1.0], 'second' => ['kind' => 'square', 'side' => 2.0]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericCircle::class, $drawing->partialPair->first);
+        // "V" has no variable type, so it falls back to its bound, which is "mixed"
+        $this->assertSame(['kind' => 'square', 'side' => 2.0], $drawing->partialPair->second);
+    }
+
+    public function testDenormalizeGenericTypeInConstructor()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['constructedBox' => ['item' => ['kind' => 'circle', 'radius' => 2.0], 'label' => 'round']], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericBoxWithConstructor::class, $drawing->constructedBox);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->constructedBox->item);
+        $this->assertSame(2.0, $drawing->constructedBox->item->radius);
+        $this->assertSame('round', $drawing->constructedBox->label);
+    }
+
+    public function testDenormalizeGenericTypeWithDiscriminatorMap()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['mappedBox' => ['type' => 'gift', 'item' => ['kind' => 'circle', 'radius' => 2.0], 'wrapping' => ['kind' => 'circle']]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericGiftBox::class, $drawing->mappedBox);
+        $this->assertInstanceOf(GenericCircle::class, $drawing->mappedBox->item);
+        $this->assertSame(2.0, $drawing->mappedBox->item->radius);
+        // the variable type is given for "T" of the declared class, while "U" belongs to the mapped one
+        $this->assertSame(['kind' => 'circle'], $drawing->mappedBox->wrapping);
+    }
+
+    public function testDenormalizeGenericTypeDoesNotLeakToNestedObjects()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $drawing = $serializer->denormalize(['box' => ['inner' => ['item' => ['kind' => 'circle', 'radius' => 2.0]]]], GenericDrawing::class);
+
+        $this->assertInstanceOf(GenericUnboundedBox::class, $drawing->box->inner);
+        // the inner box is not declared as a generic type, so its template keeps its "mixed" bound
+        $this->assertSame(['kind' => 'circle', 'radius' => 2.0], $drawing->box->inner->item);
+    }
+
+    public function testDenormalizeGenericTypeWithoutVariableTypesFallsBackToBound()
+    {
+        $serializer = self::createGenericTypeSerializer();
+
+        $this->expectException(NotNormalizableValueException::class);
+        $this->expectExceptionMessage('Failed to create object because the class "'.GenericShape::class.'" is not instantiable.');
+
+        $serializer->denormalize(['plainBox' => ['item' => ['kind' => 'circle', 'radius' => 2.0]]], GenericDrawing::class);
+    }
+
+    private static function createGenericTypeSerializer(): Serializer
+    {
+        $normalizer = new ObjectNormalizer(new ClassMetadataFactory(new AttributeLoader()), null, null, new PropertyInfoExtractor(typeExtractors: [new PhpStanExtractor(), new ReflectionExtractor()]));
+
+        return new Serializer([new ArrayDenormalizer(), $normalizer]);
+    }
+
     public function testNotNormalizableValueExceptionCurrentTypeUsesAttributeValue()
     {
         $serializer = new Serializer([new ObjectNormalizer(propertyAccessor: PropertyAccess::createPropertyAccessor())]);
@@ -1679,6 +2038,65 @@ class AbstractObjectNormalizerTest extends TestCase
 
             throw $e;
         }
+    }
+
+    public function testSerializedPathPerGroupIsUsedWhenNormalizing()
+    {
+        $normalizer = $this->getSerializedPathPerGroupNormalizer();
+        $object = new SerializedPathPerGroupDummy();
+        $object->eleven = 'ELEVEN';
+
+        $this->assertSame(['six' => ['five' => 'ELEVEN']], $normalizer->normalize($object, null, ['groups' => ['a']]));
+        $this->assertSame(['five' => ['six' => 'ELEVEN']], $normalizer->normalize($object, null, ['groups' => ['b']]));
+    }
+
+    public function testSerializedPathPerGroupIsUsedWhenDenormalizing()
+    {
+        $normalizer = $this->getSerializedPathPerGroupNormalizer();
+
+        $inA = $normalizer->denormalize(['six' => ['five' => 'ELEVEN']], SerializedPathPerGroupDummy::class, null, ['groups' => ['a']]);
+        $this->assertSame('ELEVEN', $inA->eleven);
+
+        $inB = $normalizer->denormalize(['five' => ['six' => 'ELEVEN']], SerializedPathPerGroupDummy::class, null, ['groups' => ['b']]);
+        $this->assertSame('ELEVEN', $inB->eleven);
+    }
+
+    public function testSerializedPathPerGroupRoundTrips()
+    {
+        $normalizer = $this->getSerializedPathPerGroupNormalizer();
+        $object = new SerializedPathPerGroupDummy();
+        $object->eleven = 'ELEVEN';
+
+        foreach ([['a'], ['b']] as $groups) {
+            $data = $normalizer->normalize($object, null, ['groups' => $groups]);
+            $this->assertSame('ELEVEN', $normalizer->denormalize($data, SerializedPathPerGroupDummy::class, null, ['groups' => $groups])->eleven);
+        }
+    }
+
+    public function testSerializedPerGroupIgnoresTheGroupsOfPerAttributeContexts()
+    {
+        $normalizer = $this->getSerializedPathPerGroupNormalizer();
+        $object = new SerializedPerGroupWithContextDummy();
+        $object->name = 'NAME';
+        $object->path = 'PATH';
+
+        $data = $normalizer->normalize($object, null, ['groups' => ['a']]);
+
+        $this->assertSame(['inA' => 'NAME', 'in' => ['a' => 'PATH']], $data);
+
+        $denormalized = $normalizer->denormalize($data, SerializedPerGroupWithContextDummy::class, null, ['groups' => ['a']]);
+
+        $this->assertSame('NAME', $denormalized->name);
+        $this->assertSame('PATH', $denormalized->path);
+    }
+
+    private function getSerializedPathPerGroupNormalizer(): ObjectNormalizer
+    {
+        $classMetadataFactory = new ClassMetadataFactory(new AttributeLoader());
+        $normalizer = new ObjectNormalizer($classMetadataFactory, new MetadataAwareNameConverter($classMetadataFactory));
+        new Serializer([$normalizer]);
+
+        return $normalizer;
     }
 }
 
@@ -1837,6 +2255,21 @@ class DuplicateKeyNestedDummy
     public $notquux;
 }
 
+class SerializedNameDuplicateRawKeyDummy
+{
+    #[SerializedName('subproject_id')]
+    public string $subproject;
+}
+
+class SerializedNameDuplicateRawKeyConstructorDummy
+{
+    public function __construct(
+        #[SerializedName('subproject_id')]
+        public string $subproject,
+    ) {
+    }
+}
+
 class ObjectDummyWithContextAttributeAndSerializedPath
 {
     public function __construct(
@@ -1975,6 +2408,21 @@ class BoolPropertyDummy
 {
     /** @var bool|null */
     public $foo;
+}
+
+class UnionBoolPropertyDummy
+{
+    public bool|string $foo;
+}
+
+class UnionArrayBoolPropertyDummy
+{
+    public array|bool $foo;
+}
+
+class UnionEnumBoolPropertyDummy
+{
+    public bool|SwitchEnum $foo;
 }
 
 class DummyWithArrayObject
@@ -2119,6 +2567,12 @@ enum EnumB: string
     case B = 'b';
 }
 
+enum SwitchEnum: string
+{
+    case On = 'on';
+    case Off = 'off';
+}
+
 class DummyWithEnumUnion
 {
     public function __construct(
@@ -2160,6 +2614,24 @@ class ScalarCollectionDocBlockDummy
     {
         return $this->values;
     }
+}
+
+class ScalarCollectionsDummy
+{
+    /** @var list<int> */
+    public array $ints = [];
+
+    /** @var list<?float> */
+    public array $floats = [];
+
+    /** @var array<string, bool> */
+    public array $bools = [];
+
+    /** @var int[]|string[] */
+    public array $intsOrStrings = [];
+
+    /** @var array<string, list<int>> */
+    public array $intsByName = [];
 }
 
 class UnionCollectionDocBlockDummy
@@ -2299,4 +2771,133 @@ class DummyWithArrayObjectOfDtos
     {
         $this->items = new \ArrayObject(iterator_to_array($items));
     }
+}
+
+abstract class GenericShape
+{
+    public string $kind = '';
+}
+
+class GenericCircle extends GenericShape
+{
+    public float $radius = 0.0;
+}
+
+class GenericSquare extends GenericShape
+{
+    public float $side = 0.0;
+}
+
+/**
+ * @template T of GenericShape
+ */
+class GenericBox
+{
+    /** @var T */
+    public mixed $item = null;
+
+    /** @var ?T */
+    public mixed $optionalItem = null;
+
+    /** @var list<T> */
+    public array $items = [];
+
+    public ?GenericUnboundedBox $inner = null;
+}
+
+/**
+ * @template T
+ */
+class GenericUnboundedBox
+{
+    /** @var T */
+    public mixed $item = null;
+
+    /** @var T|string */
+    public mixed $itemOrLabel = null;
+}
+
+/**
+ * @template T of GenericShape
+ */
+class GenericBoxWithConstructor
+{
+    /**
+     * @param T $item
+     */
+    public function __construct(
+        public mixed $item,
+        public string $label = '',
+    ) {
+    }
+}
+
+/**
+ * @template K
+ * @template V
+ */
+class GenericPair
+{
+    /** @var K */
+    public mixed $first = null;
+
+    /** @var V */
+    public mixed $second = null;
+}
+
+/**
+ * @template T of GenericShape
+ */
+#[DiscriminatorMap('type', ['gift' => GenericGiftBox::class])]
+abstract class AbstractGenericBox
+{
+    /** @var T */
+    public mixed $item = null;
+}
+
+/**
+ * @template U
+ */
+class GenericGiftBox extends AbstractGenericBox
+{
+    /** @var U */
+    public mixed $wrapping = null;
+}
+
+class GenericDrawing
+{
+    /** @var GenericBox<GenericCircle> */
+    public GenericBox $box;
+
+    /** @var GenericUnboundedBox<GenericCircle> */
+    public GenericUnboundedBox $unboundedBox;
+
+    /** @var ?GenericBox<GenericCircle> */
+    public ?GenericBox $nullableBox = null;
+
+    /** @var list<GenericBox<GenericCircle>> */
+    public array $boxes = [];
+
+    /** @var array<string, GenericBox<GenericCircle>> */
+    public array $boxesByName = [];
+
+    /** @var GenericUnboundedBox<mixed> */
+    public GenericUnboundedBox $mixedBox;
+
+    /** @var GenericUnboundedBox<GenericUnboundedBox<GenericCircle>> */
+    public GenericUnboundedBox $nestedBox;
+
+    /** @var GenericPair<GenericCircle, GenericSquare> */
+    public GenericPair $pair;
+
+    /** @var GenericPair<GenericCircle> */
+    public GenericPair $partialPair;
+
+    /** @var GenericBoxWithConstructor<GenericCircle> */
+    public GenericBoxWithConstructor $constructedBox;
+
+    /** @var AbstractGenericBox<GenericCircle> */
+    public AbstractGenericBox $mappedBox;
+
+    public GenericBox $plainBox;
 }

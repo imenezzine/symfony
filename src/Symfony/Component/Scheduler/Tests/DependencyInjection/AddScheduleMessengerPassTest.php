@@ -14,9 +14,12 @@ namespace Symfony\Component\Scheduler\Tests\DependencyInjection;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Messenger\RunCommandMessage;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
+use Symfony\Component\DependencyInjection\Exception\LogicException;
 use Symfony\Component\Scheduler\DependencyInjection\AddScheduleMessengerPass;
+use Symfony\Component\Scheduler\Messenger\ServiceCallMessage;
 
 class AddScheduleMessengerPassTest extends TestCase
 {
@@ -67,11 +70,244 @@ class AddScheduleMessengerPassTest extends TestCase
         $this->assertSame($expectedCommand, $command);
     }
 
+    public function testProcessSchedulerTaskCommandWithMultipleCommandMethods()
+    {
+        $container = new ContainerBuilder();
+
+        $definition = new Definition(MultiCommandSchedulableCommand::class);
+        $definition->addTag('console.command', ['command' => 'schedulable:one', 'method' => 'command1']);
+        $definition->addTag('console.command', ['command' => 'schedulable:two', 'method' => 'command2']);
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'method' => 'command1']);
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'method' => 'command2']);
+        $container->setDefinition(MultiCommandSchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $schedulerProvider = $container->getDefinition('scheduler.provider.default');
+        $tasks = $schedulerProvider->getMethodCalls()[0][1];
+
+        $this->assertSame('schedulable:one', $tasks[0]->getArgument('$message')->getArgument(0));
+        $this->assertSame('schedulable:two', $tasks[1]->getArgument('$message')->getArgument(0));
+    }
+
+    public function testProcessSchedulerTaskCommandWithMixedCommandAndPlainMethods()
+    {
+        $container = new ContainerBuilder();
+
+        $definition = new Definition(MixedCommandAndPlainSchedulableCommand::class);
+        $definition->addTag('console.command', ['command' => 'schedulable:command', 'method' => 'command1']);
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'method' => 'command1']);
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'method' => 'plainTask']);
+        $container->setDefinition(MixedCommandAndPlainSchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $schedulerProvider = $container->getDefinition('scheduler.provider.default');
+        $tasks = $schedulerProvider->getMethodCalls()[0][1];
+
+        $this->assertSame(RunCommandMessage::class, $tasks[0]->getArgument('$message')->getClass());
+        $this->assertSame(ServiceCallMessage::class, $tasks[1]->getArgument('$message')->getClass());
+        $this->assertSame('plainTask', $tasks[1]->getArgument('$message')->getArgument(1));
+    }
+
+    public function testProcessSchedulerTaskCommandWithClassLevelCommandAndTaskMethod()
+    {
+        $container = new ContainerBuilder();
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'method' => 'someMethod']);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $schedulerProvider = $container->getDefinition('scheduler.provider.default');
+        $tasks = $schedulerProvider->getMethodCalls()[0][1];
+
+        $this->assertSame(RunCommandMessage::class, $tasks[0]->getArgument('$message')->getClass());
+        $this->assertSame('schedulable', $tasks[0]->getArgument('$message')->getArgument(0));
+    }
+
     public static function processSchedulerTaskCommandNameFromTagProvider(): iterable
     {
         yield 'tag command attribute overrides attribute name' => [['command' => 'custom-name'], 'custom-name'];
         yield 'tag command attribute with aliases' => [['command' => 'custom-name|alias1|alias2'], 'custom-name'];
         yield 'tag command attribute with hidden leading pipe' => [['command' => '|real-name'], 'real-name'];
+    }
+
+    public function testTaskIsScheduledWhenEnvironmentMatches()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'prod');
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => ['prod', 'staging']]);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertTrue($container->hasDefinition('scheduler.provider.default'));
+        $this->assertCount(1, $container->getDefinition('scheduler.provider.default')->getMethodCalls());
+    }
+
+    public function testTaskIsScheduledWhenEnvironmentMatchesWithStringEnv()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'prod');
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => 'prod']);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertTrue($container->hasDefinition('scheduler.provider.default'));
+    }
+
+    public function testTaskIsNotScheduledWhenEnvironmentDoesNotMatch()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'dev');
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => ['prod', 'staging']]);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertSame([], $container->getDefinition('scheduler.provider.default')->getMethodCalls());
+    }
+
+    public function testScheduleAndItsReceiverSurviveWhenEveryTaskIsFilteredOut()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'dev');
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'schedule' => 'nightly', 'env' => 'prod']);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        // the worker command must keep working in every environment
+        $this->assertTrue($container->hasDefinition('messenger.transport.scheduler_nightly'));
+        $this->assertSame([], $container->getDefinition('scheduler.provider.nightly')->getMethodCalls());
+    }
+
+    public function testUnknownEnvironmentIsReported()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'dev');
+        $container->setParameter('.container.known_envs', ['dev', 'test', 'prod']);
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => 'porduction']);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertStringContainsString('is restricted to environment(s) "porduction"', implode("\n", $container->getCompiler()->getLog()));
+    }
+
+    public function testUnknownEnvironmentIsNotReportedWhenNoEnvironmentIsKnown()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'dev');
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => 'staging']);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertSame([], $container->getCompiler()->getLog());
+    }
+
+    public function testTaskWithEmptyEnvIsScheduledInAnyEnvironment()
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'dev');
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => []]);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertTrue($container->hasDefinition('scheduler.provider.default'));
+    }
+
+    public function testTaskWithEnvIsScheduledWhenKernelEnvironmentIsUnknown()
+    {
+        $container = new ContainerBuilder();
+
+        $definition = new Definition(SchedulableCommand::class);
+        $definition->addTag('console.command');
+        $definition->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour', 'env' => 'prod']);
+        $container->setDefinition(SchedulableCommand::class, $definition);
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertTrue($container->hasDefinition('scheduler.provider.default'));
+    }
+
+    public function testSchedulerServicesAreDroppedWhenMessengerIsMissing()
+    {
+        $container = new ContainerBuilder();
+        $container->register('scheduler.messenger_transport_factory');
+        $container->register('scheduler.event_listener');
+        $container->register('console.command.scheduler_debug');
+        $container->register('cache.scheduler');
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertFalse($container->hasDefinition('scheduler.messenger_transport_factory'));
+        $this->assertFalse($container->hasDefinition('scheduler.event_listener'));
+        $this->assertFalse($container->hasDefinition('console.command.scheduler_debug'));
+        $this->assertFalse($container->hasDefinition('cache.scheduler'));
+    }
+
+    public function testTheCachePoolIsDroppedWithoutAnApplicationPool()
+    {
+        $container = new ContainerBuilder();
+        $container->register('scheduler.messenger_transport_factory');
+        $container->register('messenger.transport_factory');
+        $container->register('cache.scheduler');
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertFalse($container->hasDefinition('cache.scheduler'));
+
+        $container = new ContainerBuilder();
+        $container->register('scheduler.messenger_transport_factory');
+        $container->register('messenger.transport_factory');
+        $container->register('cache.app');
+        $container->register('cache.scheduler');
+
+        (new AddScheduleMessengerPass())->process($container);
+
+        $this->assertTrue($container->hasDefinition('cache.scheduler'));
+    }
+
+    public function testMissingMessengerIsReportedWhenATaskIsDeclared()
+    {
+        $container = new ContainerBuilder();
+        $container->register('scheduler.messenger_transport_factory');
+        $container->register(SchedulableCommand::class, SchedulableCommand::class)
+            ->addTag('console.command')
+            ->addTag('scheduler.task', ['trigger' => 'every', 'frequency' => '1 hour']);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Scheduler support cannot be enabled as the Messenger component is not enabled.');
+
+        (new AddScheduleMessengerPass())->process($container);
     }
 
     public static function processSchedulerTaskCommandProvider(): iterable
@@ -102,6 +338,28 @@ class SchedulableCommand
 class SchedulableCommandWithAlias
 {
     public function __invoke(): void
+    {
+    }
+}
+
+class MultiCommandSchedulableCommand
+{
+    public function command1(): void
+    {
+    }
+
+    public function command2(): void
+    {
+    }
+}
+
+class MixedCommandAndPlainSchedulableCommand
+{
+    public function command1(): void
+    {
+    }
+
+    public function plainTask(): void
     {
     }
 }

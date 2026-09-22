@@ -72,6 +72,49 @@ class ErrorHandlerTest extends TestCase
         }
     }
 
+    public function testRegisterWithoutReplaceLeavesForeignHandlersInPlace()
+    {
+        $foreignHandler = static fn () => false;
+        set_error_handler($foreignHandler);
+
+        try {
+            $handler = ErrorHandler::register(null, false);
+
+            $errorHandler = set_error_handler('var_dump');
+            restore_error_handler();
+            $exceptionHandler = set_exception_handler('var_dump');
+            restore_exception_handler();
+
+            $this->assertInstanceOf(ErrorHandler::class, $handler);
+            $this->assertSame($foreignHandler, $errorHandler);
+            $this->assertNull($exceptionHandler);
+        } finally {
+            restore_exception_handler();
+            restore_error_handler();
+        }
+    }
+
+    public function testRegisterWithoutReplaceStillDecoratesTheExceptionHandler()
+    {
+        $foreignErrorHandler = static fn () => false;
+        $foreignExceptionHandler = static function (\Throwable $e) {};
+        set_error_handler($foreignErrorHandler);
+        set_exception_handler($foreignExceptionHandler);
+
+        try {
+            $handler = ErrorHandler::register(null, false);
+
+            $exceptionHandler = set_exception_handler('var_dump');
+            restore_exception_handler();
+
+            $this->assertSame([$handler, 'handleException'], $exceptionHandler);
+        } finally {
+            restore_exception_handler();
+            restore_exception_handler();
+            restore_error_handler();
+        }
+    }
+
     #[WithoutErrorHandler]
     public function testErrorGetLast()
     {
@@ -542,6 +585,75 @@ class ErrorHandlerTest extends TestCase
             ;
 
             $handler->setDefaultLogger($logger, \E_PARSE);
+            $handler->setExceptionHandler(null);
+
+            $handler->handleFatalError($error);
+        } finally {
+            restore_error_handler();
+            restore_exception_handler();
+        }
+    }
+
+    public function testHandleExceptionStopsWhenTheLoggerThrows()
+    {
+        try {
+            $calls = 0;
+            $logger = $this->createStub(LoggerInterface::class);
+            $logger
+                ->method('log')
+                ->willReturnCallback(static function () use (&$calls) {
+                    throw new \RuntimeException('logger is down '.++$calls);
+                })
+            ;
+
+            $handler = ErrorHandler::register();
+            $handler->setDefaultLogger($logger, \E_ALL);
+            $handler->setExceptionHandler(null);
+
+            try {
+                $handler->handleException(new \RuntimeException('boom'));
+                $this->fail('The exception should have been given back to the native handler.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame('logger is down 1', $e->getMessage());
+            }
+
+            $this->assertSame(1, $calls, 'The failing logger must not be called again.');
+        } finally {
+            restore_error_handler();
+            restore_exception_handler();
+        }
+    }
+
+    #[WithoutErrorHandler]
+    public function testHandleFatalErrorUsesBacktraceProvidedByPhp()
+    {
+        try {
+            $logger = $this->createMock(LoggerInterface::class);
+            $handler = ErrorHandler::register();
+
+            $trace = [
+                ['file' => 'foo.php', 'line' => 12, 'function' => 'require'],
+                ['file' => 'bar.php', 'line' => 34, 'function' => 'doSomething', 'args' => []],
+            ];
+
+            $error = [
+                'type' => \E_ERROR,
+                'message' => 'foo',
+                'file' => 'bar',
+                'line' => 123,
+                'trace' => $trace,
+            ];
+
+            $logger
+                ->expects($this->once())
+                ->method('log')
+                ->willReturnCallback(function ($level, $message, $context) use ($trace) {
+                    $this->assertInstanceOf(FatalError::class, $context['exception']);
+                    $this->assertSame($trace, $context['exception']->getTrace());
+                })
+            ;
+
+            $handler->setDefaultLogger($logger, \E_ERROR);
             $handler->setExceptionHandler(null);
 
             $handler->handleFatalError($error);

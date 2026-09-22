@@ -233,7 +233,7 @@ class FileValidator extends ConstraintValidator
                     $v = $mimeTypesHelper->getMimeTypes($k);
                 }
 
-                $mimeTypes = $mimeTypes ? array_intersect($v, $mimeTypes) : (array) $v;
+                $mimeTypes = $mimeTypes ?: (array) $v;
                 break;
             }
 

@@ -28,6 +28,8 @@ final class ScreenBuffer
 {
     /** @var array<int, array<int, array{char: string, style: string}>> */
     private array $cells = [];
+    /** @var list<array<int, array{char: string, style: string}>> */
+    private array $scrollback = [];
     private int $cursorRow = 0;
     private int $cursorCol = 0;
     private int $width;
@@ -210,6 +212,16 @@ final class ScreenBuffer
     }
 
     /**
+     * Get the lines that scrolled off the top of the screen, oldest first.
+     *
+     * @return string[]
+     */
+    public function getScrollback(): array
+    {
+        return array_map($this->renderCells(...), $this->scrollback);
+    }
+
+    /**
      * Get the cell data for external processing (e.g., HTML conversion).
      *
      * @return array<int, array<int, array{char: string, style: string}>>
@@ -232,15 +244,23 @@ final class ScreenBuffer
      */
     private function getLineText(int $row): string
     {
-        if (!isset($this->cells[$row]) || !$this->cells[$row]) {
+        return $this->renderCells($this->cells[$row] ?? []);
+    }
+
+    /**
+     * @param array<int, array{char: string, style: string}> $cells
+     */
+    private function renderCells(array $cells): string
+    {
+        if (!$cells) {
             return '';
         }
 
         $line = '';
-        $maxCol = max(array_keys($this->cells[$row]));
+        $maxCol = max(array_keys($cells));
 
         for ($col = 0; $col <= $maxCol; ++$col) {
-            $char = $this->cells[$row][$col]['char'] ?? ' ';
+            $char = $cells[$col]['char'] ?? ' ';
             // Skip wide character continuation cells (empty string placeholders)
             if ('' === $char) {
                 continue;
@@ -307,9 +327,18 @@ final class ScreenBuffer
             $this->cells[$this->cursorRow] = [];
         }
 
-        // Fill any gaps with spaces
-        for ($col = \count($this->cells[$this->cursorRow]); $col < $this->cursorCol; ++$col) {
-            $this->cells[$this->cursorRow][$col] = ['char' => ' ', 'style' => ''];
+        // Fill any gaps with spaces. A row that has as many cells as the
+        // cursor has columns to its left is contiguous, and the common case
+        // of appending to it needs no fill at all. Once the counts disagree
+        // -- an erase unsets cells in the middle of the row -- the missing
+        // columns have to be asked for one by one, because counting them
+        // walks the fill straight over live characters.
+        if (\count($this->cells[$this->cursorRow]) !== $this->cursorCol) {
+            for ($col = 0; $col < $this->cursorCol; ++$col) {
+                if (!isset($this->cells[$this->cursorRow][$col])) {
+                    $this->cells[$this->cursorRow][$col] = ['char' => ' ', 'style' => ''];
+                }
+            }
         }
 
         $style = $this->styleTracker->getActiveCodes();
@@ -362,7 +391,7 @@ final class ScreenBuffer
      */
     private function scrollUp(): void
     {
-        array_shift($this->cells);
+        $this->scrollback[] = array_shift($this->cells) ?? [];
         $this->cells[] = [];
     }
 
@@ -471,23 +500,26 @@ final class ScreenBuffer
         $nums = '' !== $paramStr ? array_map('intval', explode(';', $paramStr)) : [];
 
         switch ($finalByte) {
+            // The cursor moves take a repeat count whose default is 1, and a
+            // count of 0 is read as 1 rather than as "stay put": an omitted
+            // and an explicit zero parameter mean the same thing.
             case 'A': // Cursor Up
-                $n = $nums[0] ?? 1;
+                $n = max(1, $nums[0] ?? 1);
                 $this->cursorRow = max(0, $this->cursorRow - $n);
                 break;
 
             case 'B': // Cursor Down
-                $n = $nums[0] ?? 1;
+                $n = max(1, $nums[0] ?? 1);
                 $this->cursorRow = min($this->height - 1, $this->cursorRow + $n);
                 break;
 
             case 'C': // Cursor Forward
-                $n = $nums[0] ?? 1;
+                $n = max(1, $nums[0] ?? 1);
                 $this->cursorCol = min($this->width - 1, $this->cursorCol + $n);
                 break;
 
             case 'D': // Cursor Back
-                $n = $nums[0] ?? 1;
+                $n = max(1, $nums[0] ?? 1);
                 $this->cursorCol = max(0, $this->cursorCol - $n);
                 break;
 
@@ -554,8 +586,10 @@ final class ScreenBuffer
                 $this->eraseInLine(1);
                 break;
 
+            case 3: // Erase the scrollback as well
+                $this->scrollback = [];
+                // no break
             case 2: // Erase entire screen (but don't move cursor)
-            case 3:
                 for ($i = 0; $i < $this->height; ++$i) {
                     $this->cells[$i] = [];
                 }

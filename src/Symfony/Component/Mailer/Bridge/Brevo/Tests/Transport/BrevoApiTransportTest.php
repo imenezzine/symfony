@@ -12,15 +12,21 @@
 namespace Symfony\Component\Mailer\Bridge\Brevo\Tests\Transport;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bridge\PhpUnit\ExpectUserDeprecationMessageTrait;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\JsonMockResponse;
 use Symfony\Component\Mailer\Bridge\Brevo\Transport\BrevoApiTransport;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Part\DataPart;
@@ -28,6 +34,8 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class BrevoApiTransportTest extends TestCase
 {
+    use ExpectUserDeprecationMessageTrait;
+
     #[DataProvider('getTransportData')]
     public function testToString(BrevoApiTransport $transport, string $expected)
     {
@@ -54,15 +62,12 @@ class BrevoApiTransportTest extends TestCase
 
     public function testCustomHeader()
     {
-        $params = ['param1' => 'foo', 'param2' => 'bar'];
         $json = json_encode(['"custom_header_1' => 'custom_value_1']);
 
         $email = new Email();
         $email->getHeaders()
             ->add(new MetadataHeader('custom', $json))
             ->add(new TagHeader('TagInHeaders'))
-            ->addTextHeader('templateId', 1)
-            ->addParameterizedHeader('params', 'params', $params)
             ->addTextHeader('foo', 'bar');
         $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
 
@@ -75,13 +80,61 @@ class BrevoApiTransportTest extends TestCase
 
         $this->assertArrayHasKey('tags', $payload);
         $this->assertEquals('TagInHeaders', current($payload['tags']));
-        $this->assertArrayHasKey('templateId', $payload);
-        $this->assertEquals(1, $payload['templateId']);
-        $this->assertArrayHasKey('params', $payload);
-        $this->assertEquals('foo', $payload['params']['param1']);
-        $this->assertEquals('bar', $payload['params']['param2']);
         $this->assertArrayHasKey('foo', $payload['headers']);
         $this->assertEquals('bar', $payload['headers']['foo']);
+    }
+
+    public function testRemoteTemplate()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('42', ['param1' => 'foo', 'param2' => 'bar']);
+        $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
+
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame(42, $payload['templateId']);
+        $this->assertSame(['param1' => 'foo', 'param2' => 'bar'], $payload['params']);
+        $this->assertArrayNotHasKey('subject', $payload);
+        $this->assertArrayNotHasKey('textContent', $payload);
+        $this->assertArrayNotHasKey('htmlContent', $payload);
+    }
+
+    public function testRemoteTemplateWithNonNumericReference()
+    {
+        $email = (new RemoteTemplateEmail())
+            ->template('welcome');
+        $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
+
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The Brevo API expects a numeric template id, "welcome" given.');
+
+        $method->invoke($transport, $email, $envelope);
+    }
+
+    #[IgnoreDeprecations]
+    #[Group('legacy')]
+    public function testDeprecatedTemplateHeaders()
+    {
+        $this->expectUserDeprecationMessage(\sprintf('Since symfony/brevo-mailer 8.2: Using the "templateid" email header to select a Brevo template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class));
+        $this->expectUserDeprecationMessage(\sprintf('Since symfony/brevo-mailer 8.2: Using the "params" email header to define the variables of a Brevo template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class));
+
+        $email = new Email();
+        $email->getHeaders()
+            ->addTextHeader('templateId', 1)
+            ->addParameterizedHeader('params', 'params', ['param1' => 'foo', 'param2' => 'bar']);
+        $envelope = new Envelope(new Address('alice@system.com', 'Alice'), [new Address('bob@system.com', 'Bob')]);
+
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertSame(1, $payload['templateId']);
+        $this->assertSame(['param1' => 'foo', 'param2' => 'bar'], $payload['params']);
     }
 
     public function testSendThrowsForErrorResponse()
@@ -180,5 +233,72 @@ class BrevoApiTransportTest extends TestCase
         $message = $transport->send($mail);
 
         $this->assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testTrackingHeader()
+    {
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com'), new Address('cc@example.com'), new Address('bcc@example.com')]);
+
+        $enabled = new Email();
+        $enabled->cc('cc@example.com');
+        $enabled->bcc('bcc@example.com');
+        $enabled->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+        $enabledPayload = $method->invoke($transport, $enabled, $envelope);
+        $this->assertTrue($enabledPayload['to'][0]['contactPixelTrackingConsent']);
+        $this->assertTrue($enabledPayload['cc'][0]['contactPixelTrackingConsent']);
+        $this->assertTrue($enabledPayload['bcc'][0]['contactPixelTrackingConsent']);
+        $this->assertArrayNotHasKey('contactPixelTrackingConsent', $enabledPayload['sender']);
+
+        $anonymised = new Email();
+        $anonymised->cc('cc@example.com');
+        $anonymised->bcc('bcc@example.com');
+        $anonymised->getHeaders()->add(new TrackingHeader(opens: false, clicks: false));
+        $anonymisedPayload = $method->invoke($transport, $anonymised, $envelope);
+        $this->assertFalse($anonymisedPayload['to'][0]['contactPixelTrackingConsent']);
+        $this->assertFalse($anonymisedPayload['cc'][0]['contactPixelTrackingConsent']);
+        $this->assertFalse($anonymisedPayload['bcc'][0]['contactPixelTrackingConsent']);
+        $this->assertArrayNotHasKey('contactPixelTrackingConsent', $anonymisedPayload['sender']);
+    }
+
+    public function testTrackingHeaderAnonymisesWhenEitherAspectIsFalse()
+    {
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: true, clicks: false));
+
+        $payload = $method->invoke($transport, $email, $envelope);
+        $this->assertFalse($payload['to'][0]['contactPixelTrackingConsent']);
+    }
+
+    public function testTrackingHeaderIsNotForwardedAsCustomHeader()
+    {
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->add(new TrackingHeader(opens: true, clicks: true));
+
+        $payload = $method->invoke($transport, $email, $envelope);
+        $this->assertArrayNotHasKey('headers', $payload);
+    }
+
+    public function testPlainTextTrackingHeaderIsResolved()
+    {
+        $transport = new BrevoApiTransport('ACCESS_KEY');
+        $method = new \ReflectionMethod(BrevoApiTransport::class, 'getPayload');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $email = new Email();
+        $email->getHeaders()->addTextHeader('X-Track', 'opens=false; clicks=false');
+        $payload = $method->invoke($transport, $email, $envelope);
+
+        $this->assertFalse($payload['to'][0]['contactPixelTrackingConsent']);
+        $this->assertArrayNotHasKey('headers', $payload);
     }
 }

@@ -26,6 +26,8 @@ class ContainerAwareEventManager extends EventManager
     private array $initialized = [];
     private bool $initializedSubscribers = false;
     private array $initializedHashMapping = [];
+    /** @var array<string, \WeakMap<object, true>> */
+    private array $removedListeners = [];
     private array $methods = [];
 
     /**
@@ -124,19 +126,20 @@ class ContainerAwareEventManager extends EventManager
         $hash = $this->getHash($listener);
 
         foreach ((array) $events as $event) {
-            if (isset($this->initializedHashMapping[$event][$hash])) {
-                $hash = $this->initializedHashMapping[$event][$hash];
-                unset($this->initializedHashMapping[$event][$hash]);
+            $eventHash = $hash;
+
+            if (null !== $initializedHash = $this->initializedHashMapping[$event][$eventHash] ?? null) {
+                unset($this->initializedHashMapping[$event][$eventHash]);
+                $eventHash = $initializedHash;
+            } elseif (\is_object($listener) && isset($this->listeners[$event]) && !isset($this->listeners[$event][$eventHash]) && !isset($this->initialized[$event])) {
+                // The listener might be one of the services that are not initialized yet,
+                // which are stored under the hash of their service id. Defer the removal
+                // to the moment they are instantiated anyway.
+                $this->removedListeners[$event] ??= new \WeakMap();
+                $this->removedListeners[$event][$listener] = true;
             }
 
-            // Check if we actually have this listener associated
-            if (isset($this->listeners[$event][$hash])) {
-                unset($this->listeners[$event][$hash]);
-            }
-
-            if (isset($this->methods[$event][$hash])) {
-                unset($this->methods[$event][$hash]);
-            }
+            unset($this->listeners[$event][$eventHash], $this->methods[$event][$eventHash]);
         }
     }
 
@@ -160,26 +163,44 @@ class ContainerAwareEventManager extends EventManager
 
     private function initializeListeners(string $eventName): void
     {
-        $this->initialized[$eventName] = true;
+        $removedListeners = $this->removedListeners[$eventName] ?? null;
+        unset($this->removedListeners[$eventName]);
 
-        // We'll refill the whole array in order to keep the same order
-        $listeners = [];
-        foreach ($this->listeners[$eventName] as $hash => $listener) {
-            if (\is_string($listener)) {
-                $listener = $this->container->get($listener);
-                $newHash = $this->getHash($listener);
+        do {
+            $this->initialized[$eventName] = true;
 
-                $this->initializedHashMapping[$eventName][$hash] = $newHash;
+            // We'll refill the whole array in order to keep the same order
+            $listeners = [];
+            foreach ($this->listeners[$eventName] as $hash => $listener) {
+                if (!isset($this->listeners[$eventName][$hash])) {
+                    // removed while another listener service was being built
+                    continue;
+                }
+                unset($this->listeners[$eventName][$hash]);
 
-                $listeners[$newHash] = $listener;
+                if (\is_string($listener)) {
+                    $listener = $this->container->get($listener);
 
-                $this->methods[$eventName][$newHash] = $this->getMethod($listener, $eventName);
-            } else {
-                $listeners[$hash] = $listener;
+                    if (isset($removedListeners[$listener])) {
+                        continue;
+                    }
+
+                    $newHash = $this->getHash($listener);
+
+                    $this->initializedHashMapping[$eventName][$hash] = $newHash;
+
+                    $listeners[$newHash] = $listener;
+
+                    $this->methods[$eventName][$newHash] = $this->getMethod($listener, $eventName);
+                } else {
+                    $listeners[$hash] = $listener;
+                }
             }
-        }
 
-        $this->listeners[$eventName] = $listeners;
+            // Building a listener service can add listeners for the same event.
+            // What is left in $this->listeners[$eventName] is what it added.
+            $this->listeners[$eventName] = $listeners + $this->listeners[$eventName];
+        } while (!isset($this->initialized[$eventName]));
     }
 
     private function initializeSubscribers(): void
@@ -203,7 +224,7 @@ class ContainerAwareEventManager extends EventManager
             return '_service_'.$listener;
         }
 
-        return spl_object_hash($listener);
+        return spl_object_id($listener);
     }
 
     private function getMethod(object $listener, string $event): string

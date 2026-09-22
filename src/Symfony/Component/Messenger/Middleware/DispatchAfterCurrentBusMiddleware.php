@@ -58,7 +58,15 @@ class DispatchAfterCurrentBusMiddleware implements MiddlewareInterface
              * A call to MessageBusInterface::dispatch() was made from inside the main bus handling,
              * but the message does not have the stamp. So, process it like normal.
              */
-            return $stack->next()->handle($envelope, $stack);
+            $queueLengthBefore = \count($this->queue);
+            try {
+                return $stack->next()->handle($envelope, $stack);
+            } catch (\Throwable $e) {
+                // drop the messages queued by the failed dispatch, they were likely dependent on it
+                $this->queue = \array_slice($this->queue, 0, $queueLengthBefore);
+
+                throw $e;
+            }
         }
 
         // First time we get here, mark as inside a "root dispatch" call:
@@ -66,7 +74,7 @@ class DispatchAfterCurrentBusMiddleware implements MiddlewareInterface
         try {
             // Execute the whole middleware stack & message handling for main dispatch:
             $returnedEnvelope = $stack->next()->handle($envelope, $stack);
-        } catch (\Throwable $exception) {
+        } catch (\Throwable $e) {
             /*
              * Whenever an exception occurs while handling a message that has
              * queued other messages, we drop the queued ones.
@@ -76,7 +84,7 @@ class DispatchAfterCurrentBusMiddleware implements MiddlewareInterface
             $this->queue = [];
             $this->isRootDispatchCallRunning = false;
 
-            throw $exception;
+            throw $e;
         }
 
         // "Root dispatch" call is finished, dispatch stored messages.
@@ -96,7 +104,7 @@ class DispatchAfterCurrentBusMiddleware implements MiddlewareInterface
         }
 
         $this->isRootDispatchCallRunning = false;
-        if (\count($exceptions) > 0) {
+        if ($exceptions) {
             throw new DelayedMessageHandlingException($exceptions, $returnedEnvelope);
         }
 

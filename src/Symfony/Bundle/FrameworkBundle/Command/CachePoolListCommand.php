@@ -11,45 +11,17 @@
 
 namespace Symfony\Bundle\FrameworkBundle\Command;
 
-use Symfony\Component\Console\Attribute\AsCommand;
-use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\Cache\Command\CachePoolListCommand as BaseCachePoolListCommand;
 
-/**
- * List available cache pools.
- *
- * @author Tobias Nyholm <tobias.nyholm@gmail.com>
- */
-#[AsCommand(name: 'cache:pool:list', description: 'List available cache pools')]
-final class CachePoolListCommand extends Command
-{
+trigger_deprecation('symfony/framework-bundle', '8.2', 'The "%s" class is deprecated, use "%s" instead.', 'Symfony\Bundle\FrameworkBundle\Command\CachePoolListCommand', BaseCachePoolListCommand::class);
+
+class_alias(BaseCachePoolListCommand::class, 'Symfony\Bundle\FrameworkBundle\Command\CachePoolListCommand');
+
+if (false) {
     /**
-     * @param string[] $poolNames
+     * @deprecated since Symfony 8.2, use Symfony\Component\Cache\Command\CachePoolListCommand instead
      */
-    public function __construct(
-        private array $poolNames,
-    ) {
-        parent::__construct();
-    }
-
-    protected function configure(): void
+    class CachePoolListCommand
     {
-        $this
-            ->setHelp(<<<'EOF'
-                The <info>%command.name%</info> command lists all available cache pools.
-                EOF
-            )
-        ;
-    }
-
-    protected function execute(InputInterface $input, OutputInterface $output): int
-    {
-        $io = new SymfonyStyle($input, $output);
-
-        $io->table(['Pool name'], array_map(static fn ($pool) => [$pool], $this->poolNames));
-
-        return 0;
     }
 }

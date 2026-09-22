@@ -67,9 +67,10 @@ class NovuTransport extends AbstractTransport
             ],
             'payload' => json_decode($message->getContent()),
             'overrides' => $options['overrides'] ?? [],
+            'context' => $options['context'] ?? [],
         ];
 
-        $endpoint = \sprintf('https://%s/v1/events/trigger', $this->getEndpoint());
+        $endpoint = \sprintf('%s://%s/v1/events/trigger', $this->getHttpScheme(), $this->getEndpoint());
         $response = $this->client->request('POST', $endpoint, [
             'body' => $body,
             'headers' => [

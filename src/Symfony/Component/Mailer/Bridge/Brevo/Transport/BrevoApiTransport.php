@@ -15,10 +15,14 @@ use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\InvalidArgumentException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Header\TrackingHeader;
+use Symfony\Component\Mailer\RemoteTemplateEmail;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractApiTransport;
+use Symfony\Component\Mailer\Transport\RemoteTemplateTransportInterface;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\Headers;
@@ -30,7 +34,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 /**
  * @author Pierre TANGUY
  */
-final class BrevoApiTransport extends AbstractApiTransport
+final class BrevoApiTransport extends AbstractApiTransport implements RemoteTemplateTransportInterface
 {
     public function __construct(
         #[\SensitiveParameter] private string $key,
@@ -74,13 +78,13 @@ final class BrevoApiTransport extends AbstractApiTransport
     }
 
     /**
-     * @return list<array{email: string, name?: string}>
+     * @return list<array{email: string, name?: string, contactPixelTrackingConsent?: bool}>
      */
-    private function formatAddresses(array $addresses): array
+    private function formatAddresses(array $addresses, ?bool $tracking = null): array
     {
         $formattedAddresses = [];
         foreach ($addresses as $address) {
-            $formattedAddresses[] = $this->formatAddress($address);
+            $formattedAddresses[] = $this->formatAddress($address, $tracking);
         }
 
         return $formattedAddresses;
@@ -88,11 +92,25 @@ final class BrevoApiTransport extends AbstractApiTransport
 
     private function getPayload(Email $email, Envelope $envelope): array
     {
+        $tracking = $this->getTracking($email->getHeaders());
+        $template = $email instanceof RemoteTemplateEmail ? $email->getRemoteTemplate() : null;
+
         $payload = [
             'sender' => $this->formatAddress($envelope->getSender()),
-            'to' => $this->formatAddresses($this->getRecipients($email, $envelope)),
-            'subject' => $email->getSubject(),
+            'to' => $this->formatAddresses($this->getRecipients($email, $envelope), $tracking),
         ];
+        if (null === $template || null !== $email->getSubject()) {
+            $payload['subject'] = $email->getSubject();
+        }
+        if (null !== $template) {
+            if (!ctype_digit($template->getReference())) {
+                throw new InvalidArgumentException(\sprintf('The Brevo API expects a numeric template id, "%s" given.', $template->getReference()));
+            }
+            $payload['templateId'] = (int) $template->getReference();
+            if ($template->getVariables()) {
+                $payload['params'] = $template->getVariables();
+            }
+        }
         if ($attachments = $this->prepareAttachments($email)) {
             $payload['attachment'] = $attachments;
         }
@@ -100,10 +118,10 @@ final class BrevoApiTransport extends AbstractApiTransport
             $payload['replyTo'] = current($this->formatAddresses($emails));
         }
         if ($emails = $email->getCc()) {
-            $payload['cc'] = $this->formatAddresses($emails);
+            $payload['cc'] = $this->formatAddresses($emails, $tracking);
         }
         if ($emails = $email->getBcc()) {
-            $payload['bcc'] = $this->formatAddresses($emails);
+            $payload['bcc'] = $this->formatAddresses($emails, $tracking);
         }
         if ($email->getTextBody()) {
             $payload['textContent'] = $email->getTextBody();
@@ -154,27 +172,58 @@ final class BrevoApiTransport extends AbstractApiTransport
                 continue;
             }
             if ('templateid' === $name) {
+                trigger_deprecation('symfony/brevo-mailer', '8.2', 'Using the "templateid" email header to select a Brevo template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class);
                 $headersAndTags[$header->getName()] = (int) $header->getValue();
 
                 continue;
             }
             if ('params' === $name) {
+                trigger_deprecation('symfony/brevo-mailer', '8.2', 'Using the "params" email header to define the variables of a Brevo template is deprecated, use a "%s" instead.', RemoteTemplateEmail::class);
                 $headersAndTags[$header->getName()] = $header->getParameters();
 
                 continue;
             }
+
+            if (0 === strcasecmp($header->getName(), TrackingHeader::NAME)) {
+                continue;
+            }
+
             $headersAndTags['headers'][$header->getName()] = $header->getBodyAsString();
         }
 
         return $headersAndTags;
     }
 
-    private function formatAddress(Address $address): array
+    /**
+     * Brevo only exposes a single combined "tracking consent" flag which anonymises the open/click
+     * events rather than disabling them, so an explicit false on either aspect anonymises both, and
+     * an explicit true on either aspect grants consent for both.
+     */
+    private function getTracking(Headers $headers): ?bool
+    {
+        $tracking = TrackingHeader::fromHeaders($headers);
+
+        if (false === $tracking?->getOpens() || false === $tracking?->getClicks()) {
+            return false;
+        }
+
+        if (true === $tracking?->getOpens() || true === $tracking?->getClicks()) {
+            return true;
+        }
+
+        return null;
+    }
+
+    private function formatAddress(Address $address, ?bool $tracking = null): array
     {
         $formattedAddress = ['email' => $address->getEncodedAddress()];
 
         if ($address->getName()) {
             $formattedAddress['name'] = $address->getName();
+        }
+
+        if (null !== $tracking) {
+            $formattedAddress['contactPixelTrackingConsent'] = $tracking;
         }
 
         return $formattedAddress;

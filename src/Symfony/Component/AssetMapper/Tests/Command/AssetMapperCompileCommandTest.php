@@ -15,9 +15,9 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\AssetMapper\Event\PreAssetsCompileEvent;
 use Symfony\Component\AssetMapper\Tests\Fixtures\AssetMapperTestAppKernel;
+use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Tester\CommandTester;
-use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Finder\Finder;
 
@@ -108,6 +108,33 @@ class AssetMapperCompileCommandTest extends TestCase
             '/assets/subdir/file5.js',
             '/assets/file4.js',
         ], $entrypointData);
+
+        $this->assertFileDoesNotExist($targetBuildDir.'/entrypoint.reachable.file6.json');
+    }
+
+    public function testReachableEntrypointMetadataIsCompiledWhenTheImportMapIsLimitedToIt()
+    {
+        $this->kernel = new AssetMapperTestAppKernel('reachable_entries', true);
+
+        try {
+            $this->kernel->boot();
+        } catch (InvalidConfigurationException) {
+            $this->markTestSkipped('The installed FrameworkBundle has no "importmap_entries" option.');
+        }
+
+        $application = new Application($this->kernel);
+
+        $targetBuildDir = $this->kernel->getProjectDir().'/public/assets';
+        $this->filesystem->remove($targetBuildDir);
+
+        $tester = new CommandTester($application->find('asset-map:compile'));
+        $this->assertSame(0, $tester->execute([]));
+
+        $this->assertFileExists($targetBuildDir.'/entrypoint.reachable.file6.json');
+        $this->assertSame([
+            '/assets/subdir/file5.js',
+            '/assets/file4.js',
+        ], json_decode($this->filesystem->readFile($targetBuildDir.'/entrypoint.reachable.file6.json'), true));
     }
 
     public function testEventIsDispatched()
@@ -115,14 +142,12 @@ class AssetMapperCompileCommandTest extends TestCase
         $this->kernel->boot();
         $application = new Application($this->kernel);
         $container = $this->kernel->getContainer();
-        $dispatcher = $container->get('event_dispatcher');
-        \assert($dispatcher instanceof EventDispatcherInterface);
 
         $listenerCalled = false;
-        $dispatcher->addListener(PreAssetsCompileEvent::class, function (PreAssetsCompileEvent $event) use (&$listenerCalled) {
+        $container->get('pre_assets_compile_listener')->listener = function (PreAssetsCompileEvent $event) use (&$listenerCalled) {
             $listenerCalled = true;
             $this->assertInstanceOf(OutputInterface::class, $event->getOutput());
-        });
+        };
 
         $command = $application->find('asset-map:compile');
         $tester = new CommandTester($command);

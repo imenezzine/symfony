@@ -4,9 +4,17 @@ CHANGELOG
 8.2
 ---
 
+ * Add five not-globally-reachable ranges to `IpUtils::PRIVATE_SUBNETS`: `192.0.0.0/24`, `192.88.99.0/24`, `224.0.0.0/4`, `100::/64` and `ff00::/8`
+ * Add `Response::cacheControl()` to set the targeted cache directives defined by RFC 9213, e.g. `CDN-Cache-Control`
  * Deprecate not passing an expiry to `UriSigner::sign()`
  * Add the `$defaultExpiration` argument to `UriSigner::__construct()`
  * Add argument `$version` to `UriSigner::sign()`, `UriSigner::check()`, `UriSigner::checkRequest()`, and `UriSigner::verify()` to bind a signed URI to a state token, folded into the signature
+ * Add `ParameterBag::filterCallback()` to filter a parameter value through a callback
+ * Reject a `Cookie` whose name uses the `__Secure-`/`__Host-` prefix when its attributes break the prefix contract
+ * Deprecate the `Request::$trustedHosts` property, it is never populated anymore
+ * Report the actual header value when the `ResponseHeaderSame` constraint fails
+ * Add `ClearableSessionHandlerInterface` for clearing all session data
+ * Add `Request::getStructuredSuffixFormat()` to resolve a mime type to the format of its structured syntax suffix, e.g. `application/vnd.api+json` to `json`
 
 8.1
 ---

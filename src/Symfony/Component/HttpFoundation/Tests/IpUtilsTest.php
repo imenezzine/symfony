@@ -55,6 +55,11 @@ class IpUtilsTest extends TestCase
             [false, '1.2.3.4', '256.256.256/0'], // invalid CIDR notation
             [false, 'an_invalid_ip', '192.168.1.0/24'],
             [false, '', '1.2.3.4/1'],
+            [false, '10.5.5.5', '10.0.0.0/8.5'], // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/8e0'], // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/ 8'],  // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/+8'],  // non-integer netmask
+            [false, '10.5.5.5', '10.0.0.0/-1'],  // negative netmask
         ];
     }
 
@@ -138,7 +143,14 @@ class IpUtilsTest extends TestCase
             ['[0:0:603:50:396e:4789:8e99:0001]', '[0:0:603:50::]'],
             ['[2a01:198::3]', '[2a01:198::]'],
             ['::ffff:123.234.235.236', '::ffff:123.234.235.0'], // IPv4-mapped IPv6 addresses
+            ['::FFFF:123.234.235.236', '::ffff:123.234.235.0'],
+            ['::ffff:7bea:ebec', '::ffff:123.234.235.0'],
+            ['0000:0000:0000:0000:0000:ffff:7bea:ebec', '::ffff:123.234.235.0'],
+            ['[::FFFF:123.234.235.236]', '[::ffff:123.234.235.0]'],
             ['::123.234.235.236', '::123.234.235.0'], // deprecated IPv4-compatible IPv6 address
+            ['::7bea:ebec', '::123.234.235.0'],
+            ['::1:0:1', '::'], // neither mapped nor compatible: regular IPv6 anonymization applies
+            ['0000:0000:0000:0000:0000:0001:0000:0001', '::'],
             ['fe80::1fc4:15d8:78db:2319%enp4s0', 'fe80::'], // IPv6 link-local with RFC4007 scoping
         ];
     }
@@ -254,10 +266,25 @@ class IpUtilsTest extends TestCase
             ['2001:0002::1',       true],
             ['64:ff9b::7f00:1',    true],
             ['64:ff9b:1::7f00:1',  true],
+            ['192.0.0.1',          true],
+            ['192.0.0.8',          true],
+            ['192.88.99.1',        true],
+            ['224.0.0.1',          true],
+            ['239.255.255.250',    true],
+            ['233.1.1.1',          true],
+            ['100::1',             true],
+            ['ff02::1',            true],
+            ['ff05::1',            true],
+            ['ff0e::1',            true],
 
             // public
+            ['100:0:0:1::1',            false],
             ['104.26.14.6',             false],
             ['2606:4700:20::681a:e06',  false],
+            // just past the boundary of the ranges above, which pins their prefix lengths
+            ['100.128.0.1',             false],
+            ['198.20.0.1',              false],
+            ['2001:2:1::1',             false],
         ];
     }
 

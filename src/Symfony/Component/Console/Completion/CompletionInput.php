@@ -69,7 +69,7 @@ final class CompletionInput extends ArgvInput
         parent::bind($definition);
 
         $relevantToken = $this->getRelevantToken();
-        if ('-' === $relevantToken[0]) {
+        if (str_starts_with($relevantToken, '-')) {
             // the current token is an input option: complete either option name or option value
             [$optionToken, $optionValue] = explode('=', $relevantToken, 2) + ['', ''];
 
@@ -198,11 +198,13 @@ final class CompletionInput extends ArgvInput
 
         if ('-' === ($optionToken[1] ?? ' ')) {
             // long option name
-            return $this->definition->hasOption($optionName) ? $this->definition->getOption($optionName) : null;
+            $option = $this->definition->hasOption($optionName) ? $this->definition->getOption($optionName) : null;
+        } else {
+            // short option name
+            $option = $this->definition->hasShortcut($optionName[0]) ? $this->definition->getOptionForShortcut($optionName[0]) : null;
         }
 
-        // short option name
-        return $this->definition->hasShortcut($optionName[0]) ? $this->definition->getOptionForShortcut($optionName[0]) : null;
+        return $option?->isHidden() ? null : $option;
     }
 
     /**

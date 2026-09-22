@@ -84,6 +84,8 @@ class SesHttpAsyncAwsTransportTest extends TestCase
             $this->assertStringContainsString('Saif Eddin <saif.gmati@symfony.com>', $content);
             $this->assertStringContainsString('Fabien <fabpot@symfony.com>', $content);
             $this->assertStringContainsString('Hello There!', $content);
+            $this->assertStringNotContainsString('X-Metadata-tagName1', $content);
+            $this->assertStringNotContainsString('X-Metadata-tagName2', $content);
             $this->assertSame('aws-configuration-set-name', $body['ConfigurationSetName']);
             $this->assertSame('aws-source-arn', $body['FromEmailAddressIdentityArn']);
             $this->assertSame([['Name' => 'tagName1', 'Value' => 'tag Value1'], ['Name' => 'tagName2', 'Value' => 'tag Value2']], $body['EmailTags']);
@@ -113,6 +115,70 @@ class SesHttpAsyncAwsTransportTest extends TestCase
         $message = $transport->send($mail);
 
         $this->assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testSendWithTenant()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $body = json_decode($options['body'], true);
+
+            $this->assertSame('my-tenant', $body['TenantName']);
+
+            return new MockResponse('{"MessageId": "foobar"}', ['http_code' => 200]);
+        });
+
+        $transport = (new SesHttpAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), $client)))->setTenant('my-tenant');
+
+        $mail = new Email();
+        $mail->subject('Hello!')
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->text('Hello There!');
+
+        $transport->send($mail);
+    }
+
+    public function testSendWithoutTenant()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $body = json_decode($options['body'], true);
+
+            $this->assertArrayNotHasKey('TenantName', $body);
+
+            return new MockResponse('{"MessageId": "foobar"}', ['http_code' => 200]);
+        });
+
+        $transport = new SesHttpAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), $client));
+
+        $mail = new Email();
+        $mail->subject('Hello!')
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->text('Hello There!');
+
+        $transport->send($mail);
+    }
+
+    public function testSendWithTenantHeaderOverridesConfiguredTenant()
+    {
+        $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
+            $body = json_decode($options['body'], true);
+
+            $this->assertSame('header-tenant', $body['TenantName']);
+
+            return new MockResponse('{"MessageId": "foobar"}', ['http_code' => 200]);
+        });
+
+        $transport = (new SesHttpAsyncAwsTransport(new SesClient(Configuration::create(['sharedConfigFile' => false]), new NullProvider(), $client)))->setTenant('dsn-tenant');
+
+        $mail = new Email();
+        $mail->subject('Hello!')
+            ->to(new Address('saif.gmati@symfony.com', 'Saif Eddin'))
+            ->from(new Address('fabpot@symfony.com', 'Fabien'))
+            ->text('Hello There!');
+        $mail->getHeaders()->addTextHeader('X-SES-TENANT', 'header-tenant');
+
+        $transport->send($mail);
     }
 
     public function testSendThrowsForErrorResponse()

@@ -13,6 +13,7 @@ namespace Symfony\Component\Security\Core\Tests\Authorization;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Security\Core\Authentication\AuthenticationMethod;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
 use Symfony\Component\Security\Core\Authentication\Token\RememberMeToken;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
@@ -51,23 +52,38 @@ class ExpressionLanguageTest extends TestCase
         $noToken = null;
         $rememberMeToken = new RememberMeToken($user, 'firewall-name');
         $usernamePasswordToken = new UsernamePasswordToken($user, 'firewall-name', $roles);
+        $recentlyAuthenticatedToken = new UsernamePasswordToken($user, 'firewall-name', $roles);
+        $recentlyAuthenticatedToken->setAuthenticationProofs([AuthenticationMethod::UNSPECIFIED => time()]);
+        $staleRememberMeToken = new RememberMeToken($user, 'firewall-name');
+        $staleRememberMeToken->setAuthenticationProofs([AuthenticationMethod::UNSPECIFIED => time()]);
 
         return [
             [$noToken, 'is_authenticated()', false],
             [$noToken, 'is_fully_authenticated()', false],
             [$noToken, 'is_remember_me()', false],
+            [$noToken, 'is_recently_authenticated()', false],
+            [$noToken, 'is_very_recently_authenticated()', false],
 
             [$rememberMeToken, 'is_authenticated()', true],
             [$rememberMeToken, 'is_fully_authenticated()', false],
             [$rememberMeToken, 'is_remember_me()', true],
             [$rememberMeToken, "is_granted('ROLE_FOO')", false],
             [$rememberMeToken, "is_granted('ROLE_USER')", true],
+            [$rememberMeToken, 'is_recently_authenticated()', false],
+            [$staleRememberMeToken, 'is_recently_authenticated()', false],
+            [$staleRememberMeToken, 'is_very_recently_authenticated()', false],
 
             [$usernamePasswordToken, 'is_authenticated()', true],
             [$usernamePasswordToken, 'is_fully_authenticated()', true],
             [$usernamePasswordToken, 'is_remember_me()', false],
             [$usernamePasswordToken, "is_granted('ROLE_FOO')", false],
             [$usernamePasswordToken, "is_granted('ROLE_USER')", true],
+            [$usernamePasswordToken, 'is_recently_authenticated()', false],
+            [$usernamePasswordToken, 'is_very_recently_authenticated()', false],
+
+            [$recentlyAuthenticatedToken, 'is_recently_authenticated()', true],
+            [$recentlyAuthenticatedToken, 'is_fully_authenticated()', true],
+            [$recentlyAuthenticatedToken, 'is_very_recently_authenticated()', true],
         ];
     }
 }

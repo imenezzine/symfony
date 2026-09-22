@@ -26,6 +26,7 @@ class UndefinedCallableHandler
         'emojify' => 'emoji',
         'humanize' => 'form',
         'form_encode_currency' => 'form',
+        'normalize' => 'serializer',
         'serialize' => 'serializer',
         'trans' => 'translation',
         'sanitize_html' => 'html-sanitizer',
@@ -83,12 +84,12 @@ class UndefinedCallableHandler
     ];
 
     private const FULL_STACK_ENABLE = [
-        'html-sanitizer' => 'enable "framework.html_sanitizer"',
+        'html-sanitizer' => 'enable "html_sanitizer"',
         'form' => 'enable "framework.form"',
         'security-core' => 'add the "SecurityBundle"',
         'security-http' => 'add the "SecurityBundle"',
         'web-link' => 'enable "framework.web_link"',
-        'workflow' => 'enable "framework.workflows"',
+        'workflow' => 'enable "workflow"',
     ];
 
     public static function onUndefinedFilter(string $name): TwigFilter|false

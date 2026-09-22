@@ -246,6 +246,8 @@ class Request
 
     /**
      * @var string[]
+     *
+     * @deprecated since Symfony 8.2, this property is never populated anymore
      */
     protected static array $trustedHosts = [];
 
@@ -269,6 +271,16 @@ class Request
     private array $trustedValuesCache = [];
 
     private static int $trustedHeaderSet = -1;
+
+    /**
+     * @var array<string, true>
+     */
+    private static array $trustedHostsLiterals = [];
+
+    /**
+     * @var string[]
+     */
+    private static array $trustedHostsRegexps = [];
 
     private bool $isIisRewrite = false;
 
@@ -684,8 +696,19 @@ class Request
     public static function setTrustedHosts(array $hostPatterns): void
     {
         self::$trustedHostPatterns = array_map(static fn ($hostPattern) => \sprintf('{%s}i', $hostPattern), $hostPatterns);
-        // we need to reset trusted hosts on trusted host patterns change
-        self::$trustedHosts = [];
+        self::$trustedHostsLiterals = [];
+        $regexpPatterns = [];
+
+        foreach ($hostPatterns as $hostPattern) {
+            // constant patterns are matched by a hash lookup in getHost(), where the host is lowercase and free of newlines
+            if (preg_match('{^\^((?:[a-z0-9_:-]|\\\\[^a-z0-9])++)\$$}Di', $hostPattern, $m)) {
+                self::$trustedHostsLiterals[strtolower(preg_replace('{\\\\(.)}s', '$1', $m[1]))] = true;
+            } else {
+                $regexpPatterns[] = $hostPattern;
+            }
+        }
+
+        self::$trustedHostsRegexps = self::compileHostPatterns($regexpPatterns);
     }
 
     /**
@@ -1193,17 +1216,19 @@ class Request
             throw new SuspiciousOperationException(\sprintf('Invalid Host "%s".', $host));
         }
 
-        if (\count(self::$trustedHostPatterns) > 0) {
+        if (self::$trustedHostsLiterals || self::$trustedHostsRegexps) {
             // to avoid host header injection attacks, you should provide a list of trusted host patterns
 
-            if (\in_array($host, self::$trustedHosts, true)) {
+            if (self::$trustedHosts) {
+                trigger_deprecation('symfony/http-foundation', '8.2', 'Populating the "%s::$trustedHosts" property is deprecated; it has no effect anymore.', self::class);
+            }
+
+            if (isset(self::$trustedHostsLiterals[$host])) {
                 return $host;
             }
 
-            foreach (self::$trustedHostPatterns as $pattern) {
-                if (preg_match($pattern, $host)) {
-                    self::$trustedHosts[] = $host;
-
+            foreach (self::$trustedHostsRegexps as $regexp) {
+                if (preg_match($regexp, $host)) {
                     return $host;
                 }
             }
@@ -1362,11 +1387,8 @@ class Request
             return null;
         }
 
-        if (str_starts_with($canonicalMimeType, 'application/') && str_contains($canonicalMimeType, '+')) {
-            $suffix = substr(strrchr($canonicalMimeType, '+'), 1);
-            if (isset(self::STRUCTURED_SUFFIX_FORMATS[$suffix])) {
-                return self::STRUCTURED_SUFFIX_FORMATS[$suffix];
-            }
+        if (null !== $suffixFormat = self::getStructuredSuffixFormat($canonicalMimeType)) {
+            return $suffixFormat;
         }
 
         if ($subtypeFallback && str_contains($canonicalMimeType, '/')) {
@@ -1380,6 +1402,33 @@ class Request
         }
 
         return null;
+    }
+
+    /**
+     * Gets the format associated with the structured syntax suffix of the mime type.
+     *
+     * Unlike getFormat(), registered formats take no part in the resolution: only
+     * the "+suffix" of an "application/*" mime type is considered, e.g.
+     * "application/vnd.api+json" -> "json". Use it when the underlying
+     * serialization format matters more than the registered alias.
+     *
+     * @see https://datatracker.ietf.org/doc/html/rfc6839
+     */
+    public static function getStructuredSuffixFormat(?string $mimeType): ?string
+    {
+        if (!$mimeType) {
+            return null;
+        }
+
+        if (false !== $pos = strpos($mimeType, ';')) {
+            $mimeType = trim(substr($mimeType, 0, $pos));
+        }
+
+        if (!str_starts_with($mimeType, 'application/') || false === $suffix = strrchr($mimeType, '+')) {
+            return null;
+        }
+
+        return self::STRUCTURED_SUFFIX_FORMATS[substr($suffix, 1)] ?? null;
     }
 
     /**
@@ -2194,17 +2243,15 @@ class Request
         $firstTrustedIp = null;
 
         foreach ($clientIps as $key => $clientIp) {
-            if (strpos($clientIp, '.')) {
-                // Strip :port from IPv4 addresses. This is allowed in Forwarded
-                // and may occur in X-Forwarded-For.
-                $i = strpos($clientIp, ':');
-                if ($i) {
-                    $clientIps[$key] = $clientIp = substr($clientIp, 0, $i);
-                }
-            } elseif (str_starts_with($clientIp, '[')) {
+            if (str_starts_with($clientIp, '[')) {
                 // Strip brackets and :port from IPv6 addresses.
                 $i = strpos($clientIp, ']', 1);
                 $clientIps[$key] = $clientIp = substr($clientIp, 1, $i - 1);
+            } elseif (strpos($clientIp, '.') && 1 === substr_count($clientIp, ':')) {
+                // Strip :port from IPv4 addresses. This is allowed in Forwarded
+                // and may occur in X-Forwarded-For. An IPv6 address with an
+                // embedded IPv4 address has at least two colons and is kept.
+                $clientIps[$key] = $clientIp = strstr($clientIp, ':', true);
             }
 
             if (!filter_var($clientIp, \FILTER_VALIDATE_IP)) {
@@ -2265,5 +2312,32 @@ class Request
         $r = $cache[$name] ??= new \ReflectionProperty(self::class, $name);
 
         $r->setRawValue($request, $value);
+    }
+
+    /**
+     * Combines host patterns into as few regexps as PCRE can compile.
+     *
+     * @return string[]
+     */
+    private static function compileHostPatterns(array $hostPatterns): array
+    {
+        if (!$hostPatterns) {
+            return [];
+        }
+
+        // the branch reset group keeps capturing groups, back references and inline modifiers local to each pattern
+        $regexp = \sprintf('{(?|(?:%s))}i', implode(')|(?:', $hostPatterns));
+
+        if (1 === \count($hostPatterns) || false !== @preg_match($regexp, '')) {
+            return [$regexp];
+        }
+
+        // the combined pattern exceeds the maximum size PCRE accepts, split it in half
+        $half = intdiv(\count($hostPatterns), 2);
+
+        return array_merge(
+            self::compileHostPatterns(\array_slice($hostPatterns, 0, $half)),
+            self::compileHostPatterns(\array_slice($hostPatterns, $half))
+        );
     }
 }

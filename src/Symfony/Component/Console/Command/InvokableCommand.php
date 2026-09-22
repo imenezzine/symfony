@@ -15,9 +15,11 @@ use Symfony\Component\Console\Application;
 use Symfony\Component\Console\ArgumentResolver\ArgumentResolver;
 use Symfony\Component\Console\ArgumentResolver\ArgumentResolverInterface;
 use Symfony\Component\Console\Attribute\Argument;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Interact;
 use Symfony\Component\Console\Attribute\MapInput;
 use Symfony\Component\Console\Attribute\Option;
+use Symfony\Component\Console\CommandChain;
 use Symfony\Component\Console\Cursor;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
@@ -50,8 +52,11 @@ class InvokableCommand implements SignalableCommandInterface
         private ?ArgumentResolverInterface $argumentResolver = null,
     ) {
         $this->code = $code;
-        $this->signalableCommand = $code instanceof SignalableCommandInterface ? $code : null;
         $this->invokable = new \ReflectionFunction($this->getClosure($code));
+
+        // the container wraps the service in a closure; a closure bound to the command itself must not handle its signals
+        $code = $this->invokable->getClosureThis();
+        $this->signalableCommand = $code instanceof SignalableCommandInterface && !$code instanceof Command ? $code : null;
     }
 
     /**
@@ -102,6 +107,19 @@ class InvokableCommand implements SignalableCommandInterface
                 }
             }
         }
+
+        // the options listed in the attribute come after the ones the parameters declare
+        $class = $this->invokable->getClosureScopeClass();
+        $name = $this->invokable->getName();
+        $attribute = $class?->hasMethod($name) ? ($class->getMethod($name)->getAttributes(AsCommand::class)[0] ?? null)?->newInstance() : null;
+
+        if (!$attribute && '__invoke' === $name) {
+            $attribute = ($class?->getAttributes(AsCommand::class)[0] ?? null)?->newInstance();
+        }
+
+        foreach ($attribute->options ?? [] as $option) {
+            $definition->addOption($option);
+        }
     }
 
     public function getCode(): callable
@@ -147,11 +165,12 @@ class InvokableCommand implements SignalableCommandInterface
                     SymfonyStyle::class => new SymfonyStyle($input, $output, $this->command->getApplication()?->getDispatcher()),
                     Cursor::class => new Cursor($output),
                     Application::class => $this->command->getApplication(),
+                    CommandChain::class => $this->getCommandChain($input),
                     Command::class, self::class => $this->command,
-                    default => null,
+                    default => false,
                 };
 
-                if (null !== $argument) {
+                if (false !== $argument) {
                     $coreUtilities[$index] = $argument;
                     continue;
                 }
@@ -177,7 +196,7 @@ class InvokableCommand implements SignalableCommandInterface
         $resolvedIndex = 0;
 
         foreach ($function->getParameters() as $index => $param) {
-            if (isset($coreUtilities[$index])) {
+            if (\array_key_exists($index, $coreUtilities)) {
                 $parameters[] = $coreUtilities[$index];
             } elseif ($param->isVariadic()) {
                 // Variadic parameters consume all remaining resolved arguments
@@ -249,5 +268,22 @@ class InvokableCommand implements SignalableCommandInterface
                 $this->interactions[] = new Interaction($invokableThis, $attribute);
             }
         }
+    }
+
+    /**
+     * The application's chain is stale when the command runs from another one, itself included.
+     */
+    private function getCommandChain(InputInterface $input): CommandChain
+    {
+        if ($chain = $this->command->getApplication()?->getCommandChain()) {
+            $commands = $chain->getCommands();
+            $inputs = $chain->getInputs();
+
+            if ($this->command === end($commands) && $input === end($inputs)) {
+                return $chain;
+            }
+        }
+
+        return new CommandChain([[$this->command, $input]]);
     }
 }

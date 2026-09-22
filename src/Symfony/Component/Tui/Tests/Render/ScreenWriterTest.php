@@ -15,7 +15,11 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Tui\Ansi\AnsiUtils;
 use Symfony\Component\Tui\Exception\RenderException;
+use Symfony\Component\Tui\Render\ArrayLineBuffer;
+use Symfony\Component\Tui\Render\ConcatenatedLineBuffer;
 use Symfony\Component\Tui\Render\ScreenWriter;
+use Symfony\Component\Tui\Terminal\ScreenBuffer;
+use Symfony\Component\Tui\Terminal\TerminalInterface;
 use Symfony\Component\Tui\Terminal\VirtualTerminal;
 
 class ScreenWriterTest extends TestCase
@@ -34,7 +38,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['Line 1', 'Line 2', 'Line 3']);
+        $writer->writeFrame(new ArrayLineBuffer(['Line 1', 'Line 2', 'Line 3']));
 
         $output = $terminal->getOutput();
 
@@ -59,7 +63,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines([]);
+        $writer->writeFrame(new ArrayLineBuffer([]));
 
         $output = $terminal->getOutput();
 
@@ -75,12 +79,12 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['Hello', 'World']);
+        $writer->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         $terminal->clearOutput();
 
         // Write the exact same lines again
-        $writer->writeLines(['Hello', 'World']);
+        $writer->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         $output = $terminal->getOutput();
 
@@ -92,17 +96,34 @@ class ScreenWriterTest extends TestCase
 
     // --- Differential render ---
 
+    public function testFrameDiffDoesNotReadAnUnchangedPrefix()
+    {
+        $terminal = new VirtualTerminal(80, 24);
+        $writer = new ScreenWriter($terminal);
+        $transcript = new CountingLineBuffer(100);
+
+        $writer->writeFrame(new ConcatenatedLineBuffer([$transcript, new ArrayLineBuffer(['footer 1'])]));
+        $transcript->resetReadCount();
+        $terminal->clearOutput();
+
+        $writer->writeFrame(new ConcatenatedLineBuffer([$transcript, new ArrayLineBuffer(['footer 2'])]));
+
+        $this->assertSame(0, $transcript->getReadCount());
+        $this->assertStringContainsString('footer 2', $terminal->getOutput());
+        $this->assertStringNotContainsString('transcript', $terminal->getOutput());
+    }
+
     public function testOnlyChangedLinesAreRewritten()
     {
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['Line A', 'Line B', 'Line C']);
+        $writer->writeFrame(new ArrayLineBuffer(['Line A', 'Line B', 'Line C']));
 
         $terminal->clearOutput();
 
         // Change only the middle line
-        $writer->writeLines(['Line A', 'Line X', 'Line C']);
+        $writer->writeFrame(new ArrayLineBuffer(['Line A', 'Line X', 'Line C']));
 
         $output = $terminal->getOutput();
 
@@ -123,12 +144,12 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['A', 'B', 'C', 'D', 'E']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B', 'C', 'D', 'E']));
 
         $terminal->clearOutput();
 
         // Change lines B and D
-        $writer->writeLines(['A', 'X', 'C', 'Y', 'E']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'X', 'C', 'Y', 'E']));
 
         $output = $terminal->getOutput();
 
@@ -145,12 +166,12 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['Line 1', 'Line 2', 'Line 3', 'Line 4']);
+        $writer->writeFrame(new ArrayLineBuffer(['Line 1', 'Line 2', 'Line 3', 'Line 4']));
 
         $terminal->clearOutput();
 
         // Shrink to 2 lines (same first 2 lines)
-        $writer->writeLines(['Line 1', 'Line 2']);
+        $writer->writeFrame(new ArrayLineBuffer(['Line 1', 'Line 2']));
 
         $output = $terminal->getOutput();
 
@@ -163,12 +184,12 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['A', 'B', 'C', 'D']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B', 'C', 'D']));
 
         $terminal->clearOutput();
 
         // Change B and remove C,D
-        $writer->writeLines(['A', 'X']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'X']));
 
         $output = $terminal->getOutput();
 
@@ -182,13 +203,13 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['A', 'B', 'C', 'D']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B', 'C', 'D']));
 
         $terminal->clearOutput();
 
         // Removing a middle line shifts the remaining tail upward, so the
         // shifted trailing lines must still be rewritten.
-        $writer->writeLines(['A', 'C', 'D']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'C', 'D']));
 
         $output = $terminal->getOutput();
 
@@ -202,12 +223,12 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['A', 'B', 'C']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B', 'C']));
 
         $terminal->clearOutput();
 
         // Keep the same lines but remove last one
-        $writer->writeLines(['A', 'B']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B']));
 
         $output = $terminal->getOutput();
 
@@ -233,11 +254,11 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines($initialLines);
+        $writer->writeFrame(new ArrayLineBuffer($initialLines));
 
         $terminal->clearOutput();
 
-        $writer->writeLines([]);
+        $writer->writeFrame(new ArrayLineBuffer([]));
 
         $output = $terminal->getOutput();
 
@@ -254,13 +275,13 @@ class ScreenWriterTest extends TestCase
         for ($i = 0; $i < 10; ++$i) {
             $lines[] = "Line $i";
         }
-        $writer->writeLines($lines);
+        $writer->writeFrame(new ArrayLineBuffer($lines));
 
         $terminal->clearOutput();
 
         // Shrink to just the first line (unchanged) - all changes are in deleted lines
         // Extra lines (9) exceed terminal height (5), triggering full render
-        $writer->writeLines(['Line 0']);
+        $writer->writeFrame(new ArrayLineBuffer(['Line 0']));
 
         $output = $terminal->getOutput();
 
@@ -275,12 +296,12 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['A', 'B']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B']));
 
         $terminal->clearOutput();
 
         // Add more lines
-        $writer->writeLines(['A', 'B', 'C', 'D']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B', 'C', 'D']));
 
         $output = $terminal->getOutput();
 
@@ -296,13 +317,13 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['Hello', 'World']);
+        $writer->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         // Simulate resize
         $terminal->simulateResize(100, 24);
         $terminal->clearOutput();
 
-        $writer->writeLines(['Hello', 'World']);
+        $writer->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         $output = $terminal->getOutput();
 
@@ -320,7 +341,7 @@ class ScreenWriterTest extends TestCase
         $writer = new ScreenWriter($terminal);
 
         $marker = AnsiUtils::cursorMarker();
-        $writer->writeLines(["Hello{$marker}World"]);
+        $writer->writeFrame(new ArrayLineBuffer(["Hello{$marker}World"]));
 
         $output = $terminal->getOutput();
 
@@ -339,7 +360,7 @@ class ScreenWriterTest extends TestCase
 
         $marker = AnsiUtils::cursorMarker();
         // Place cursor at beginning of second line (row 1, col 0)
-        $writer->writeLines(['First line', "{$marker}Second line"]);
+        $writer->writeFrame(new ArrayLineBuffer(['First line', "{$marker}Second line"]));
 
         $output = $terminal->getOutput();
 
@@ -351,6 +372,20 @@ class ScreenWriterTest extends TestCase
         $this->assertStringNotContainsString($marker, $output);
     }
 
+    public function testCursorIsShownWhenContentShrinkMakesItVisible()
+    {
+        $terminal = new VirtualTerminal(80, 2);
+        $writer = new ScreenWriter($terminal);
+        $marker = AnsiUtils::cursorMarker();
+
+        $writer->writeFrame(new ArrayLineBuffer(["{$marker}Cursor", 'Second', 'Third']));
+        $terminal->clearOutput();
+
+        $writer->writeFrame(new ArrayLineBuffer(["{$marker}Cursor", 'Second']));
+
+        $this->assertStringContainsString(self::SHOW_CURSOR, $terminal->getOutput());
+    }
+
     // --- Cursor positioning (hardware cursor moves to correct position) ---
 
     public function testHardwareCursorMovesToCursorPosition()
@@ -360,7 +395,7 @@ class ScreenWriterTest extends TestCase
 
         $marker = AnsiUtils::cursorMarker();
         // Place cursor in the middle of first line (col = 5)
-        $writer->writeLines(["Hello{$marker}World", 'Other']);
+        $writer->writeFrame(new ArrayLineBuffer(["Hello{$marker}World", 'Other']));
 
         $output = $terminal->getOutput();
 
@@ -375,7 +410,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['No cursor here']);
+        $writer->writeFrame(new ArrayLineBuffer(['No cursor here']));
 
         $output = $terminal->getOutput();
 
@@ -392,13 +427,13 @@ class ScreenWriterTest extends TestCase
     {
         $marker = AnsiUtils::cursorMarker();
 
-        yield 'marker present, showHardwareCursor off' => [false, true, self::HIDE_CURSOR, self::SHOW_CURSOR];
-        yield 'marker present, showHardwareCursor on' => [true, true, self::SHOW_CURSOR, self::HIDE_CURSOR];
-        yield 'no marker, showHardwareCursor on' => [true, false, self::HIDE_CURSOR, self::SHOW_CURSOR];
+        yield 'marker present, showHardwareCursor off' => [false, true, self::HIDE_CURSOR];
+        yield 'marker present, showHardwareCursor on' => [true, true, self::SHOW_CURSOR];
+        yield 'no marker, showHardwareCursor on' => [true, false, self::HIDE_CURSOR];
     }
 
     #[DataProvider('cursorVisibilityProvider')]
-    public function testCursorVisibility(bool $showHardwareCursor, bool $hasMarker, string $expectedContains, string $expectedNotContains)
+    public function testCursorVisibility(bool $showHardwareCursor, bool $hasMarker, string $expectedVisibility)
     {
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
@@ -406,12 +441,12 @@ class ScreenWriterTest extends TestCase
 
         $marker = AnsiUtils::cursorMarker();
         $line = $hasMarker ? "Hello{$marker}World" : 'No cursor here';
-        $writer->writeLines([$line]);
+        $writer->writeFrame(new ArrayLineBuffer([$line]));
 
         $output = $terminal->getOutput();
 
-        $this->assertStringContainsString($expectedContains, $output);
-        $this->assertStringNotContainsString($expectedNotContains, $output);
+        $this->assertStringContainsString(self::SYNC_START.self::HIDE_CURSOR, $output);
+        $this->assertStringEndsWith($expectedVisibility.self::SYNC_END, $output);
     }
 
     public function testDisablingShowHardwareCursorHidesCursorImmediately()
@@ -436,7 +471,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['Plain text line']);
+        $writer->writeFrame(new ArrayLineBuffer(['Plain text line']));
 
         $output = $terminal->getOutput();
 
@@ -451,7 +486,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(["\x1b[31mRed text\x1b[0m"]);
+        $writer->writeFrame(new ArrayLineBuffer(["\x1b[31mRed text\x1b[0m"]));
 
         $output = $terminal->getOutput();
 
@@ -466,7 +501,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(["\x1b]8;;https://example.com\x07Link\x1b]8;;\x07"]);
+        $writer->writeFrame(new ArrayLineBuffer(["\x1b]8;;https://example.com\x07Link\x1b]8;;\x07"]));
 
         $output = $terminal->getOutput();
 
@@ -489,7 +524,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines([$imageLine]);
+        $writer->writeFrame(new ArrayLineBuffer([$imageLine]));
 
         $output = $terminal->getOutput();
 
@@ -504,13 +539,13 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['First', 'Second']);
+        $writer->writeFrame(new ArrayLineBuffer(['First', 'Second']));
 
         $writer->reset();
         $terminal->clearOutput();
 
         // After reset, even identical lines should trigger a full re-render
-        $writer->writeLines(['First', 'Second']);
+        $writer->writeFrame(new ArrayLineBuffer(['First', 'Second']));
 
         $output = $terminal->getOutput();
 
@@ -525,7 +560,7 @@ class ScreenWriterTest extends TestCase
         $terminal = new VirtualTerminal(80, 24);
         $writer = new ScreenWriter($terminal);
 
-        $writer->writeLines(['A', 'B', 'C']);
+        $writer->writeFrame(new ArrayLineBuffer(['A', 'B', 'C']));
 
         $state = $writer->getState();
         $this->assertSame(3, $state['line_count']);
@@ -539,19 +574,19 @@ class ScreenWriterTest extends TestCase
 
     // --- RenderException tests (pre-existing) ---
 
-    public function testRenderExceptionDoesNotCallStopOnTerminal()
+    public function testRenderExceptionLeavesTheTerminalUsable()
     {
         $terminal = new VirtualTerminal(20, 24);
         $screenWriter = new ScreenWriter($terminal);
 
         // First render: short lines that fit
-        $screenWriter->writeLines(['Hello', 'World']);
+        $screenWriter->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         $terminal->clearOutput();
 
         // Second render triggers differential path with a line that exceeds width
         try {
-            $screenWriter->writeLines(['Hello', str_repeat('X', 30)]);
+            $screenWriter->writeFrame(new ArrayLineBuffer(['Hello', str_repeat('X', 30)]));
             $this->fail('Expected RenderException was not thrown');
         } catch (RenderException $e) {
             $this->assertSame(1, $e->getLineNumber());
@@ -559,13 +594,10 @@ class ScreenWriterTest extends TestCase
             $this->assertSame(20, $e->getTerminalWidth());
         }
 
-        // The output should NOT contain showCursor sequence
-        // which would indicate stop()/showCursor() were called
+        // The terminal must be left usable: the cursor restored, since painting hides
+        // it, and synchronized output ended
         $output = $terminal->getOutput();
-        $this->assertStringNotContainsString(self::SHOW_CURSOR, $output, 'showCursor() should not be called');
-
-        // The output should end synchronized output properly
-        $this->assertStringContainsString("\x1b[?2026l", $output, 'Synchronized output should be ended');
+        $this->assertStringEndsWith(self::SHOW_CURSOR.self::SYNC_END, $output);
     }
 
     public function testScreenWriterCanRenderAfterRenderException()
@@ -574,11 +606,11 @@ class ScreenWriterTest extends TestCase
         $screenWriter = new ScreenWriter($terminal);
 
         // First render
-        $screenWriter->writeLines(['Hello', 'World']);
+        $screenWriter->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         // Trigger exception with oversized line
         try {
-            $screenWriter->writeLines(['Hello', str_repeat('X', 30)]);
+            $screenWriter->writeFrame(new ArrayLineBuffer(['Hello', str_repeat('X', 30)]));
         } catch (RenderException) {
             // expected
         }
@@ -586,7 +618,7 @@ class ScreenWriterTest extends TestCase
         $terminal->clearOutput();
 
         // ScreenWriter should recover with a full screen-clearing re-render
-        $screenWriter->writeLines(['Hello', 'Fixed']);
+        $screenWriter->writeFrame(new ArrayLineBuffer(['Hello', 'Fixed']));
 
         $output = $terminal->getOutput();
         $this->assertStringContainsString('Fixed', $output);
@@ -600,11 +632,11 @@ class ScreenWriterTest extends TestCase
         $screenWriter = new ScreenWriter($terminal);
 
         // First render
-        $screenWriter->writeLines(['Hello', 'World']);
+        $screenWriter->writeFrame(new ArrayLineBuffer(['Hello', 'World']));
 
         // The first changed line itself is oversized
         try {
-            $screenWriter->writeLines([str_repeat('X', 30), 'World']);
+            $screenWriter->writeFrame(new ArrayLineBuffer([str_repeat('X', 30), 'World']));
             $this->fail('Expected RenderException was not thrown');
         } catch (RenderException $e) {
             $this->assertSame(0, $e->getLineNumber());
@@ -613,11 +645,190 @@ class ScreenWriterTest extends TestCase
         $terminal->clearOutput();
 
         // ScreenWriter should recover with a full screen-clearing re-render
-        $screenWriter->writeLines(['Recovered', 'OK']);
+        $screenWriter->writeFrame(new ArrayLineBuffer(['Recovered', 'OK']));
 
         $output = $terminal->getOutput();
         $this->assertStringContainsString('Recovered', $output);
         $this->assertStringContainsString('OK', $output);
         $this->assertStringContainsString("\x1b[2J", $output, 'Screen should be cleared on recovery');
+    }
+
+    #[DataProvider('provideShrinkingOverflowingContent')]
+    public function testShrinkingOverflowingContentKeepsTheViewportAtTheBottom(array $shrunk)
+    {
+        $transcript = [];
+        for ($i = 0; $i < 100; ++$i) {
+            $transcript[] = 'transcript '.$i;
+        }
+
+        $screen = new ScreenBuffer(20, 5);
+        $output = '';
+        $terminal = $this->createStub(TerminalInterface::class);
+        $terminal->method('getColumns')->willReturn(20);
+        $terminal->method('getRows')->willReturn(5);
+        $terminal->method('isVirtual')->willReturn(false);
+        $terminal->method('write')->willReturnCallback(static function (string $data) use ($screen, &$output): void {
+            $screen->write($data);
+            $output .= $data;
+        });
+        $writer = new ScreenWriter($terminal);
+
+        $writer->writeFrame(new ArrayLineBuffer([...$transcript, 'A', 'B', 'C', 'D', 'E', 'F', 'G']));
+        $output = '';
+        $writer->writeFrame(new ArrayLineBuffer([...$transcript, ...$shrunk]));
+
+        // The terminal shows the last 5 lines of the content, whatever the shrink removed
+        $this->assertSame(\array_slice([...$transcript, ...$shrunk], -5), array_map('rtrim', $screen->getLines()));
+        $this->assertStringNotContainsString("\x1b[3J", $output, 'Scrollback should be preserved');
+    }
+
+    public function testShrinkingOverflowingContentDoesNotReadUnchangedPrefix()
+    {
+        $transcript = new CountingLineBuffer(100);
+        $terminal = $this->createStub(TerminalInterface::class);
+        $terminal->method('getColumns')->willReturn(20);
+        $terminal->method('getRows')->willReturn(5);
+        $terminal->method('isVirtual')->willReturn(false);
+        $writer = new ScreenWriter($terminal);
+
+        $writer->writeFrame(new ConcatenatedLineBuffer([$transcript, new ArrayLineBuffer(['A', 'B', 'C', 'D', 'E', 'F', 'G'])]));
+        $transcript->resetReadCount();
+        $writer->writeFrame(new ConcatenatedLineBuffer([$transcript, new ArrayLineBuffer(['A', 'B', 'C', 'D', 'E', 'F'])]));
+
+        $this->assertSame(0, $transcript->getReadCount());
+    }
+
+    public function testGrowingOverflowingContentDoesNotReadUnchangedPrefix()
+    {
+        $transcript = new CountingLineBuffer(100);
+        $terminal = $this->createStub(TerminalInterface::class);
+        $terminal->method('getColumns')->willReturn(20);
+        $terminal->method('getRows')->willReturn(5);
+        $terminal->method('isVirtual')->willReturn(false);
+        $writer = new ScreenWriter($terminal);
+
+        $writer->writeFrame(new ConcatenatedLineBuffer([$transcript, new ArrayLineBuffer(['A', 'B', 'C', 'D', 'E', 'F'])]));
+        $transcript->resetReadCount();
+        $writer->writeFrame(new ConcatenatedLineBuffer([$transcript, new ArrayLineBuffer(['A', 'B', 'C', 'D', 'E', 'F', 'G'])]));
+
+        $this->assertSame(0, $transcript->getReadCount());
+    }
+
+    public static function provideShrinkingOverflowingContent(): iterable
+    {
+        yield 'one trailing line removed' => [['A', 'B', 'C', 'D', 'E', 'F']];
+        yield 'three trailing lines removed' => [['A', 'B', 'C', 'D']];
+        yield 'two leading lines removed' => [['C', 'D', 'E', 'F', 'G']];
+        yield 'all but one line removed' => [['A']];
+    }
+
+    #[DataProvider('renderPathFrames')]
+    public function testRestoresTheCursorBeforeEndingSynchronizedOutput(array $first, array $second)
+    {
+        $marker = AnsiUtils::cursorMarker();
+        $terminal = new VirtualTerminal(20, 5);
+        $writer = new ScreenWriter($terminal);
+        $writer->writeFrame(new ArrayLineBuffer($first));
+
+        $terminal->clearOutput();
+        $writer->writeFrame(new ArrayLineBuffer($second));
+
+        $output = $terminal->getOutput();
+
+        $this->assertStringStartsWith(self::SYNC_START.self::HIDE_CURSOR, $output);
+        $this->assertStringEndsWith(self::SHOW_CURSOR.self::SYNC_END, $output);
+        $this->assertSame(1, substr_count($output, self::SYNC_END));
+    }
+
+    public static function renderPathFrames(): iterable
+    {
+        $marker = AnsiUtils::cursorMarker();
+
+        yield 'full render' => [[], ["a{$marker}b"]];
+        yield 'differential render' => [['ab', 'cd'], ['ab', "c{$marker}e"]];
+        yield 'trailing lines deleted' => [['ab', 'cd', 'ef'], ["a{$marker}b"]];
+        yield 'overheight redraw' => [['a', 'b', 'c', 'd', 'e', 'f'], ['a', 'b', 'c', 'd', 'e', "f{$marker}g"]];
+    }
+
+    #[DataProvider('overheightFrames')]
+    public function testOverheightFrameKeepsTheViewportInSync(array $previous, array $frame)
+    {
+        $screen = new ScreenBuffer(40, 5);
+        $terminal = $this->createStub(TerminalInterface::class);
+        $terminal->method('getColumns')->willReturn(40);
+        $terminal->method('getRows')->willReturn(5);
+        $terminal->method('isVirtual')->willReturn(false);
+        $terminal->method('write')->willReturnCallback(static fn (string $data) => $screen->write($data));
+
+        $writer = new ScreenWriter($terminal);
+        $writer->writeFrame(new ArrayLineBuffer($previous));
+        $writer->writeFrame(new ArrayLineBuffer($frame));
+
+        $expected = array_pad(\array_slice($frame, max(0, \count($frame) - 5), 5), 5, '');
+
+        $this->assertSame($expected, array_map(rtrim(...), $screen->getLines()));
+    }
+
+    public static function overheightFrames(): iterable
+    {
+        $six = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'];
+
+        yield 'one line appended' => [$six, [...$six, 'L6']];
+        yield 'two lines appended' => [$six, [...$six, 'L6', 'L7']];
+        yield 'last line edited' => [[...$six, 'L6'], [...$six, 'L6x']];
+    }
+
+    #[DataProvider('growingFrames')]
+    public function testGrowingContentScrollsTheLinesLeavingTheViewportIntoTheScrollback(array $frames, array $expectedScrollback, array $expectedScreen)
+    {
+        $screen = new ScreenBuffer(20, 5);
+        $terminal = $this->createStub(TerminalInterface::class);
+        $terminal->method('getColumns')->willReturn(20);
+        $terminal->method('getRows')->willReturn(5);
+        $terminal->method('isVirtual')->willReturn(false);
+        $terminal->method('write')->willReturnCallback(static fn (string $data) => $screen->write($data));
+
+        $writer = new ScreenWriter($terminal);
+        foreach ($frames as $frame) {
+            $writer->writeFrame(new ArrayLineBuffer($frame));
+        }
+
+        $this->assertSame($expectedScrollback, array_map(rtrim(...), $screen->getScrollback()));
+        $this->assertSame($expectedScreen, array_map(rtrim(...), $screen->getLines()));
+    }
+
+    public static function growingFrames(): iterable
+    {
+        $lines = static fn (int $from, int $to): array => array_map(static fn (int $i): string => 'L'.$i, range($from, $to));
+
+        yield 'grown past the screen at once' => [
+            [$lines(0, 4), $lines(0, 8)],
+            $lines(0, 3),
+            $lines(4, 8),
+        ];
+
+        yield 'grown one line at a time' => [
+            [$lines(0, 4), $lines(0, 5), $lines(0, 6), $lines(0, 7)],
+            $lines(0, 2),
+            $lines(3, 7),
+        ];
+
+        yield 'grown by more than a screen' => [
+            [$lines(0, 4), $lines(0, 14)],
+            $lines(0, 9),
+            $lines(10, 14),
+        ];
+
+        yield 'last line edited while growing' => [
+            [$lines(0, 4), [...$lines(0, 3), 'L4x', 'L5', 'L6']],
+            ['L0', 'L1'],
+            ['L2', 'L3', 'L4x', 'L5', 'L6'],
+        ];
+
+        yield 'grown while already overflowing' => [
+            [$lines(0, 8), $lines(0, 10)],
+            $lines(0, 5),
+            $lines(6, 10),
+        ];
     }
 }

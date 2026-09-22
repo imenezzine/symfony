@@ -58,15 +58,41 @@ class WebTestCaseTest extends TestCase
     {
         $this->getResponseTester(new Response('', 301, ['Location' => 'https://example.com/']))->assertResponseRedirects('https://example.com/');
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessageMatches('#is redirected and has header "Location" (with value|matching) "https://example\.com/"\.#');
+        $this->expectExceptionMessageMatches('#Response has header "Location" (with value|matching) "https://example\.com/"\.#');
         $this->getResponseTester(new Response('', 301))->assertResponseRedirects('https://example.com/');
+    }
+
+    public function testAssertResponseRedirectsWithLocationOmitsBodyWhenNotVerbose()
+    {
+        $error = null;
+
+        try {
+            $this->getResponseTester(new Response('the response body', 301))->assertResponseRedirects('https://example.com/', verbose: false);
+        } catch (AssertionFailedError $error) {
+        }
+
+        $this->assertNotNull($error, 'The assertion is expected to fail.');
+        $this->assertStringNotContainsString('the response body', $error->getMessage());
+    }
+
+    public function testAssertResponseRedirectsWithStatusCodeOmitsBodyWhenNotVerbose()
+    {
+        $error = null;
+
+        try {
+            $this->getResponseTester(new Response('the response body', 302))->assertResponseRedirects(null, 301, verbose: false);
+        } catch (AssertionFailedError $error) {
+        }
+
+        $this->assertNotNull($error, 'The assertion is expected to fail.');
+        $this->assertStringNotContainsString('the response body', $error->getMessage());
     }
 
     public function testAssertResponseRedirectsWithLocationWithoutHost()
     {
         $this->getResponseTester(new Response('', 301, ['Location' => 'https://example.com/']))->assertResponseRedirects('/');
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessage('is redirected and has header "Location" matching "/".');
+        $this->expectExceptionMessage('Failed asserting that the Response has header "Location" matching "/".');
         $this->getResponseTester(new Response('', 301))->assertResponseRedirects('/');
     }
 
@@ -74,7 +100,7 @@ class WebTestCaseTest extends TestCase
     {
         $this->getResponseTester(new Response('', 301, ['Location' => 'https://example.com/']))->assertResponseRedirects('//example.com/');
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessage('is redirected and has header "Location" matching "//example.com/".');
+        $this->expectExceptionMessage('Failed asserting that the Response has header "Location" matching "//example.com/".');
         $this->getResponseTester(new Response('', 301))->assertResponseRedirects('//example.com/');
     }
 
@@ -82,7 +108,7 @@ class WebTestCaseTest extends TestCase
     {
         $this->getResponseTester(new Response('', 302))->assertResponseRedirects(null, 302);
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessage('is redirected and status code is 301.');
+        $this->expectExceptionMessage('Failed asserting that the Response status code is 301.');
         $this->getResponseTester(new Response('', 302))->assertResponseRedirects(null, 301);
     }
 
@@ -90,7 +116,8 @@ class WebTestCaseTest extends TestCase
     {
         $this->getResponseTester(new Response('', 302, ['Location' => 'https://example.com/']))->assertResponseRedirects('https://example.com/', 302);
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessageMatches('#(:?\( )?is redirected and has header "Location" (with value|matching) "https://example\.com/" (:?\) )?and status code is 301\.#');
+        // assertions are reported one at a time when not verbose, so only the first failing one shows up
+        $this->expectExceptionMessageMatches('#Response has header "Location" (with value|matching) "https://example\.com/"\.#');
         $this->getResponseTester(new Response('', 302))->assertResponseRedirects('https://example.com/', 301);
     }
 
@@ -124,7 +151,8 @@ class WebTestCaseTest extends TestCase
     {
         $this->getResponseTester(new Response())->assertResponseHeaderSame('Cache-Control', 'no-cache, private');
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessage('Failed asserting that the Response has header "Cache-Control" with value "public".');
+        // the ", value of header ... is ..." suffix requires symfony/http-foundation >= 8.2
+        $this->expectExceptionMessage('Failed asserting that the Response has header "Cache-Control" with value "public"');
         $this->getResponseTester(new Response())->assertResponseHeaderSame('Cache-Control', 'public');
     }
 

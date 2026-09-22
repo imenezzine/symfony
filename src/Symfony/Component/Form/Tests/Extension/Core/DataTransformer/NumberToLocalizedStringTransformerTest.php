@@ -223,6 +223,19 @@ class NumberToLocalizedStringTransformerTest extends TestCase
         $this->assertEquals('1234,547', $transformer->transform(1234.547));
     }
 
+    public function testTransformAppliesRoundingModeIfNoScale()
+    {
+        // Since we test against "de_AT", we need the full implementation
+        IntlTestHelper::requireFullIntl($this);
+
+        \Locale::setDefault('de_AT');
+
+        $this->assertSame('1,063', (new NumberToLocalizedStringTransformer())->transform(1.0625));
+        $this->assertSame('1,062', (new NumberToLocalizedStringTransformer(null, null, \NumberFormatter::ROUND_HALFEVEN))->transform(1.0625));
+        $this->assertSame('1,062', (new NumberToLocalizedStringTransformer(null, null, \NumberFormatter::ROUND_DOWN))->transform(1.0625));
+        $this->assertSame('1,063', (new NumberToLocalizedStringTransformer(null, null, \NumberFormatter::ROUND_UP))->transform(1.0625));
+    }
+
     #[DataProvider('provideTransformations')]
     public function testReverseTransform($to, $from, $locale)
     {
@@ -249,9 +262,6 @@ class NumberToLocalizedStringTransformerTest extends TestCase
         $this->assertEquals($to, $transformer->reverseTransform($from));
     }
 
-    /**
-     * @see https://github.com/symfony/symfony/issues/7609
-     */
     public function testReverseTransformWithGroupingAndFixedSpaces()
     {
         // Since we test against other locales, we need the full implementation
@@ -508,9 +518,6 @@ class NumberToLocalizedStringTransformerTest extends TestCase
         $transformer->reverseTransform('foo');
     }
 
-    /**
-     * @see https://github.com/symfony/symfony/issues/3161
-     */
     #[DataProvider('nanRepresentationProvider')]
     public function testReverseTransformDisallowsNaN($nan)
     {
@@ -524,7 +531,7 @@ class NumberToLocalizedStringTransformerTest extends TestCase
     {
         return [
             ['nan'],
-            ['NaN'], // see https://github.com/symfony/symfony/issues/3161
+            ['NaN'],
             ['NAN'],
         ];
     }

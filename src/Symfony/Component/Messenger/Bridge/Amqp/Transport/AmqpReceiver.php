@@ -16,6 +16,7 @@ use Symfony\Component\Messenger\Exception\LogicException;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Receiver\QueueReceiverInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
@@ -26,7 +27,7 @@ use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
  *
  * @author Samuel Roze <samuel.roze@gmail.com>
  */
-class AmqpReceiver implements QueueReceiverInterface, MessageCountAwareInterface
+class AmqpReceiver implements QueueReceiverInterface, KeepaliveReceiverInterface, MessageCountAwareInterface
 {
     private SerializerInterface $serializer;
 
@@ -53,6 +54,13 @@ class AmqpReceiver implements QueueReceiverInterface, MessageCountAwareInterface
     public function getFromQueues(array $queueNames/* , int $fetchSize = 1 */): iterable
     {
         $fetchSize = \func_num_args() > 1 ? max(1, func_get_arg(1)) : 1;
+
+        if (0 < $this->connection->getPrefetchCount()) {
+            yield from $this->consumeFromQueues($queueNames, $fetchSize);
+
+            return;
+        }
+
         $remaining = $fetchSize;
         $activeQueues = array_values($queueNames);
         $firstRound = true;
@@ -82,6 +90,27 @@ class AmqpReceiver implements QueueReceiverInterface, MessageCountAwareInterface
         }
     }
 
+    private function consumeFromQueues(array $queueNames, int $fetchSize): iterable
+    {
+        try {
+            $messages = $this->connection->consume($queueNames, $fetchSize);
+        } catch (\AMQPConnectionException) {
+            // reconnect once, as getEnvelope() does
+            try {
+                $this->connection->clear();
+                $messages = $this->connection->consume($queueNames, $fetchSize);
+            } catch (\AMQPException $e) {
+                throw new TransportException($e->getMessage(), 0, $e);
+            }
+        } catch (\AMQPException $e) {
+            throw new TransportException($e->getMessage(), 0, $e);
+        }
+
+        foreach ($messages as [$queueName, $amqpEnvelope]) {
+            yield $this->createEnvelope($queueName, $amqpEnvelope);
+        }
+    }
+
     private function getEnvelope(string $queueName): ?Envelope
     {
         try {
@@ -104,6 +133,11 @@ class AmqpReceiver implements QueueReceiverInterface, MessageCountAwareInterface
             return null;
         }
 
+        return $this->createEnvelope($queueName, $amqpEnvelope);
+    }
+
+    private function createEnvelope(string $queueName, \AMQPEnvelope $amqpEnvelope): Envelope
+    {
         $body = $amqpEnvelope->getBody();
         $id = $amqpEnvelope->getMessageId();
         $stamps = [
@@ -114,6 +148,7 @@ class AmqpReceiver implements QueueReceiverInterface, MessageCountAwareInterface
         $data = [
             'body' => false === $body ? '' : $body,
             'headers' => $amqpEnvelope->getHeaders(),
+            'extra' => ['routing_key' => $amqpEnvelope->getRoutingKey()],
         ];
 
         try {
@@ -151,6 +186,21 @@ class AmqpReceiver implements QueueReceiverInterface, MessageCountAwareInterface
             $stamp->getAmqpEnvelope(),
             $stamp->getQueueName()
         );
+    }
+
+    /**
+     * AMQP has no per-message deadline to extend, so $seconds is not used: the
+     * frame sent here only tells the broker that the connection is still alive.
+     */
+    public function keepalive(Envelope $envelope, ?int $seconds = null): void
+    {
+        try {
+            $this->findAmqpStamp($envelope);
+
+            $this->connection->keepalive();
+        } catch (\AMQPException $e) {
+            throw new TransportException($e->getMessage(), 0, $e);
+        }
     }
 
     public function getMessageCount(): int

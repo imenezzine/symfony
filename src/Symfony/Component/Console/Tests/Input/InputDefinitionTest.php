@@ -360,6 +360,18 @@ class InputDefinitionTest extends TestCase
         $this->assertSame($defaults, $definition->getOptionDefaults(), '->getOptionDefaults() returns the default values for all options');
     }
 
+    public function testSetIgnoreExtraArguments()
+    {
+        $definition = new InputDefinition();
+        $this->assertFalse($definition->ignoresExtraArguments());
+
+        $definition->setIgnoreExtraArguments();
+        $this->assertTrue($definition->ignoresExtraArguments());
+
+        $definition->setIgnoreExtraArguments(false);
+        $this->assertFalse($definition->ignoresExtraArguments());
+    }
+
     #[DataProvider('getGetSynopsisData')]
     public function testGetSynopsis(InputDefinition $definition, $expectedSynopsis, $message = null)
     {
@@ -381,6 +393,16 @@ class InputDefinitionTest extends TestCase
             [new InputDefinition([new InputArgument('foo', InputArgument::REQUIRED | InputArgument::IS_ARRAY)]), '<foo>...', 'uses an ellipsis for required array arguments'],
 
             [new InputDefinition([new InputOption('foo'), new InputArgument('foo', InputArgument::REQUIRED)]), '[--foo] [--] <foo>', 'puts [--] between options and arguments'],
+
+            [new InputDefinition([new InputOption('deprecated', null, InputOption::DEPRECATED)]), '[--deprecated]', 'puts deprecated optional options in square brackets'],
+            [
+                new InputDefinition([new InputOption('foo'), new InputOption('deprecated', null, InputOption::DEPRECATED)]),
+                '[--foo] [--deprecated]',
+                'puts deprecated optional options in square brackets',
+            ],
+
+            [new InputDefinition([new InputOption('hidden', null, InputOption::HIDDEN)]), '', 'hidden option is not visible'],
+            [new InputDefinition([new InputOption('foo'), new InputOption('hidden', null, InputOption::HIDDEN)]), '[--foo]', 'hidden option is not visible'],
         ];
     }
 

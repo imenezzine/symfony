@@ -15,10 +15,14 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Attribute\Argument;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Exception\InvalidOptionException;
+use Symfony\Component\Console\Exception\LogicException;
 use Symfony\Component\Console\Helper\FormatterHelper;
+use Symfony\Component\Console\Input\ArgvInput;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputDefinition;
 use Symfony\Component\Console\Input\InputInterface;
@@ -28,6 +32,7 @@ use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Console\Tests\Fixtures\InvokableTestCommand;
+use Symfony\Component\Console\Tests\Fixtures\MethodBasedTestCommand;
 
 class CommandTest extends TestCase
 {
@@ -354,6 +359,28 @@ class CommandTest extends TestCase
         $tester->execute(['--bar' => true]);
     }
 
+    public function testIgnoreExtraArguments()
+    {
+        $unparsedTokens = null;
+        $command = new Command('docker');
+        $command->getDefinition()->setIgnoreExtraArguments();
+        $command->setCode(static function (InputInterface $input) use (&$unparsedTokens): int {
+            $unparsedTokens = $input->getUnparsedTokens();
+
+            return 0;
+        });
+
+        $application = new Application();
+        $application->setAutoExit(false);
+        $application->setCatchExceptions(false);
+        $application->addCommand($command);
+
+        $statusCode = $application->run(new ArgvInput(['cli.php', 'docker', 'compose', 'up', '--detach']), new NullOutput());
+
+        $this->assertSame(0, $statusCode);
+        $this->assertSame(['compose', 'up', '--detach'], $unparsedTokens);
+    }
+
     public function testRunWithApplication()
     {
         $command = new \TestCommand();
@@ -382,6 +409,31 @@ class CommandTest extends TestCase
             }
             $this->assertEquals('foo', cli_get_process_title());
         }
+    }
+
+    public function testDeprecatedOptionWritesAMessageOnStdErr()
+    {
+        $tester = new CommandTester($this->createCommandWithDeprecatedOption());
+        $tester->execute(['--deprecated' => true], ['capture_stderr_separately' => true]);
+
+        $this->assertStringContainsString('The option "--deprecated|-d" is deprecated.', $tester->getErrorOutput());
+        $this->assertSame('done'.\PHP_EOL, $tester->getDisplay());
+    }
+
+    public function testDeprecatedOptionWritesAMessageWhenTheShortcutIsUsed()
+    {
+        $tester = new CommandTester($this->createCommandWithDeprecatedOption());
+        $tester->execute(['-d' => true], ['capture_stderr_separately' => true]);
+
+        $this->assertStringContainsString('The option "--deprecated|-d" is deprecated.', $tester->getErrorOutput());
+    }
+
+    public function testDeprecatedOptionWritesNoMessageWhenNotUsed()
+    {
+        $tester = new CommandTester($this->createCommandWithDeprecatedOption());
+        $tester->execute([], ['capture_stderr_separately' => true]);
+
+        $this->assertSame('', $tester->getErrorOutput());
     }
 
     public function testSetCode()
@@ -471,6 +523,38 @@ class CommandTest extends TestCase
         $this->assertEquals('interact called'.\PHP_EOL.'not bound'.\PHP_EOL, $tester->getDisplay());
     }
 
+    public function testMethodCommandNameIsPrefixedWithTheClassLevelName()
+    {
+        $command = new Command(code: new MethodBasedTestCommand()->cmd1(...));
+        $this->assertSame('app:cmd0:cmd1', $command->getName());
+
+        $command = new Command(code: new MethodBasedTestCommand());
+        $this->assertSame('app:cmd0', $command->getName());
+    }
+
+    public function testMethodCommandsOfAHiddenClassLevelNameAreHidden()
+    {
+        $command = new Command(code: new HiddenGroupCommands()->one(...));
+        $this->assertSame('hidden-group:one', $command->getName());
+        $this->assertTrue($command->isHidden());
+    }
+
+    public function testTheAttributeCannotBeOnBothTheClassAndItsInvokeMethod()
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The "Symfony\Component\Console\Tests\Command\AttributeOnBothCommand" class and its "__invoke()" method cannot both have the "Symfony\Component\Console\Attribute\AsCommand" attribute.');
+
+        new Command(code: new AttributeOnBothCommand());
+    }
+
+    public function testMethodCommandNameMustNotRepeatTheClassLevelName()
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The name "group:one" of the command "Symfony\Component\Console\Tests\Command\RepeatedPrefixCommands::one()" repeats the class-level name "group": method-level names are relative to it, use "one" instead.');
+
+        new Command(code: new RepeatedPrefixCommands()->one(...));
+    }
+
     public function testCommandAttribute()
     {
         $command = new Php8Command();
@@ -486,6 +570,117 @@ class CommandTest extends TestCase
         $this->assertNull($command->getCode());
     }
 
+    public function testCommandAttributeWithCallables()
+    {
+        $command = new Php8CommandWithCallables();
+
+        $this->assertSame('Generated description', $command->getDescription());
+        $this->assertSame('Generated help', $command->getHelp());
+    }
+
+    public function testCommandAttributeDescriptionIsNeverResolvedAsCallable()
+    {
+        // "define" is the name of a PHP function, it must still be taken as a plain description
+        $command = new #[AsCommand(name: 'foo', description: 'define', help: 'define')] class extends Command {};
+
+        $this->assertSame('define', $command->getDescription());
+        $this->assertSame('define', $command->getHelp());
+    }
+
+    public function testAttributeListedOptionsComeAfterTheParameters()
+    {
+        $invokable = new #[AsCommand(name: 'foo', options: [new InputOption('flag', 'f', InputOption::VALUE_NONE, 'Flag')])] class {
+            public function __invoke(#[Argument] string $name = '', #[Option] bool $dryRun = false): int
+            {
+                return 0;
+            }
+        };
+
+        $definition = new Command(null, $invokable)->getDefinition();
+
+        $this->assertSame(['name'], array_keys($definition->getArguments()));
+        $this->assertSame(['dry-run', 'flag'], array_keys($definition->getOptions()));
+        $this->assertSame('f', $definition->getOption('flag')->getShortcut());
+        $this->assertSame('Flag', $definition->getOption('flag')->getDescription());
+    }
+
+    public function testAttributeListedOptionsOnAMethodCommand()
+    {
+        $object = new class {
+            #[AsCommand(name: 'foo', options: [new InputOption('flag')])]
+            public function run(#[Argument] string $name = ''): int
+            {
+                return 0;
+            }
+        };
+
+        $definition = new Command(null, $object->run(...))->getDefinition();
+
+        $this->assertSame(['name'], array_keys($definition->getArguments()));
+        $this->assertSame(['flag'], array_keys($definition->getOptions()));
+    }
+
+    public function testAttributeListedOptionsOnACommandSubclass()
+    {
+        $command = new #[AsCommand(name: 'foo', options: [new InputOption('flag')])] class extends Command {
+            protected function configure(): void
+            {
+                $this->addOption('configured');
+            }
+        };
+
+        $this->assertSame(['configured', 'flag'], array_keys($command->getDefinition()->getOptions()));
+    }
+
+    public function testAttributeListedOptionsSurviveASetDefinitionCall()
+    {
+        $command = new #[AsCommand(name: 'foo', options: [new InputOption('flag')])] class extends Command {
+            protected function configure(): void
+            {
+                $this->setDefinition([new InputArgument('arg')]);
+            }
+        };
+
+        $this->assertSame(['arg'], array_keys($command->getDefinition()->getArguments()));
+        $this->assertSame(['flag'], array_keys($command->getNativeDefinition()->getOptions()));
+    }
+
+    public function testAttributeListedOptionsOnAnInvokableCommandSubclass()
+    {
+        $command = new #[AsCommand(name: 'foo', options: [new InputOption('flag')])] class extends Command {
+            public function __invoke(#[Argument] string $name = ''): int
+            {
+                return 0;
+            }
+        };
+
+        $this->assertSame(['name'], array_keys($command->getDefinition()->getArguments()));
+        $this->assertSame(['flag'], array_keys($command->getDefinition()->getOptions()));
+    }
+
+    public function testAttributeListedOptionMustNotRepeatAParameter()
+    {
+        $invokable = new #[AsCommand(name: 'foo', options: [new InputOption('flag', null, InputOption::VALUE_REQUIRED)])] class {
+            public function __invoke(#[Option] bool $flag = false): int
+            {
+                return 0;
+            }
+        };
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('An option named "flag" already exists.');
+
+        new Command(null, $invokable)->getDefinition();
+    }
+
+    public function testAttributeListedOptionsMustBeInputOptions()
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The "options" of the "foo" command must be "Symfony\Component\Console\Input\InputOption" instances, "string" given.');
+
+        new AsCommand(name: 'foo', options: ['flag']);
+    }
+
     public function testDefaultCommand()
     {
         $apl = new Application();
@@ -498,6 +693,19 @@ class CommandTest extends TestCase
         $property = new \ReflectionProperty($apl, 'defaultCommand');
 
         $this->assertEquals('foo2', $property->getValue($apl));
+    }
+
+    private function createCommandWithDeprecatedOption(): Command
+    {
+        $command = new Command('foo');
+        $command->addOption('deprecated', 'd', InputOption::DEPRECATED, 'A deprecated option');
+        $command->setCode(static function (InputInterface $input, OutputInterface $output): int {
+            $output->writeln('done');
+
+            return 0;
+        });
+
+        return $command;
     }
 }
 
@@ -517,7 +725,55 @@ class Php8Command extends Command
 {
 }
 
+#[AsCommand(name: 'hidden-group', hidden: true)]
+class HiddenGroupCommands
+{
+    #[AsCommand(name: 'one')]
+    public function one(): int
+    {
+        return Command::SUCCESS;
+    }
+}
+
+#[AsCommand(name: 'both')]
+class AttributeOnBothCommand
+{
+    #[AsCommand(name: 'both-invoke')]
+    public function __invoke(): int
+    {
+        return Command::SUCCESS;
+    }
+}
+
+#[AsCommand(name: 'group')]
+class RepeatedPrefixCommands
+{
+    #[AsCommand(name: 'group:one')]
+    public function one(): int
+    {
+        return Command::SUCCESS;
+    }
+}
+
 #[AsCommand(name: 'foo2', description: 'desc2', hidden: true)]
 class Php8Command2 extends Command
 {
+}
+
+#[AsCommand(
+    name: 'foo3',
+    description: [Php8CommandWithCallables::class, 'generateDescription'],
+    help: [Php8CommandWithCallables::class, 'generateHelp'],
+)]
+class Php8CommandWithCallables extends Command
+{
+    public static function generateDescription(): string
+    {
+        return 'Generated description';
+    }
+
+    public static function generateHelp(): string
+    {
+        return 'Generated help';
+    }
 }

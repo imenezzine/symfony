@@ -19,6 +19,8 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\HttpKernelBrowser;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\TerminableInterface;
 use Symfony\Component\HttpKernel\Tests\Fixtures\MockableUploadFileWithClientSize;
 use Symfony\Component\HttpKernel\Tests\Fixtures\TestClient;
 
@@ -42,6 +44,57 @@ class HttpKernelBrowserTest extends TestCase
 
         $client->request('GET', 'http://www.example.com/?parameter=http://example.com');
         $this->assertEquals('http://www.example.com/?parameter='.urlencode('http://example.com'), $client->getRequest()->getUri(), '->doRequest() uses the request handler to make the request');
+    }
+
+    public function testKernelIsTerminatedAfterTheResponseContentIsSent()
+    {
+        $kernel = new class implements HttpKernelInterface, TerminableInterface {
+            public array $calls = [];
+
+            public function handle(Request $request, int $type = self::MAIN_REQUEST, bool $catch = true): Response
+            {
+                return new StreamedResponse(function () {
+                    $this->calls[] = 'sendContent';
+
+                    echo 'streamed content';
+                });
+            }
+
+            public function terminate(Request $request, Response $response): void
+            {
+                $this->calls[] = 'terminate';
+            }
+        };
+
+        $client = new HttpKernelBrowser($kernel);
+        $client->request('GET', '/');
+
+        $this->assertSame(['sendContent', 'terminate'], $kernel->calls);
+        $this->assertSame('streamed content', $client->getInternalResponse()->getContent());
+    }
+
+    public function testStreamedResponseThatFlushesIsCaptured()
+    {
+        $kernel = new class implements HttpKernelInterface {
+            public function handle(Request $request, int $type = self::MAIN_REQUEST, bool $catch = true): Response
+            {
+                return new StreamedResponse(static function () {
+                    foreach (['strea', 'med ', 'content'] as $chunk) {
+                        echo $chunk;
+                        @ob_flush();
+                        flush();
+                    }
+                });
+            }
+        };
+
+        $client = new HttpKernelBrowser($kernel);
+
+        $this->expectOutputString('');
+
+        $client->request('GET', '/');
+
+        $this->assertSame('streamed content', $client->getInternalResponse()->getContent());
     }
 
     public function testGetScript()

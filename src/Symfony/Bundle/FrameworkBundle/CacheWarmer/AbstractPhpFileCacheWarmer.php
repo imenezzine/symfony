@@ -11,80 +11,17 @@
 
 namespace Symfony\Bundle\FrameworkBundle\CacheWarmer;
 
-use Symfony\Component\Cache\Adapter\ArrayAdapter;
-use Symfony\Component\Cache\Adapter\NullAdapter;
-use Symfony\Component\Cache\Adapter\PhpArrayAdapter;
-use Symfony\Component\Config\Resource\ClassExistenceResource;
-use Symfony\Component\HttpKernel\CacheWarmer\CacheWarmerInterface;
-use Symfony\Component\VarExporter\DeepCloner;
+use Symfony\Component\Cache\CacheWarmer\AbstractPhpFileCacheWarmer as BaseAbstractPhpFileCacheWarmer;
 
-abstract class AbstractPhpFileCacheWarmer implements CacheWarmerInterface
-{
+trigger_deprecation('symfony/framework-bundle', '8.2', 'The "%s" class is deprecated, use "%s" instead.', 'Symfony\Bundle\FrameworkBundle\CacheWarmer\AbstractPhpFileCacheWarmer', BaseAbstractPhpFileCacheWarmer::class);
+
+class_alias(BaseAbstractPhpFileCacheWarmer::class, 'Symfony\Bundle\FrameworkBundle\CacheWarmer\AbstractPhpFileCacheWarmer');
+
+if (false) {
     /**
-     * @param string $phpArrayFile The PHP file where metadata are cached
+     * @deprecated since Symfony 8.2, use Symfony\Component\Cache\CacheWarmer\AbstractPhpFileCacheWarmer instead
      */
-    public function __construct(
-        private string $phpArrayFile,
-    ) {
-    }
-
-    public function isOptional(): bool
+    class AbstractPhpFileCacheWarmer
     {
-        return true;
     }
-
-    public function warmUp(string $cacheDir, ?string $buildDir = null): array
-    {
-        $arrayAdapter = new ArrayAdapter();
-
-        spl_autoload_register([ClassExistenceResource::class, 'throwOnRequiredClass']);
-        try {
-            if (!$this->doWarmUp($cacheDir, $arrayAdapter, $buildDir)) {
-                return [];
-            }
-        } finally {
-            spl_autoload_unregister([ClassExistenceResource::class, 'throwOnRequiredClass']);
-        }
-
-        // the ArrayAdapter stores deep clones of the values to avoid mutation of
-        // the cached data afterwards; older versions store them serialized
-        // instead, so unserialize those (a serialized payload holds a colon,
-        // which the adapter never leaves in a raw string) for backward compatibility
-        $values = $arrayAdapter->getValues(true);
-        foreach ($values as $key => $value) {
-            if (null === $value) {
-                unset($values[$key]);
-            } elseif ($value instanceof DeepCloner) {
-                $values[$key] = $value->clone(null, true);
-            } elseif (\is_string($value) && str_contains($value, ':')) {
-                $values[$key] = unserialize($value, ['allowed_classes' => true]);
-            }
-        }
-
-        return $this->warmUpPhpArrayAdapter(new PhpArrayAdapter($this->phpArrayFile, new NullAdapter()), $values);
-    }
-
-    /**
-     * @return string[] A list of classes to preload on PHP 7.4+
-     */
-    protected function warmUpPhpArrayAdapter(PhpArrayAdapter $phpArrayAdapter, array $values): array
-    {
-        return $phpArrayAdapter->warmUp($values);
-    }
-
-    /**
-     * @internal
-     */
-    final protected function ignoreAutoloadException(string $class, \Exception $exception): void
-    {
-        try {
-            ClassExistenceResource::throwOnRequiredClass($class, $exception);
-        } catch (\ReflectionException) {
-        }
-    }
-
-    /**
-     * @return bool false if there is nothing to warm-up
-     */
-    abstract protected function doWarmUp(string $cacheDir, ArrayAdapter $arrayAdapter, ?string $buildDir = null): bool;
 }
